@@ -1,4 +1,20 @@
+<div align="center">
+
 # Codex Notch Monitor
+
+**在 Mac 顶部实时掌握 Codex 额度、成本与多项目运行状态**
+
+[![Download v1.0.0](https://img.shields.io/badge/Download-v1.0.0-27C2FF?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/suguxiaojie/codex-notch-monitor/releases/latest)
+[![CoverAI](https://img.shields.io/badge/Built%20by-CoverAI-111827?style=for-the-badge&labelColor=111827&color=0EA5E9)](https://coverai.store/?utm_source=github&utm_medium=repository&utm_campaign=codex_notch_monitor_header)
+
+由 [**CoverAI**](https://coverai.store/?utm_source=github&utm_medium=repository&utm_campaign=codex_notch_monitor_header) 打造<br>
+发现实用的 AI 工具、订阅服务与中文使用指南。
+
+[访问 CoverAI 官网 →](https://coverai.store/?utm_source=github&utm_medium=repository&utm_campaign=codex_notch_monitor_header)
+
+</div>
+
+---
 
 一个原生 macOS 刘海/顶部胶囊应用，用于显示 Codex 剩余使用额度和本机任务状态。
 
