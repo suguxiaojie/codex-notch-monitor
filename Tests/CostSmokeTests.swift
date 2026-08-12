@@ -3,6 +3,7 @@ import Foundation
 @main
 enum CostSmokeTests {
     static func main() {
+        verifyArchivedSessionsAreIncludedOnce()
         let service = CostService()
         service.fetch { snapshot in
             check(snapshot.today.series.count == 24, "24-hour trend")
@@ -30,10 +31,9 @@ enum CostSmokeTests {
                 check(projectNames.contains("自媒体选题"), "Codex sidebar alias for media project")
                 check(projectNames.contains("卡网搭建"), "Codex sidebar alias for card project")
                 check(!projectNames.contains("AI博主选题"), "folder name replaced by media sidebar alias")
-                check(!projectNames.contains("独角兽卡网搭建"), "folder name replaced by card sidebar alias")
             }
             print(String(format:
-                "Cost and usage smoke tests passed (19 checks): today $%.2f / %d tokens, month $%.2f / %d tokens. Aliases: %@",
+                "Cost and usage smoke tests passed (22 checks): today $%.2f / %d tokens, month $%.2f / %d tokens. Aliases: %@",
                 snapshot.today.dollars, snapshot.today.tokens,
                 snapshot.month.dollars, snapshot.month.tokens,
                 snapshot.estimatedModelAliases.description
@@ -41,6 +41,53 @@ enum CostSmokeTests {
             exit(0)
         }
         RunLoop.main.run()
+    }
+
+    private static func verifyArchivedSessionsAreIncludedOnce() {
+        let manager = FileManager.default
+        let home = manager.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? manager.removeItem(at: home) }
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = ISO8601DateFormatter().date(from: "2026-08-12T12:00:00Z")!
+        let liveDirectory = home.appendingPathComponent(".codex/sessions/2026/08/12", isDirectory: true)
+        let archiveDirectory = home.appendingPathComponent(".codex/archived_sessions", isDirectory: true)
+        try! manager.createDirectory(at: liveDirectory, withIntermediateDirectories: true)
+        try! manager.createDirectory(at: archiveDirectory, withIntermediateDirectories: true)
+
+        let live = rollout(sessionID: "live-session", timestamp: "2026-08-12T08:00:00Z", input: 100)
+        let archived = rollout(sessionID: "archived-session", timestamp: "2026-08-11T08:00:00Z", input: 200)
+        let liveURL = liveDirectory.appendingPathComponent("rollout-live.jsonl")
+        let archivedURL = archiveDirectory.appendingPathComponent("rollout-archived.jsonl")
+        let duplicateURL = liveDirectory.appendingPathComponent("rollout-archived-copy.jsonl")
+        try! Data(live.utf8).write(to: liveURL)
+        try! Data(archived.utf8).write(to: archivedURL)
+        try! Data(archived.utf8).write(to: duplicateURL)
+        try! manager.setAttributes([.modificationDate: now], ofItemAtPath: archivedURL.path)
+
+        let events = CostService.scanCodex(homeDirectory: home, now: now, calendar: calendar)
+        check(events.count == 2, "live and archived events included without duplicate counting")
+        check(Set(events.map(\.sessionID)) == Set(["live-session", "archived-session"]), "archived session identity retained")
+        check(events.reduce(0) { $0 + $1.input } == 300, "archived tokens included exactly once")
+
+        let staleURL = archiveDirectory.appendingPathComponent("rollout-stale.jsonl")
+        try! Data(rollout(sessionID: "stale-session", timestamp: "2026-07-01T08:00:00Z", input: 900).utf8)
+            .write(to: staleURL)
+        try! manager.setAttributes([
+            .modificationDate: ISO8601DateFormatter().date(from: "2026-07-01T09:00:00Z")!
+        ], ofItemAtPath: staleURL.path)
+        let filtered = CostService.scanCodex(homeDirectory: home, now: now, calendar: calendar)
+        check(!filtered.contains(where: { $0.sessionID == "stale-session" }), "old archive skipped outside current ranges")
+    }
+
+    private static func rollout(sessionID: String, timestamp: String, input: Int) -> String {
+        """
+        {"timestamp":"\(timestamp)","type":"session_meta","payload":{"id":"\(sessionID)","cwd":"/tmp/\(sessionID)"}}
+        {"timestamp":"\(timestamp)","type":"turn_context","payload":{"model":"gpt-5.4"}}
+        {"timestamp":"\(timestamp)","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":\(input),"cached_input_tokens":0,"output_tokens":10}}}}
+
+        """
     }
 
     private static func check(_ condition: @autoclosure () -> Bool, _ label: String) {

@@ -89,7 +89,7 @@ struct CostSnapshot: Equatable {
     )
 }
 
-private struct TokenUsageEvent {
+struct TokenUsageEvent {
     let provider: CostProvider
     let timestamp: Date
     let model: String
@@ -160,13 +160,19 @@ final class CostService {
         }
     }
 
-    private static func scanCodex() -> [TokenUsageEvent] {
-        let root = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".codex/sessions", isDirectory: true)
-        let calendar = Calendar.current
-        let now = Date()
+    /// Reads both live and archived Codex rollouts. Codex moves a rollout from
+    /// `sessions` to `archived_sessions` when the user archives a task, but the
+    /// token history remains valid for Usage and Cost. Treating the live tree
+    /// as the only source made historical totals shrink after archiving.
+    static func scanCodex(
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> [TokenUsageEvent] {
+        let root = homeDirectory.appendingPathComponent(".codex/sessions", isDirectory: true)
         let monthStart = calendar.date(from: calendar.dateComponents([.year, .month], from: now)) ?? now
         let weekStart = startOfWeek(containing: now, calendar: calendar)
+        let earliestRelevantDate = min(monthStart, weekStart)
         let roots = Set([monthStart, weekStart].compactMap { date -> String? in
             let parts = calendar.dateComponents([.year, .month], from: date)
             guard let year = parts.year, let month = parts.month else { return nil }
@@ -175,8 +181,51 @@ final class CostService {
                 .appendingPathComponent(String(format: "%02d", month), isDirectory: true)
                 .path
         })
-        return roots.flatMap { jsonlFiles(in: URL(fileURLWithPath: $0, isDirectory: true)) }
-            .flatMap(parseCodexFile)
+        let liveFiles = roots.flatMap {
+            jsonlFiles(in: URL(fileURLWithPath: $0, isDirectory: true))
+        }
+        let archiveRoot = homeDirectory.appendingPathComponent(
+            ".codex/archived_sessions",
+            isDirectory: true
+        )
+        // archived_sessions is normally flat. Filter by the rollout's last
+        // content change so a large archive does not need to be parsed on every
+        // refresh; any rollout containing a current week/month event must have
+        // been written during that same range.
+        let archivedFiles = jsonlFiles(in: archiveRoot).filter {
+            modificationDate(of: $0) >= earliestRelevantDate
+        }
+        let events = (liveFiles + archivedFiles).flatMap(parseCodexFile)
+        return deduplicated(events)
+    }
+
+    private struct TokenEventIdentity: Hashable {
+        let sessionID: String
+        let timestamp: Date
+        let model: String
+        let input: Int
+        let output: Int
+        let cacheCreate: Int
+        let cacheRead: Int
+    }
+
+    /// Moving a rollout is usually atomic, but interrupted migrations or a
+    /// copied archive can temporarily leave the same JSONL in both roots.
+    /// De-duplicate structural token records without using projectPath, because
+    /// the same session may legitimately carry a newer renamed project path.
+    private static func deduplicated(_ events: [TokenUsageEvent]) -> [TokenUsageEvent] {
+        var seen = Set<TokenEventIdentity>()
+        return events.filter { event in
+            seen.insert(TokenEventIdentity(
+                sessionID: event.sessionID,
+                timestamp: event.timestamp,
+                model: event.model,
+                input: event.input,
+                output: event.output,
+                cacheCreate: event.cacheCreate,
+                cacheRead: event.cacheRead
+            )).inserted
+        }
     }
 
     private static func parseCodexFile(_ url: URL) -> [TokenUsageEvent] {
@@ -303,6 +352,11 @@ final class CostService {
             else { return nil }
             return url
         }
+    }
+
+    private static func modificationDate(of url: URL) -> Date {
+        (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+            ?? .distantPast
     }
 
     /// Codex sidebar project names are user-editable aliases whose filesystem

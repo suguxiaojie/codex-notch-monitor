@@ -4,7 +4,7 @@
 
 **在 Mac 顶部实时掌握 Codex 额度、成本与多项目运行状态**
 
-[![Download v1.0.0](https://img.shields.io/badge/Download-v1.0.0-27C2FF?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/suguxiaojie/codex-notch-monitor/releases/latest)
+[![Download v1.1.1](https://img.shields.io/badge/Download-v1.1.1-27C2FF?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/suguxiaojie/codex-notch-monitor/releases/latest)
 [![CoverAI](https://img.shields.io/badge/Built%20by-CoverAI-111827?style=for-the-badge&labelColor=111827&color=0EA5E9)](https://coverai.store/?utm_source=github&utm_medium=repository&utm_campaign=codex_notch_monitor_header)
 
 由 [**CoverAI**](https://coverai.store/?utm_source=github&utm_medium=repository&utm_campaign=codex_notch_monitor_header) 打造<br>
@@ -27,7 +27,7 @@
 - 只读监听最近活跃的多份 Codex 会话，通过结构化 `task_started` / `task_complete` 信号同时识别多个项目；同一路径的多个会话会聚合为一个项目，等待批准的项目优先成为收起栏焦点。
 - 展开面板实时显示最近的进度播报与动作级工具记录；可区分正在/已完成的读取文件、搜索、修改文件、验证、图片检查和普通命令，收起栏显示最新短摘要。
 - 展开页将“活跃项目”和“实时动作”分工显示：项目卡只保留项目名称、运行会话数与阶段状态，最新动作统一放在下方时间线；收起态悬停预览仍显示项目名与最新动作，便于不展开面板快速查看进度。
-- Usage 页复用本地结构化会话日志的一次扫描，支持今日／本周／本月切换；分别显示 Token 总量、输入／输出／缓存拆分、会话与项目数量、按小时或按日的非累计折线趋势，以及根据真实 `session_meta.cwd` 聚合的项目排行。趋势使用青色折线、渐变面积和“统计截至当前”的末端光点，只绘制到当前小时／当前星期／今天，不会把未来空桶画成虚假的骤降；鼠标在折线区域移动时会吸附最近节点，以参考线、光点和气泡显示对应小时或日期的精确 Token；切换周期只使用内存快照，不会重新扫描磁盘。
+- Usage 页复用本地结构化会话日志的一次扫描，同时统计 `~/.codex/sessions/` 与 `~/.codex/archived_sessions/`，会话归档后当日／本周／本月的 Usage 和 Cost 不会减少；若迁移期间两处短暂存在同一会话，会按结构化 Token 事件去重。页面支持今日／本周／本月切换；分别显示 Token 总量、输入／输出／缓存拆分、会话与项目数量、按小时或按日的非累计折线趋势，以及根据真实 `session_meta.cwd` 聚合的项目排行。趋势使用青色折线、渐变面积和“统计截至当前”的末端光点，只绘制到当前小时／当前星期／今天，不会把未来空桶画成虚假的骤降；鼠标在折线区域移动时会吸附最近节点，以参考线、光点和气泡显示对应小时或日期的精确 Token；切换周期只使用内存快照，不会重新扫描磁盘。
 - 项目目录在会话运行期间改名时，插件会用同一 `session_id` 的最新 Hook 路径覆盖历史 `session_meta.cwd`，因此改名前后的 Token 会合并到新项目名；顶部刷新按钮会同时刷新额度、运行状态与 Usage/Cost，而不再只刷新额度。
 - Usage 项目排行以完整路径作为稳定统计主键，但显示名称优先读取 Codex 本地 `local-projects` 的侧栏别名；因此只在 Codex 左侧栏修改项目名（不修改磁盘文件夹）后，刷新即可同步为新名称。未设置侧栏别名时才回退到文件夹名称。
 - 收起栏顶部仅在摄像头左右安全翼显示项目数量/运行状态和额度，物理摄像头所在中段不再放置文字。摄像头下方使用自适应项目板：1 个项目单列、2 个项目左右双列、3 个项目采用“2＋1”、4 个项目采用“2×2”，超过 4 个时显示 3 个高优先级项目和一个 `+N` 汇总格。每格独立显示状态点、项目名与动作摘要，点击会展开并选中该项目；项目槽位在运行期间保持稳定。
@@ -143,7 +143,7 @@ build/CodexNotchMonitor-v<version>-<architecture>.dmg
 - Hook 提供的会话 ID、Turn ID、工作目录、模型、工具名称、事件名称和时间。
 - `~/Library/Application Support/CodexNotchMonitor/events/` 下的临时事件文件。
 - `~/.codex/sessions/` 最近 24 小时有写入的候选会话 JSONL 中的任务边界、工作目录、模型、commentary 进度文字，以及工具名称/命令短摘要。会话按实际修改时间跨日期目录发现，不以任务创建日期判断活跃性。
-- Cost 页扫描当月 Codex JSONL 中的 `turn_context.payload.model` 和 `event_msg.token_count.info.last_token_usage`，不读取提示词、回答或工具输出正文。
+- Cost 页扫描当月活动及已归档 Codex JSONL 中的 `turn_context.payload.model` 和 `event_msg.token_count.info.last_token_usage`，不读取提示词、回答或工具输出正文。
 - Cost 模型价格来自 CodexIsland 的公开 HTTPS 目录。应用先使用本地缓存或内置价格立即计算，后台每 24 小时最多成功刷新一次；失败后至少等待 6 小时再重试。请求使用 ETag，目录未变化时不重复下载正文。
 
 应用不会保存或显示：
