@@ -29,6 +29,12 @@
 - 展开页标题以可点击的 `BY COVERAI ↗` 标注产品归属，Usage 与 Cost 内容末尾提供一张轻量 CoverAI 官网入口卡，菜单栏备用入口也可直接访问官网；三个入口使用固定的 `https://coverai.store/` 域名与独立 UTM 活动参数，不会附带额度、项目名、日志或其他本机数据。套餐类型移到“剩余额度”标题行，避免与品牌归属信息混在一起。
 - 纯 Swift Package 构建，不要求完整 Xcode，Command Line Tools 即可。
 
+## 下载已构建版本
+
+在 GitHub [Releases](https://github.com/suguxiaojie/codex-notch-monitor/releases) 下载对应版本的 DMG。当前发布包为 Apple Silicon `arm64` 架构；打开 DMG 后，将 `CodexNotchMonitor.app` 拖入 `Applications` 即可。
+
+当前应用使用 ad-hoc 本地签名，尚未使用 Apple Developer ID 公证。macOS 第一次启动若拦截，可在“系统设置 → 隐私与安全性”中确认打开。安装后仍需按下文说明审核 Codex 用户级 Hook。
+
 ## 系统要求
 
 - macOS 13 或更新版本。
@@ -47,6 +53,18 @@ open build/CodexNotchMonitor.app
 
 ```text
 build/CodexNotchMonitor.app
+```
+
+生成可发布的 DMG：
+
+```bash
+./scripts/build-dmg.sh
+```
+
+脚本会重新执行 Release 构建、校验应用签名，并生成带 `Applications` 快捷方式的只读压缩镜像：
+
+```text
+build/CodexNotchMonitor-v<version>-<architecture>.dmg
 ```
 
 ## 安装到 Applications
