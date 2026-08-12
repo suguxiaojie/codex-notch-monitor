@@ -11,6 +11,7 @@ final class QuotaService {
     private var inputHandle: FileHandle?
     private var buffer = Data()
     private var completion: ((Result<[RateLimitBucket], Error>) -> Void)?
+    private var timeoutWorkItem: DispatchWorkItem?
     private let queue = DispatchQueue(label: "com.coverai.codex-notch-monitor.quota")
 
     func fetch(completion: @escaping (Result<[RateLimitBucket], Error>) -> Void) {
@@ -47,6 +48,7 @@ final class QuotaService {
 
             do {
                 try process.run()
+                self.scheduleTimeout()
                 self.send([
                     "method": "initialize",
                     "id": 1,
@@ -106,6 +108,8 @@ final class QuotaService {
     }
 
     private func finish(_ result: Result<[RateLimitBucket], Error>) {
+        timeoutWorkItem?.cancel()
+        timeoutWorkItem = nil
         let callback = completion
         completion = nil
         stopCurrentProcess()
@@ -121,6 +125,16 @@ final class QuotaService {
         process = nil
         inputHandle = nil
         outputHandle = nil
+    }
+
+    private func scheduleTimeout() {
+        timeoutWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self, self.completion != nil else { return }
+            self.finish(.failure(ProtocolError(message: "额度接口响应超时")))
+        }
+        timeoutWorkItem = item
+        queue.asyncAfter(deadline: .now() + 12, execute: item)
     }
 
     static func resolveCodexExecutable() -> URL? {

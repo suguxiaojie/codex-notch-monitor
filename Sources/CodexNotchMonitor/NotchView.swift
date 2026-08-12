@@ -294,11 +294,24 @@ struct NotchView: View {
                     .font(.system(size: 12, weight: .bold, design: .rounded))
                     .foregroundStyle(quotaColor(for: window.remainingPercent))
                     .monospacedDigit()
+                if quotaDataIsStale {
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .font(.system(size: 7, weight: .bold))
+                        .foregroundStyle(.orange)
+                        .help(quotaErrorText ?? "额度数据可能已过期")
+                }
             } else if case .loading = store.quotaState {
                 ProgressView().controlSize(.small).tint(.white)
             } else {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
+                HStack(spacing: 3) {
+                    Text("--%")
+                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .font(.system(size: 7, weight: .bold))
+                }
+                .foregroundStyle(.orange)
+                .help(quotaErrorText ?? "暂时无法读取额度，正在自动重试")
             }
         }
         .padding(.horizontal, 9)
@@ -974,6 +987,11 @@ struct NotchView: View {
     private var quotaErrorText: String? {
         if case let .failed(message, _) = store.quotaState { return message }
         return nil
+    }
+
+    private var quotaDataIsStale: Bool {
+        if case .failed = store.quotaState { return true }
+        return false
     }
 
     private var currentTask: MonitoredTask? { store.currentTask }

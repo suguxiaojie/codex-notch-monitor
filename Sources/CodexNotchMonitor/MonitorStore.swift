@@ -29,6 +29,9 @@ final class MonitorStore: ObservableObject {
     private let costService = CostService()
     private var eventTimer: Timer?
     private var quotaTimer: Timer?
+    private var quotaRetryWorkItem: DispatchWorkItem?
+    private var consecutiveQuotaFailures = 0
+    private var isRefreshingQuota = false
     private var sessionTimer: Timer?
     private var isReadingSession = false
     private var costTimer: Timer?
@@ -128,17 +131,38 @@ final class MonitorStore: ObservableObject {
     }
 
     func refreshQuota() {
+        guard !isRefreshingQuota else { return }
+        isRefreshingQuota = true
         let previous = quotaState.buckets
         if previous.isEmpty { quotaState = .loading }
         quotaService.fetch { [weak self] result in
             guard let self else { return }
+            self.isRefreshingQuota = false
             switch result {
             case let .success(buckets):
+                self.quotaRetryWorkItem?.cancel()
+                self.quotaRetryWorkItem = nil
+                self.consecutiveQuotaFailures = 0
                 self.quotaState = .loaded(buckets, Date())
             case let .failure(error):
                 self.quotaState = .failed(error.localizedDescription, previous: previous)
+                self.scheduleQuotaRetry()
             }
         }
+    }
+
+    private func scheduleQuotaRetry() {
+        quotaRetryWorkItem?.cancel()
+        consecutiveQuotaFailures += 1
+        // Startup/network races normally recover quickly. Back off to avoid
+        // repeatedly spawning App Server while connectivity is genuinely down.
+        let delays: [TimeInterval] = [8, 20, 60]
+        let delay = delays[min(consecutiveQuotaFailures - 1, delays.count - 1)]
+        let workItem = DispatchWorkItem { [weak self] in
+            Task { @MainActor in self?.refreshQuota() }
+        }
+        quotaRetryWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
     }
 
     func refreshCost() {

@@ -378,6 +378,18 @@ final class NotchWindowController: NSObject {
         guard let left = screen.auxiliaryTopLeftArea,
               let right = screen.auxiliaryTopRightArea
         else {
+            // `auxiliaryTop*Area` can transiently become nil while macOS
+            // rebuilds the menu bar after wake, resolution changes, or status
+            // item updates. A positive top safe-area still identifies a
+            // physical notch, so retain the last reliable/default notch
+            // geometry instead of flashing the no-notch 276 pt layout.
+            if screen.safeAreaInsets.top > 0 {
+                store.displayCutoutMode = .notched
+                installFallbackNotchGeometryIfNeeded()
+                store.compactMenuBarHeight = navigationBarHeight
+                store.compactPanelHeight = compactHeight
+                return
+            }
             store.displayCutoutMode = .standardMenuBar
             store.notchObstructionWidth = 0
             // There is no physical cutout on Intel MacBooks and ordinary
@@ -388,30 +400,44 @@ final class NotchWindowController: NSObject {
             store.compactPanelHeight = compactHeight
             return
         }
-        store.displayCutoutMode = .notched
 
-        let measuredSafeGap = max(0, right.minX - left.maxX)
+        // Reject malformed/transitional auxiliary rectangles. In particular,
+        // their inner edges must form a plausible central camera gap.
+        let measuredSafeGap = right.minX - left.maxX
+        guard left.width > 0,
+              right.width > 0,
+              measuredSafeGap >= 80,
+              measuredSafeGap <= 308
+        else { return }
+
         // NSScreen's auxiliary areas describe Apple's conservative menu-bar safe
         // zone, not only the opaque camera housing. It includes roughly 14 pt of
         // unused padding on each side on notched MacBooks. Reclaim that padding so
         // labels approach the visible hardware while retaining a small hard floor.
-        let hardwareGap = max(140, measuredSafeGap - 28)
+        let hardwareGap = max(CompactGeometryPolicy.minimumNotchGap, measuredSafeGap - 28)
 
         // Menu extras are separate layer-25 windows. Their closest leading edge is
         // the real-time right boundary available to the island. This reacts to
         // hidden/shown status items without requesting Accessibility permission.
-        let rightBoundary = nearestRightMenuItemX(on: screen, after: right.minX) ?? right.maxX
-        let rightCapacity = max(105, rightBoundary - right.minX - 16)
-        let balancedWingWidth = min(190, left.width - 12, rightCapacity)
+        // A missing layer-25 menu item sample is not permission to consume the
+        // entire right auxiliary area. Keep the prior width until the next
+        // reliable 0.6 s sample rather than stretching to the screen edge.
+        guard let rightBoundary = nearestRightMenuItemX(on: screen, after: right.minX),
+              let fittedPanelWidth = CompactGeometryPolicy.fittedNotchedPanelWidth(
+                hardwareGap: hardwareGap,
+                leftCapacity: left.width - 12,
+                rightCapacity: rightBoundary - right.minX - 16,
+                screenWidth: screen.frame.width
+              )
+        else {
+            store.displayCutoutMode = .notched
+            installFallbackNotchGeometryIfNeeded()
+            store.compactMenuBarHeight = navigationBarHeight
+            store.compactPanelHeight = compactHeight
+            return
+        }
 
-        let measuredPanelWidth = min(
-            screen.frame.width - 32,
-            hardwareGap + balancedWingWidth * 2
-        )
-        // Keep the centered window on whole logical coordinates. An odd width
-        // places both vertical edges on half points in scaled display modes and
-        // can produce alternating dark/light edge pixels after compositor scaling.
-        let fittedPanelWidth = floor(measuredPanelWidth / 2) * 2
+        store.displayCutoutMode = .notched
         if abs(store.notchObstructionWidth - hardwareGap) > 0.5 {
             store.notchObstructionWidth = hardwareGap
         }
@@ -424,6 +450,15 @@ final class NotchWindowController: NSObject {
         if abs(store.compactPanelHeight - compactHeight) > 0.5 {
             store.compactPanelHeight = compactHeight
         }
+    }
+
+    private func installFallbackNotchGeometryIfNeeded() {
+        guard store.notchObstructionWidth < 80 else { return }
+        store.notchObstructionWidth = CompactGeometryPolicy.minimumNotchGap
+        store.compactPanelWidth = min(
+            CompactGeometryPolicy.maximumNotchedPanelWidth,
+            max(store.compactPanelWidth, CompactGeometryPolicy.minimumNotchGap + 180)
+        )
     }
 
     private func desiredCompactHeight() -> CGFloat {

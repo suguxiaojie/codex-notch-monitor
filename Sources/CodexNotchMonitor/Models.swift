@@ -245,6 +245,40 @@ enum CompactProjectLayout {
     }
 }
 
+/// Pure geometry rules shared by the window controller and smoke tests. Screen
+/// APIs can briefly lose their auxiliary notch areas while the menu bar is
+/// rebuilding; every accepted value must therefore remain inside the fixed
+/// SwiftUI host instead of allowing one bad sample to stretch the island.
+enum CompactGeometryPolicy {
+    static let minimumNotchGap: CGFloat = 140
+    static let minimumWingWidth: CGFloat = 105
+    static let maximumWingWidth: CGFloat = 190
+    static let maximumNotchedPanelWidth: CGFloat = IslandPanelLayout.expandedWidth
+
+    static func fittedNotchedPanelWidth(
+        hardwareGap: CGFloat,
+        leftCapacity: CGFloat,
+        rightCapacity: CGFloat,
+        screenWidth: CGFloat
+    ) -> CGFloat? {
+        guard hardwareGap >= 80,
+              hardwareGap <= 280,
+              leftCapacity >= minimumWingWidth,
+              rightCapacity >= minimumWingWidth,
+              screenWidth > 64
+        else { return nil }
+
+        let wingWidth = min(maximumWingWidth, leftCapacity, rightCapacity)
+        let measured = min(
+            screenWidth - 32,
+            maximumNotchedPanelWidth,
+            hardwareGap + wingWidth * 2
+        )
+        guard measured >= hardwareGap + minimumWingWidth * 2 else { return nil }
+        return floor(measured / 2) * 2
+    }
+}
+
 enum HookEventMapper {
     static func phase(for eventName: String) -> TaskPhase {
         switch eventName {

@@ -4,7 +4,7 @@
 
 **在 Mac 顶部实时掌握 Codex 额度、成本与多项目运行状态**
 
-[![Download v1.1.1](https://img.shields.io/badge/Download-v1.1.1-27C2FF?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/suguxiaojie/codex-notch-monitor/releases/latest)
+[![Download v1.1.2](https://img.shields.io/badge/Download-v1.1.2-27C2FF?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/suguxiaojie/codex-notch-monitor/releases/latest)
 [![CoverAI](https://img.shields.io/badge/Built%20by-CoverAI-111827?style=for-the-badge&labelColor=111827&color=0EA5E9)](https://coverai.store/?utm_source=github&utm_medium=repository&utm_campaign=codex_notch_monitor_header)
 
 由 [**CoverAI**](https://coverai.store/?utm_source=github&utm_medium=repository&utm_campaign=codex_notch_monitor_header) 打造<br>
@@ -37,6 +37,8 @@
 - 不读取推理内容、工具输出或项目文件内容；命令摘要会截断，并遮盖常见 Token、密钥和密码参数。
 - 有刘海屏幕使用系统报告的左右辅助区域测量摄像头宽度，收起态内容分布在刘海左右双翼；展开态整体位于刘海下方。无刘海或外接显示器显示顶部浮动胶囊。
 - 收起态高度跟随当前菜单栏高度；横向宽度会参考刘海几何和右侧实时菜单栏项目边界自动计算。中间留白按实体遮挡近似宽度计算，而不是 macOS 额外加宽的保守安全区；切换分辨率、显示器或菜单栏项目时会重新适配。
+- 菜单栏重排、唤醒或切换分辨率时，macOS 偶发返回瞬时缺失的刘海／菜单项几何；应用会保留上一次可靠布局，拒绝异常坐标并限制收起态最大宽度，避免偶发拉成横跨菜单栏的黑条。
+- 额度读取超过 12 秒会进入可恢复失败状态，并按 8 秒、20 秒、60 秒退避自动重试。若有上一次成功额度，会继续显示百分比并附加过期警告；首次启动无快照时显示 `--%` 而不是含义不明的单独感叹号。
 - 收起态、点击展开态、菜单栏备用入口、手动刷新和退出。
 - 展开后点击底部提示区，或点击桌面、其他应用、菜单栏等面板外区域，会自动收起；按钮点击不会误触发收起。
 - 缩略栏与完整面板采用 CodexIsland 式固定宿主窗口：AppKit 窗口本身不再随展开改变尺寸，只在 `460×560` 的固定透明宿主内让黑色岛体形变；展开内容区为 `430×500`，常见的“1 个项目＋3 条动作＋2 个额度桶”默认完整显示，数据更多时仍可纵向滚动。详细面板一直预挂载，避免点击帧临时构建整个卡片树。展开时缩略内容先淡出，约 220ms 后详细内容以淡入、轻微下移和去模糊进入；收起顺序相反。透明宿主区域通过自定义命中测试和鼠标穿透，不会挡住下面应用。

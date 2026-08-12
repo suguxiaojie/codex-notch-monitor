@@ -209,6 +209,42 @@ enum ModelSmokeTests {
             ) == ["project-b", "project-a", "project-c"],
             "preserve project slots while appending newcomers"
         )
+        check(
+            CompactGeometryPolicy.fittedNotchedPanelWidth(
+                hardwareGap: 140,
+                leftCapacity: 180,
+                rightCapacity: 150,
+                screenWidth: 1_512
+            ) == 430,
+            "notch geometry fits balanced wings within the host"
+        )
+        check(
+            CompactGeometryPolicy.fittedNotchedPanelWidth(
+                hardwareGap: 140,
+                leftCapacity: 600,
+                rightCapacity: 600,
+                screenWidth: 1_512
+            ) == 430,
+            "missing menu boundary cannot stretch compact island"
+        )
+        check(
+            CompactGeometryPolicy.fittedNotchedPanelWidth(
+                hardwareGap: 420,
+                leftCapacity: 180,
+                rightCapacity: 180,
+                screenWidth: 1_512
+            ) == nil,
+            "transitional oversized notch sample is rejected"
+        )
+        check(
+            CompactGeometryPolicy.fittedNotchedPanelWidth(
+                hardwareGap: 140,
+                leftCapacity: 180,
+                rightCapacity: 40,
+                screenWidth: 1_512
+            ) == nil,
+            "missing right menu capacity is rejected"
+        )
 
         let attributionURL = CoverAILinks.url(for: .brandAttribution)
         check(
@@ -228,7 +264,7 @@ enum ModelSmokeTests {
         )
         try? FileManager.default.removeItem(at: fixtureURL)
 
-        print("Model smoke tests passed (42 checks).")
+        print("Model smoke tests passed (46 checks).")
     }
 
     private static func check(_ condition: @autoclosure () -> Bool, _ label: String) {
