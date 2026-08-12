@@ -185,7 +185,7 @@ struct SessionActivityItem: Identifiable, Equatable {
     let kind: SessionActivityKind
     let title: String
     var isRunning: Bool
-    let updatedAt: Date
+    var updatedAt: Date
 }
 
 struct ActiveSessionState: Identifiable, Equatable {
@@ -203,6 +203,24 @@ struct ActiveProjectState: Identifiable, Equatable {
     let activities: [SessionActivityItem]
 
     var sessionCount: Int { sessions.count }
+
+    /// A project can merge several sessions whose activity arrays are not in
+    /// display order. Always select by the event timestamp so an old command
+    /// or progress message cannot occupy the compact project card.
+    var latestDisplayActivity: SessionActivityItem? {
+        activities.max { lhs, rhs in
+            if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt < rhs.updatedAt }
+            if lhs.isRunning != rhs.isRunning { return !lhs.isRunning && rhs.isRunning }
+            return activityDisplayPriority(lhs.kind) < activityDisplayPriority(rhs.kind)
+        }
+    }
+
+    private func activityDisplayPriority(_ kind: SessionActivityKind) -> Int {
+        switch kind {
+        case .progress: return 0
+        case .command, .read, .search, .fileChange, .tool: return 1
+        }
+    }
 }
 
 enum CompactProjectLayout {

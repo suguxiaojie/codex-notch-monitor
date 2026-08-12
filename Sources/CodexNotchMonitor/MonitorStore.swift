@@ -1,5 +1,10 @@
 import Foundation
 
+enum DisplayCutoutMode: Equatable {
+    case notched
+    case standardMenuBar
+}
+
 @MainActor
 final class MonitorStore: ObservableObject {
     @Published private(set) var quotaState: QuotaState = .loading
@@ -17,6 +22,7 @@ final class MonitorStore: ObservableObject {
     @Published var compactPanelHeight: CGFloat = 40
     @Published var compactMenuBarHeight: CGFloat = 33
     @Published var compactDetailsVisible = false
+    @Published var displayCutoutMode: DisplayCutoutMode = .notched
 
     private let quotaService = QuotaService()
     private let sessionActivityService = SessionActivityService()
@@ -66,6 +72,10 @@ final class MonitorStore: ObservableObject {
         isExpanded ? IslandPanelLayout.expandedWidth : compactPanelWidth
     }
 
+    var usesNotchLayout: Bool {
+        displayCutoutMode == .notched
+    }
+
     /// Expanded content starts below the hardware camera while the black
     /// silhouette remains flush with the screen top, like CodexIsland.
     var visibleIslandHeight: CGFloat {
@@ -89,8 +99,7 @@ final class MonitorStore: ObservableObject {
     /// the task-level headline in the menu bar.
     var compactDetailActivity: SessionActivityItem? {
         guard let project = focusedProject else { return nil }
-        return project.activities.first(where: { $0.kind != .progress })
-            ?? project.activities.first
+        return project.latestDisplayActivity
     }
 
     func selectProject(_ id: String) {

@@ -4,8 +4,9 @@ set -euo pipefail
 project_dir="${0:A:h:h}"
 source_app="$project_dir/build/CodexNotchMonitor.app"
 target_app="/Applications/CodexNotchMonitor.app"
+architecture="${1:-native}"
 
-"$project_dir/scripts/build-app.sh"
+"$project_dir/scripts/build-app.sh" "$architecture"
 
 if [[ -d "$target_app" ]]; then
   backup_dir="$project_dir/build/backups"

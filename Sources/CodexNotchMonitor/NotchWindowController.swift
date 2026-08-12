@@ -378,12 +378,17 @@ final class NotchWindowController: NSObject {
         guard let left = screen.auxiliaryTopLeftArea,
               let right = screen.auxiliaryTopRightArea
         else {
+            store.displayCutoutMode = .standardMenuBar
             store.notchObstructionWidth = 0
-            store.compactPanelWidth = min(326, screen.frame.width - 32)
+            // There is no physical cutout on Intel MacBooks and ordinary
+            // external displays. Keep the status capsule compact so it does not
+            // impersonate a notch or consume unnecessary menu-bar space.
+            store.compactPanelWidth = min(276, screen.frame.width - 32)
             store.compactMenuBarHeight = navigationBarHeight
             store.compactPanelHeight = compactHeight
             return
         }
+        store.displayCutoutMode = .notched
 
         let measuredSafeGap = max(0, right.minX - left.maxX)
         // NSScreen's auxiliary areas describe Apple's conservative menu-bar safe

@@ -47,13 +47,14 @@
 
 ## 下载已构建版本
 
-在 GitHub [Releases](https://github.com/suguxiaojie/codex-notch-monitor/releases) 下载对应版本的 DMG。当前发布包为 Apple Silicon `arm64` 架构；打开 DMG 后，将 `CodexNotchMonitor.app` 拖入 `Applications` 即可。
+在 GitHub [Releases](https://github.com/suguxiaojie/codex-notch-monitor/releases) 下载对应版本的 DMG。从 `v1.1.0` 起，`universal` 安装包同时原生支持 Apple Silicon `arm64` 和 Intel `x86_64`；打开 DMG 后，将 `CodexNotchMonitor.app` 拖入 `Applications` 即可。已发布的 `v1.0.0` 仍是仅支持 Apple Silicon 的历史版本。
 
 当前应用使用 ad-hoc 本地签名，尚未使用 Apple Developer ID 公证。macOS 第一次启动若拦截，可在“系统设置 → 隐私与安全性”中确认打开。安装后仍需按下文说明审核 Codex 用户级 Hook。
 
 ## 系统要求
 
 - macOS 13 或更新版本。
+- Apple Silicon 或 64 位 Intel Mac。
 - Swift 6 / Xcode Command Line Tools。
 - 已安装并登录 Codex 或 ChatGPT 桌面端。
 
@@ -71,22 +72,40 @@ open build/CodexNotchMonitor.app
 build/CodexNotchMonitor.app
 ```
 
+`build-app.sh` 默认按当前 Mac 的原生架构构建，适合本地开发。也可以显式生成单架构或 Universal 2 应用：
+
+```bash
+./scripts/build-app.sh arm64
+./scripts/build-app.sh x86_64
+./scripts/build-app.sh universal
+```
+
+Universal 构建会分别编译主程序与 Hook 的 `arm64`、`x86_64` 版本，再用 `lipo` 合并；合并完成后才进行应用签名。
+
 生成可发布的 DMG：
 
 ```bash
 ./scripts/build-dmg.sh
 ```
 
-脚本会重新执行 Release 构建、校验应用签名，并生成带 `Applications` 快捷方式的只读压缩镜像：
+DMG 脚本默认生成 Universal 2 版本，也可以传入 `arm64` 或 `x86_64`。脚本会重新执行 Release 构建、校验应用签名，并生成带 `Applications` 快捷方式的只读压缩镜像：
 
 ```text
 build/CodexNotchMonitor-v<version>-<architecture>.dmg
 ```
 
+在带刘海的 MacBook 上，收起态继续使用左右安全翼布局；在 Intel Mac 和无刘海外接显示器上，应用会自动切换为不预留摄像头空白的紧凑菜单栏胶囊。
+
 ## 安装到 Applications
 
 ```bash
 ./scripts/install-app.sh
+```
+
+默认安装当前 Mac 的原生架构开发版本；要安装与 Release 相同的双架构应用，可执行：
+
+```bash
+./scripts/install-app.sh universal
 ```
 
 该命令会：

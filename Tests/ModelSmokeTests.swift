@@ -88,6 +88,11 @@ enum ModelSmokeTests {
         let completedSnapshot = activityService.readSnapshot(from: fixtureURL)
         check(completedSnapshot?.isActive == false, "completed task boundary")
         check(completedSnapshot?.activities.first?.isRunning == false, "completed tool state")
+        check(
+            completedSnapshot?.activities.first?.updatedAt
+                == ISO8601DateFormatter().date(from: "2026-08-12T06:00:02Z"),
+            "tool completion carries its event timestamp"
+        )
 
         let baseDate = Date(timeIntervalSince1970: 1_786_000_000)
         let projectA = LocalSessionSnapshot(
@@ -122,6 +127,40 @@ enum ModelSmokeTests {
         check(projects.count == 2, "aggregate concurrent projects")
         check(projects.first?.name == "ProjectB", "approval project receives focus")
         check(projects.first?.task.phase == .waitingApproval, "approval phase preserved")
+
+        let catalogFixture: [String: Any] = [
+            "local-projects": [
+                "project-id": [
+                    "name": "自媒体选题",
+                    "rootPaths": ["/tmp/AI博主选题"],
+                ],
+            ],
+        ]
+        let catalogData = try! JSONSerialization.data(withJSONObject: catalogFixture)
+        let catalogNames = CodexProjectCatalog.namesByPath(from: catalogData)
+        check(catalogNames["/tmp/AI博主选题"] == "自媒体选题", "read Codex saved project label")
+        check(
+            CodexProjectCatalog.displayName(
+                for: "/tmp/AI博主选题/Sources",
+                namesByPath: catalogNames
+            ) == "自媒体选题",
+            "saved project label also resolves child cwd"
+        )
+
+        let oldActivity = SessionActivityItem(
+            id: "old", kind: .command, title: "运行旧命令",
+            isRunning: false, updatedAt: baseDate
+        )
+        let newestActivity = SessionActivityItem(
+            id: "new", kind: .read, title: "读取最新文件",
+            isRunning: true, updatedAt: baseDate.addingTimeInterval(30)
+        )
+        let unsortedProject = ActiveProjectState(
+            id: "/tmp/ProjectA", name: "ProjectA", path: "/tmp/ProjectA",
+            sessions: [], task: projects.last!.task,
+            activities: Array([newestActivity, oldActivity].reversed())
+        )
+        check(unsortedProject.latestDisplayActivity?.id == "new", "compact card selects newest real activity")
 
         let renamedHook = MonitoredTask(
             id: "session-a", turnID: "turn-a", projectName: "ProjectA-Renamed",
@@ -189,7 +228,7 @@ enum ModelSmokeTests {
         )
         try? FileManager.default.removeItem(at: fixtureURL)
 
-        print("Model smoke tests passed (38 checks).")
+        print("Model smoke tests passed (42 checks).")
     }
 
     private static func check(_ condition: @autoclosure () -> Bool, _ label: String) {

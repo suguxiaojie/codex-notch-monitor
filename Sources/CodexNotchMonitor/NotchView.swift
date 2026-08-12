@@ -207,33 +207,21 @@ struct NotchView: View {
     }
 
     private var compactTopRow: some View {
-        HStack(spacing: 0) {
-            HStack(spacing: 8) {
-                GPTStatusMark(
-                    active: hasLiveActivity,
-                    color: statusColor,
-                    refreshToken: compactStatusRefreshToken
-                )
-                Text(compactTopStatusText)
-                    .font(.system(size: 11, weight: .semibold))
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
+        Group {
+            if store.usesNotchLayout {
+                notchedCompactTopRow
+            } else {
+                standardCompactTopRow
             }
-            .padding(.horizontal, 9)
-            .frame(height: 23)
-            .background(
-                Capsule(style: .continuous)
-                    .fill(idleAccent.opacity(compactHovered ? 0.13 : 0.075))
-                    .overlay {
-                        Capsule(style: .continuous)
-                            .strokeBorder(idleAccent.opacity(compactHovered ? 0.30 : 0.16), lineWidth: 0.6)
-                    }
-            )
+        }
+    }
+
+    private var notchedCompactTopRow: some View {
+        HStack(spacing: 0) {
+            statusWing
             .padding(.leading, 14)
             .frame(width: compactWingWidth, alignment: .leading)
             .clipped()
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("Codex \(compactTopStatusText)")
 
             // A real three-zone layout: neither wing is allowed to lay out into
             // the physical camera span, even when labels are compressed.
@@ -246,6 +234,44 @@ struct NotchView: View {
                 .frame(width: compactWingWidth, alignment: .trailing)
                 .clipped()
         }
+    }
+
+    /// Standard Intel MacBooks and ordinary external displays have no opaque
+    /// camera housing to merge with. Use one compact, balanced capsule instead
+    /// of preserving a fake central gap.
+    private var standardCompactTopRow: some View {
+        HStack(spacing: 10) {
+            statusWing
+            Spacer(minLength: 8)
+            quotaWing
+        }
+        .padding(.horizontal, 12)
+    }
+
+    private var statusWing: some View {
+        HStack(spacing: 8) {
+            GPTStatusMark(
+                active: hasLiveActivity,
+                color: statusColor,
+                refreshToken: compactStatusRefreshToken
+            )
+            Text(compactTopStatusText)
+                .font(.system(size: 11, weight: .semibold))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+        }
+        .padding(.horizontal, 9)
+        .frame(height: 23)
+        .background(
+            Capsule(style: .continuous)
+                .fill(idleAccent.opacity(compactHovered ? 0.13 : 0.075))
+                .overlay {
+                    Capsule(style: .continuous)
+                        .strokeBorder(idleAccent.opacity(compactHovered ? 0.30 : 0.16), lineWidth: 0.6)
+                }
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Codex \(compactTopStatusText)")
     }
 
     private var compactCameraGapWidth: CGFloat {
@@ -903,7 +929,7 @@ struct NotchView: View {
                         .font(.system(size: 8, weight: .medium))
                         .foregroundStyle(.white.opacity(0.34))
                 }
-                if activities.first?.isRunning == true {
+                if project?.latestDisplayActivity?.isRunning == true {
                     ProgressView().controlSize(.mini).tint(.cyan)
                 }
             }
@@ -973,7 +999,7 @@ struct NotchView: View {
     }
 
     private func projectActionText(_ project: ActiveProjectState) -> String {
-        project.activities.first.map(activityDisplayTitle) ?? project.task.phase.title
+        project.latestDisplayActivity.map(activityDisplayTitle) ?? project.task.phase.title
     }
     private var compactStatusText: String {
         if let activity = store.sessionActivities.first {
@@ -1097,7 +1123,7 @@ private struct CompactProjectCell: View {
     }
 
     private var detailSymbol: String {
-        if let activity = project.activities.first { return activity.kind.symbol }
+        if let activity = project.latestDisplayActivity { return activity.kind.symbol }
         switch project.task.phase {
         case .waitingApproval: return "hand.raised.fill"
         case .usingTool: return "terminal.fill"

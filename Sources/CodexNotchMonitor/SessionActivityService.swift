@@ -121,8 +121,10 @@ final class SessionActivityService {
                   let payload = object["payload"] as? [String: Any]
             else { continue }
 
+            var eventTimestamp = latestTimestamp
             if let timestamp = object["timestamp"] as? String,
                let parsed = Self.parseDate(timestamp) {
+                eventTimestamp = parsed
                 latestTimestamp = max(latestTimestamp, parsed)
             }
 
@@ -143,19 +145,22 @@ final class SessionActivityService {
                           let message = payload["message"] as? String,
                           let summary = Self.progressSummary(message)
                     else { break }
+                    for index in activities.indices where activities[index].kind == .progress {
+                        activities[index].isRunning = false
+                    }
                     activities.append(SessionActivityItem(
-                        id: "progress-\(latestTimestamp.timeIntervalSince1970)",
+                        id: "progress-\(eventTimestamp.timeIntervalSince1970)",
                         kind: .progress,
                         title: summary,
                         isRunning: true,
-                        updatedAt: latestTimestamp
+                        updatedAt: eventTimestamp
                     ))
                 default: break
                 }
             case "response_item":
                 switch payload["type"] as? String {
                 case "custom_tool_call":
-                    let callID = (payload["call_id"] as? String) ?? "tool-\(latestTimestamp.timeIntervalSince1970)"
+                    let callID = (payload["call_id"] as? String) ?? "tool-\(eventTimestamp.timeIntervalSince1970)"
                     let name = payload["name"] as? String ?? "tool"
                     let input = payload["input"] as? String ?? ""
                     if let last = activities.indices.last, activities[last].kind == .progress {
@@ -166,7 +171,7 @@ final class SessionActivityService {
                         kind: Self.activityKind(for: name, input: input),
                         title: Self.toolSummary(name: name, input: input),
                         isRunning: true,
-                        updatedAt: latestTimestamp
+                        updatedAt: eventTimestamp
                     ))
                     activityIndices[callID] = activities.count - 1
                 case "custom_tool_call_output":
@@ -175,6 +180,7 @@ final class SessionActivityService {
                           activities.indices.contains(index)
                     else { break }
                     activities[index].isRunning = false
+                    activities[index].updatedAt = eventTimestamp
                 default:
                     break
                 }
@@ -195,7 +201,10 @@ final class SessionActivityService {
             model: model,
             isActive: active,
             updatedAt: latestTimestamp,
-            activities: Array(activities.suffix(6).reversed())
+            activities: Array(activities.suffix(6)).sorted {
+                if $0.updatedAt != $1.updatedAt { return $0.updatedAt > $1.updatedAt }
+                return $0.isRunning && !$1.isRunning
+            }
         )
     }
 
@@ -341,20 +350,24 @@ enum ProjectActivityAggregator {
         hookTasks: [MonitoredTask],
         now: Date = Date()
     ) -> [ActiveProjectState] {
+        let projectNames = CodexProjectCatalog.loadNamesByPath()
         let latestHooks = Dictionary(grouping: hookTasks, by: \.id).compactMapValues {
             $0.max(by: { $0.updatedAt < $1.updatedAt })
         }
         var sessions: [String: ActiveSessionState] = [:]
 
         for snapshot in snapshots where snapshot.isActive {
-            let runningTool = snapshot.activities.first(where: { $0.kind != .progress })?.isRunning == true
+            let runningTool = snapshot.activities
+                .filter { $0.kind != .progress }
+                .max(by: { $0.updatedAt < $1.updatedAt })?
+                .isRunning == true
             var phase: TaskPhase = runningTool ? .usingTool : .working
             if let hook = latestHooks[snapshot.sessionID], hook.phase.isActive,
                hook.phase.attentionPriority < phase.attentionPriority {
                 phase = hook.phase
             }
             let path = normalizedPath(snapshot.cwd, sessionID: snapshot.sessionID)
-            let name = projectName(path: snapshot.cwd)
+            let name = projectName(path: snapshot.cwd, projectNames: projectNames)
             let task = MonitoredTask(
                 id: snapshot.sessionID,
                 turnID: snapshot.turnID,
@@ -378,7 +391,7 @@ enum ProjectActivityAggregator {
                 let hookPath = normalizedPath(hook.projectPath, sessionID: hook.id)
                 if hookPath != task.projectPath {
                     task.projectPath = hookPath
-                    task.projectName = projectName(path: hookPath)
+                    task.projectName = projectName(path: hookPath, projectNames: projectNames)
                 }
                 if hook.phase.attentionPriority <= existing.task.phase.attentionPriority {
                     task.phase = hook.phase
@@ -396,7 +409,8 @@ enum ProjectActivityAggregator {
         }
         return grouped.map { path, group in
             let orderedSessions = group.sorted(by: sessionComesFirst)
-            let representative = orderedSessions[0].task
+            var representative = orderedSessions[0].task
+            representative.projectName = projectName(path: path, projectNames: projectNames)
             let mergedActivities = orderedSessions.flatMap { session in
                 session.activities.map { activity in
                     SessionActivityItem(
@@ -449,8 +463,60 @@ enum ProjectActivityAggregator {
         return URL(fileURLWithPath: raw).standardizedFileURL.path
     }
 
-    private static func projectName(path: String) -> String {
+    private static func projectName(path: String, projectNames: [String: String]) -> String {
+        if let savedName = CodexProjectCatalog.displayName(for: path, namesByPath: projectNames) {
+            return savedName
+        }
         let name = URL(fileURLWithPath: path).lastPathComponent
         return name.isEmpty ? "Codex 任务" : name
+    }
+}
+
+/// Codex Desktop keeps user-renamed project labels in this non-sensitive local
+/// state file. Reading it on each activity refresh makes sidebar renames appear
+/// without restarting the monitor; the directory name remains a safe fallback.
+enum CodexProjectCatalog {
+    private static var stateURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".codex/.codex-global-state.json")
+    }
+
+    static func loadNamesByPath() -> [String: String] {
+        guard let data = try? Data(contentsOf: stateURL) else { return [:] }
+        return namesByPath(from: data)
+    }
+
+    static func namesByPath(from data: Data) -> [String: String] {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let projects = root["local-projects"] as? [String: Any]
+        else { return [:] }
+
+        var result: [String: String] = [:]
+        for value in projects.values {
+            guard let project = value as? [String: Any],
+                  let rawName = project["name"] as? String,
+                  let roots = project["rootPaths"] as? [String]
+            else { continue }
+            let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty else { continue }
+            for rootPath in roots where !rootPath.isEmpty {
+                result[normalize(rootPath)] = name
+            }
+        }
+        return result
+    }
+
+    static func displayName(for path: String, namesByPath: [String: String]) -> String? {
+        guard !path.isEmpty else { return nil }
+        let normalized = normalize(path)
+        if let exact = namesByPath[normalized] { return exact }
+        return namesByPath
+            .filter { normalized.hasPrefix($0.key + "/") }
+            .max { $0.key.count < $1.key.count }?
+            .value
+    }
+
+    private static func normalize(_ path: String) -> String {
+        URL(fileURLWithPath: path).standardizedFileURL.path
     }
 }
