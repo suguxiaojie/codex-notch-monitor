@@ -1,5 +1,8 @@
 import AppKit
 import SwiftUI
+#if canImport(Translation)
+import Translation
+#endif
 
 private extension Animation {
     /// Motion language adapted from CodexIsland: entering is deliberately
@@ -14,6 +17,7 @@ private extension Animation {
 private enum ExpandedPage: String, CaseIterable, Identifiable {
     case usage = "Usage"
     case cost = "Cost"
+    case tibo = "动态"
     var id: String { rawValue }
 }
 
@@ -394,17 +398,18 @@ struct NotchView: View {
                         }
                     }
                     .transition(pageTransition)
-                } else {
+                } else if expandedPage == .cost {
                     costPage
+                        .transition(pageTransition)
+                } else {
+                    tiboPage
                         .transition(pageTransition)
                 }
             }
             .padding(.horizontal, 15)
             .padding(.top, 10)
 
-            Text(expandedPage == .usage
-                 ? "触控板双指左右滑动 · 数据仅在本机处理"
-                 : "API 等价成本估算 · 不代表订阅实际扣款")
+            Text(expandedFooterText)
                 .font(.system(size: 9, weight: .medium))
                 .foregroundStyle(.white.opacity(0.32))
                 .contentShape(Rectangle())
@@ -424,10 +429,10 @@ struct NotchView: View {
         .allowsHitTesting(store.expandedContentVisible && !store.isExpansionTransitioning)
         .animation(.islandContentSwap, value: store.expandedContentVisible)
         .onReceive(NotificationCenter.default.publisher(for: .codexMonitorAdvancePage)) { _ in
-            showPage(.cost)
+            movePage(by: 1)
         }
         .onReceive(NotificationCenter.default.publisher(for: .codexMonitorRewindPage)) { _ in
-            showPage(.usage)
+            movePage(by: -1)
         }
     }
 
@@ -435,6 +440,21 @@ struct NotchView: View {
         guard store.isExpanded, store.expandedContentVisible, expandedPage != page else { return }
         withAnimation(.spring(response: 0.30, dampingFraction: 0.86)) {
             expandedPage = page
+        }
+    }
+
+    private func movePage(by offset: Int) {
+        let pages = ExpandedPage.allCases
+        guard let current = pages.firstIndex(of: expandedPage) else { return }
+        let target = max(0, min(pages.count - 1, current + offset))
+        showPage(pages[target])
+    }
+
+    private var expandedFooterText: String {
+        switch expandedPage {
+        case .usage: return "触控板双指左右滑动 · 数据仅在本机处理"
+        case .cost: return "API 等价成本估算 · 不代表订阅实际扣款"
+        case .tibo: return "非官方动态 · 以原始 X 内容为准"
         }
     }
 
@@ -454,8 +474,8 @@ struct NotchView: View {
                             .foregroundStyle(expandedPage == page ? .white : .white.opacity(0.42))
                     }
                     .frame(maxWidth: .infinity, minHeight: 24, maxHeight: 24)
-                    // An explicit rectangular hit shape makes the entire
-                    // visual half clickable, including transparent padding.
+                    // An explicit rectangular hit shape makes the complete
+                    // segment clickable, including transparent padding.
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -468,7 +488,346 @@ struct NotchView: View {
     }
 
     private var pageTransition: AnyTransition {
-        .opacity.combined(with: .offset(x: expandedPage == .cost ? 18 : -18))
+        .opacity.combined(with: .offset(x: expandedPage == .usage ? -14 : 14))
+    }
+
+    private var tiboPage: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(spacing: 10) {
+                quotaResetHistoryCard
+                tiboSourceCard
+                if let feed = store.tiboFeed, !feed.events.isEmpty {
+                    ForEach(feed.events.prefix(12)) { event in
+                        tiboEventCard(event)
+                    }
+                } else if store.isTiboFeedLoading {
+                    VStack(spacing: 9) {
+                        ProgressView().controlSize(.small).tint(.cyan)
+                        Text("正在获取 Tibo 的 Codex 额度动态…")
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.42))
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 130)
+                    .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                } else {
+                    Text("暂时没有可显示的额度动态")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.42))
+                        .frame(maxWidth: .infinity, minHeight: 100)
+                        .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                }
+            }
+        }
+        .onAppear {
+            store.refreshTiboFeed(ifOlderThan: 5 * 60)
+        }
+    }
+
+    private var quotaResetHistoryCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 7) {
+                Image(systemName: "bell.badge.fill")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.cyan)
+                Text("额度恢复监控")
+                    .font(.system(size: 10.5, weight: .semibold))
+                Spacer()
+                quotaNotificationStatusControl
+            }
+
+            if store.quotaResetEvents.isEmpty {
+                Text("正在监控官方临时重置与窗口到期重置")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.42))
+            } else {
+                ForEach(store.quotaResetEvents.prefix(3)) { event in
+                    HStack(alignment: .top, spacing: 7) {
+                        Image(systemName: quotaResetSymbol(event.reason))
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(quotaResetColor(event.reason))
+                            .frame(width: 13, height: 14)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(event.reason.title)
+                                .font(.system(size: 9.5, weight: .semibold))
+                            Text(quotaResetSummary(event))
+                                .font(.system(size: 8.5, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.46))
+                                .lineLimit(2)
+                        }
+                        Spacer(minLength: 4)
+                        Text(tiboRelativeTime(event.detectedAt))
+                            .font(.system(size: 7.5, weight: .medium, design: .rounded))
+                            .foregroundStyle(.white.opacity(0.30))
+                    }
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        guard let value = event.sourceURL, let url = URL(string: value) else { return }
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Color.cyan.opacity(0.09), lineWidth: 0.7)
+        }
+        .onAppear {
+            store.refreshNotificationStatus()
+        }
+    }
+
+    @ViewBuilder
+    private var quotaNotificationStatusControl: some View {
+        if store.quotaNotificationStatus == .denied {
+            Button {
+                store.openNotificationSettings()
+            } label: {
+                HStack(spacing: 4) {
+                    Text("打开通知设置")
+                    Image(systemName: "arrow.up.right")
+                        .font(.system(size: 7, weight: .bold))
+                }
+                .font(.system(size: 8, weight: .semibold, design: .rounded))
+                .foregroundStyle(Color.orange.opacity(0.92))
+                .padding(.horizontal, 9)
+                .frame(minWidth: 88, minHeight: 28)
+                .background(Color.orange.opacity(0.09), in: Capsule())
+                .overlay {
+                    Capsule().strokeBorder(Color.orange.opacity(0.24), lineWidth: 0.7)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .contentShape(Rectangle())
+            .help("前往系统设置，为 Codex Monitor 开启通知")
+        } else {
+            Text(quotaNotificationStatusText)
+                .font(.system(size: 8, weight: .medium, design: .rounded))
+                .foregroundStyle(.white.opacity(0.34))
+        }
+    }
+
+    private var quotaNotificationStatusText: String {
+        switch store.quotaNotificationStatus {
+        case .unknown: return "等待通知授权"
+        case .enabled: return "系统通知已开启"
+        case .denied: return "通知已关闭"
+        }
+    }
+
+    private func quotaResetSummary(_ event: QuotaResetEvent) -> String {
+        event.changes.map { change in
+            "\(change.bucketName) \(change.windowLabel) \(change.previousRemainingPercent)% → \(change.currentRemainingPercent)%"
+        }.joined(separator: " · ")
+    }
+
+    private func quotaResetSymbol(_ reason: QuotaResetReason) -> String {
+        switch reason {
+        case .officialCompleted: return "bolt.fill"
+        case .officialScheduled: return "calendar.badge.checkmark"
+        case .natural: return "clock.arrow.circlepath"
+        case .mixed: return "checkmark.seal.fill"
+        case .unverified: return "questionmark.circle.fill"
+        }
+    }
+
+    private func quotaResetColor(_ reason: QuotaResetReason) -> Color {
+        switch reason {
+        case .officialCompleted: return .green
+        case .officialScheduled: return .cyan
+        case .natural: return .blue
+        case .mixed: return .mint
+        case .unverified: return .gray
+        }
+    }
+
+    private var tiboSourceCard: some View {
+        HStack(spacing: 10) {
+            ZStack {
+                Circle().fill(Color.cyan.opacity(0.12))
+                Image(systemName: "dot.radiowaves.left.and.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.cyan.opacity(0.88))
+            }
+            .frame(width: 34, height: 34)
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 5) {
+                    Text("Tibo 的 Codex 动态")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text("@thsottiaux")
+                        .font(.system(size: 8, weight: .medium, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.35))
+                }
+                Text(tiboSourceSubtitle)
+                    .font(.system(size: 8.5, weight: .medium))
+                    .foregroundStyle(tiboSourceIsStale ? .orange.opacity(0.82) : .white.opacity(0.4))
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 5)
+            if store.isTiboFeedLoading {
+                ProgressView().controlSize(.mini).tint(.cyan)
+            } else {
+                Button { store.refreshTiboFeed() } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 9, weight: .semibold))
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.white.opacity(0.46))
+            }
+        }
+        .padding(11)
+        .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private func tiboEventCard(_ event: TiboEvent) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 7) {
+                Image(systemName: tiboEventSymbol(event.kind))
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(tiboEventColor(event.kind))
+                Text(tiboEventTitle(event.kind))
+                    .font(.system(size: 10.5, weight: .semibold))
+                Spacer()
+                Text(tiboRelativeTime(event.announcedDate))
+                    .font(.system(size: 8, weight: .medium, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.34))
+            }
+
+            Text(event.text.trimmingCharacters(in: .whitespacesAndNewlines))
+                .font(.system(size: 9.5, weight: .medium))
+                .foregroundStyle(.white.opacity(0.72))
+                .multilineTextAlignment(.leading)
+                .lineSpacing(2)
+                .lineLimit(5)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            tiboTranslationBlock(for: event)
+
+            HStack(spacing: 5) {
+                if let effective = event.effectiveDate, event.kind == .resetScheduled {
+                    Image(systemName: "clock")
+                    Text("预计 \(tiboAbsoluteTime(effective))")
+                } else {
+                    Text("置信度 \(Int((event.confidence * 100).rounded()))%")
+                }
+                Spacer()
+                Button {
+                    guard let url = URL(string: event.source.url) else { return }
+                    NSWorkspace.shared.open(url)
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("在 X 查看")
+                        Image(systemName: "arrow.up.right")
+                    }
+                    .frame(minHeight: 22)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("打开 @thsottiaux 的原始动态")
+            }
+            .font(.system(size: 8, weight: .semibold, design: .rounded))
+            .foregroundStyle(.cyan.opacity(0.68))
+        }
+        .padding(12)
+        .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(tiboEventColor(event.kind).opacity(0.10), lineWidth: 0.7)
+        }
+    }
+
+    @ViewBuilder
+    private func tiboTranslationBlock(for event: TiboEvent) -> some View {
+#if canImport(Translation)
+        if #available(macOS 15.0, *) {
+            TiboChineseTranslationView(
+                postID: event.source.postId,
+                sourceText: event.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+        } else {
+            HStack(spacing: 5) {
+                Image(systemName: "character.book.closed")
+                Text("中文翻译需要 macOS 15 或更高版本")
+            }
+            .font(.system(size: 8, weight: .medium))
+            .foregroundStyle(.white.opacity(0.30))
+        }
+#else
+        HStack(spacing: 5) {
+            Image(systemName: "character.book.closed")
+            Text("当前系统不支持本地翻译")
+        }
+        .font(.system(size: 8, weight: .medium))
+        .foregroundStyle(.white.opacity(0.30))
+#endif
+    }
+
+    private var tiboSourceIsStale: Bool {
+        guard let date = store.tiboFeed?.lastSuccessfulCheckDate
+                ?? store.tiboFeed?.generatedDate else { return store.tiboFeedError != nil }
+        return Date().timeIntervalSince(date) > TiboFeedService.staleInterval
+    }
+
+    private var tiboSourceSubtitle: String {
+        if let error = store.tiboFeedError {
+            return store.tiboFeed == nil ? error : "显示上次数据 · \(error)"
+        }
+        guard let date = store.tiboFeed?.lastSuccessfulCheckDate
+                ?? store.tiboFeed?.generatedDate else { return "非官方数据" }
+        let prefix = tiboSourceIsStale ? "数据可能延迟" : "最近检查"
+        return "\(prefix) \(tiboRelativeTime(date))"
+    }
+
+    private func tiboEventTitle(_ kind: TiboEventKind) -> String {
+        switch kind {
+        case .resetCompleted: return "已完成额度重置"
+        case .resetScheduled: return "计划重置额度"
+        case .bankedReset: return "已预留额度重置"
+        case .limitIncrease: return "额度已提升"
+        case .uncertain: return "发现相关动态"
+        }
+    }
+
+    private func tiboEventSymbol(_ kind: TiboEventKind) -> String {
+        switch kind {
+        case .resetCompleted: return "bolt.fill"
+        case .resetScheduled: return "calendar.badge.clock"
+        case .bankedReset: return "tray.full.fill"
+        case .limitIncrease: return "arrow.up.right.circle.fill"
+        case .uncertain: return "questionmark.circle.fill"
+        }
+    }
+
+    private func tiboEventColor(_ kind: TiboEventKind) -> Color {
+        switch kind {
+        case .resetCompleted: return .green
+        case .resetScheduled: return .cyan
+        case .bankedReset: return .orange
+        case .limitIncrease: return .purple
+        case .uncertain: return .gray
+        }
+    }
+
+    private func tiboRelativeTime(_ date: Date?) -> String {
+        guard let date else { return "时间未知" }
+        let seconds = max(0, Date().timeIntervalSince(date))
+        if seconds < 60 { return "刚刚" }
+        if seconds < 3_600 { return "\(Int(seconds / 60)) 分钟前" }
+        if seconds < 86_400 { return "\(Int(seconds / 3_600)) 小时前" }
+        return "\(Int(seconds / 86_400)) 天前"
+    }
+
+    private func tiboAbsoluteTime(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = Calendar.current.isDateInToday(date) ? "HH:mm" : "M 月 d 日 HH:mm"
+        return formatter.string(from: date)
     }
 
     private var costPage: some View {
@@ -1420,6 +1779,129 @@ private struct QuotaRow: View {
             : "\(window.windowLabel) · \(relative)重置"
     }
 }
+
+#if canImport(Translation)
+@available(macOS 15.0, *)
+private struct TiboChineseTranslationView: View {
+    let postID: String
+    let sourceText: String
+
+    @State private var translatedText: String?
+    @State private var isShowingTranslation = false
+    @State private var isTranslating = false
+    @State private var errorText: String?
+    @State private var configuration: TranslationSession.Configuration?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if isShowingTranslation, let translatedText {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "character.book.closed.fill")
+                        Text("中文翻译")
+                        Spacer()
+                        Text("系统翻译")
+                            .foregroundStyle(.white.opacity(0.30))
+                    }
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(.cyan.opacity(0.72))
+
+                    Text(translatedText)
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.78))
+                        .multilineTextAlignment(.leading)
+                        .lineSpacing(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(9)
+                .background(
+                    Color.cyan.opacity(0.055),
+                    in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(.cyan.opacity(0.10), lineWidth: 0.6)
+                }
+            }
+
+            if let errorText {
+                HStack(spacing: 5) {
+                    Image(systemName: "exclamationmark.circle")
+                    Text(errorText)
+                }
+                .font(.system(size: 8, weight: .medium))
+                .foregroundStyle(.orange.opacity(0.78))
+            }
+
+            Button(action: toggleTranslation) {
+                HStack(spacing: 5) {
+                    if isTranslating {
+                        ProgressView().controlSize(.mini).tint(.cyan)
+                    } else {
+                        Image(systemName: isShowingTranslation
+                              ? "chevron.up"
+                              : "character.book.closed")
+                    }
+                    Text(translationButtonTitle)
+                }
+                .font(.system(size: 8.5, weight: .semibold))
+                .foregroundStyle(.cyan.opacity(0.72))
+                .frame(minHeight: 22)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(isTranslating || sourceText.isEmpty)
+            .help("使用 macOS 系统翻译，不调用第三方翻译服务")
+            .accessibilityLabel("翻译 Tibo 动态 \(postID)")
+        }
+        .translationTask(configuration) { session in
+            do {
+                let response = try await session.translate(sourceText)
+                await MainActor.run {
+                    translatedText = response.targetText
+                    isShowingTranslation = true
+                    isTranslating = false
+                    errorText = nil
+                }
+            } catch {
+                await MainActor.run {
+                    isTranslating = false
+                    errorText = "翻译暂不可用，请检查系统语言包"
+                }
+            }
+        }
+    }
+
+    private var translationButtonTitle: String {
+        if isTranslating { return "正在翻译…" }
+        if translatedText != nil { return isShowingTranslation ? "收起中文" : "显示中文" }
+        return "翻译成中文"
+    }
+
+    private func toggleTranslation() {
+        if translatedText != nil {
+            withAnimation(.easeOut(duration: 0.16)) {
+                isShowingTranslation.toggle()
+            }
+            return
+        }
+
+        errorText = nil
+        isTranslating = true
+        let english = Locale.Language(identifier: "en")
+        let simplifiedChinese = Locale.Language(identifier: "zh-Hans")
+        if configuration == nil {
+            configuration = TranslationSession.Configuration(
+                source: english,
+                target: simplifiedChinese
+            )
+        } else {
+            configuration?.invalidate()
+        }
+    }
+}
+#endif
 
 private struct CostMetricCard: View {
     let title: String

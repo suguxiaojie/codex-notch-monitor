@@ -128,22 +128,13 @@ final class CostService {
     ) {
         queue.async {
             let scanned = Self.scanCodex()
-            var pathAliases: [String: String] = [:]
-            for event in scanned {
-                guard let override = sessionPathOverrides[event.sessionID], !override.isEmpty else { continue }
-                let normalized = URL(fileURLWithPath: override).standardizedFileURL.path
-                if normalized != event.projectPath { pathAliases[event.projectPath] = normalized }
-            }
-            let events = scanned.map { event in
-                if let override = sessionPathOverrides[event.sessionID], !override.isEmpty {
-                    return event.withProjectPath(override)
-                }
-                if let alias = pathAliases[event.projectPath] {
-                    return event.withProjectPath(alias)
-                }
-                return event
-            }
-            let projectNames = Self.readCodexProjectNames()
+            let catalog = CodexProjectCatalog.loadState()
+            let events = Self.remapEvents(
+                scanned,
+                sessionPathOverrides: sessionPathOverrides,
+                catalog: catalog
+            )
+            let projectNames = catalog.namesByPath
             let snapshot = Self.summarize(events, projectNames: projectNames)
             DispatchQueue.main.async { completion(snapshot) }
 
@@ -157,6 +148,38 @@ final class CostService {
                     DispatchQueue.main.async { completion(refreshed) }
                 }
             }
+        }
+    }
+
+    static func remapEvents(
+        _ scanned: [TokenUsageEvent],
+        sessionPathOverrides: [String: String],
+        catalog: CodexProjectCatalog.State
+    ) -> [TokenUsageEvent] {
+        var pathAliases: [String: String] = [:]
+        for event in scanned {
+            guard catalog.assignmentsByThread[event.sessionID] == nil,
+                  let override = sessionPathOverrides[event.sessionID],
+                  !override.isEmpty
+            else { continue }
+            let normalized = URL(fileURLWithPath: override).standardizedFileURL.path
+            if normalized != event.projectPath { pathAliases[event.projectPath] = normalized }
+        }
+        return scanned.map { event in
+            // Moving an existing thread to another Codex project updates
+            // thread-project-assignments but does not rewrite historical
+            // session_meta.cwd. The explicit assignment is the current
+            // ownership truth and must beat live/path-history overrides.
+            if let assignment = catalog.assignmentsByThread[event.sessionID] {
+                return event.withProjectPath(assignment.path)
+            }
+            if let override = sessionPathOverrides[event.sessionID], !override.isEmpty {
+                return event.withProjectPath(override)
+            }
+            if let alias = pathAliases[event.projectPath] {
+                return event.withProjectPath(alias)
+            }
+            return event
         }
     }
 
@@ -357,30 +380,6 @@ final class CostService {
     private static func modificationDate(of url: URL) -> Date {
         (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
             ?? .distantPast
-    }
-
-    /// Codex sidebar project names are user-editable aliases whose filesystem
-    /// roots remain unchanged. Read the app's local state without mutating it,
-    /// and key aliases by standardized full path so Usage identity is stable.
-    private static func readCodexProjectNames() -> [String: String] {
-        let url = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".codex/.codex-global-state.json")
-        guard let data = try? Data(contentsOf: url),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let projects = object["local-projects"] as? [String: Any]
-        else { return [:] }
-        var result: [String: String] = [:]
-        for value in projects.values {
-            guard let project = value as? [String: Any],
-                  let name = project["name"] as? String,
-                  !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                  let roots = project["rootPaths"] as? [String]
-            else { continue }
-            for root in roots where !root.isEmpty {
-                result[URL(fileURLWithPath: root).standardizedFileURL.path] = name
-            }
-        }
-        return result
     }
 
     private static func summarize(

@@ -13,6 +13,12 @@ final class MonitorStore: ObservableObject {
     @Published var selectedProjectID: String?
     @Published private(set) var costSnapshot: CostSnapshot = .empty
     @Published private(set) var isCostLoading = false
+    @Published private(set) var tiboFeed: TiboFeed?
+    @Published private(set) var tiboFeedFetchedAt: Date?
+    @Published private(set) var tiboFeedError: String?
+    @Published private(set) var isTiboFeedLoading = false
+    @Published private(set) var quotaResetEvents: [QuotaResetEvent] = []
+    @Published private(set) var quotaNotificationStatus: QuotaNotificationStatus = .unknown
     @Published var isExpanded = false
     @Published var compactContentVisible = true
     @Published var expandedContentVisible = false
@@ -27,6 +33,9 @@ final class MonitorStore: ObservableObject {
     private let quotaService = QuotaService()
     private let sessionActivityService = SessionActivityService()
     private let costService = CostService()
+    private let tiboFeedService = TiboFeedService()
+    private let quotaResetMonitor = QuotaResetMonitor()
+    private let quotaResetNotifier = QuotaResetNotifier()
     private var eventTimer: Timer?
     private var quotaTimer: Timer?
     private var quotaRetryWorkItem: DispatchWorkItem?
@@ -35,7 +44,10 @@ final class MonitorStore: ObservableObject {
     private var sessionTimer: Timer?
     private var isReadingSession = false
     private var costTimer: Timer?
+    private var tiboFeedTimer: Timer?
+    private var notificationStatusTimer: Timer?
     private var projectDisplayOrder: [String] = []
+    private var lastProjectCatalogState: CodexProjectCatalog.State?
 
     var currentTask: MonitoredTask? {
         focusedProject?.task
@@ -112,10 +124,20 @@ final class MonitorStore: ObservableObject {
 
     func start() {
         do { try AppPaths.prepareDirectories() } catch { }
+        tiboFeed = tiboFeedService.cachedFeed
+        tiboFeedFetchedAt = tiboFeedService.cachedAt
+        quotaResetEvents = quotaResetMonitor.history
+        quotaResetNotifier.requestAuthorization { [weak self] status in
+            self?.quotaNotificationStatus = status
+        }
+        notificationStatusTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refreshNotificationStatus() }
+        }
         refreshQuota()
         consumeHookEvents()
         refreshSessionActivity()
         refreshCost()
+        refreshTiboFeed()
         eventTimer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.consumeHookEvents() }
         }
@@ -127,6 +149,12 @@ final class MonitorStore: ObservableObject {
         }
         costTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshCost() }
+        }
+        tiboFeedTimer = Timer.scheduledTimer(
+            withTimeInterval: TiboFeedService.refreshInterval,
+            repeats: true
+        ) { [weak self] _ in
+            Task { @MainActor in self?.refreshTiboFeed() }
         }
     }
 
@@ -143,7 +171,17 @@ final class MonitorStore: ObservableObject {
                 self.quotaRetryWorkItem?.cancel()
                 self.quotaRetryWorkItem = nil
                 self.consecutiveQuotaFailures = 0
-                self.quotaState = .loaded(buckets, Date())
+                let now = Date()
+                self.quotaState = .loaded(buckets, now)
+                let evaluation = self.quotaResetMonitor.evaluate(
+                    buckets: buckets,
+                    feed: self.tiboFeed,
+                    now: now
+                )
+                self.handleQuotaResetEvents(evaluation.events)
+                if evaluation.needsFeedRefresh {
+                    self.refreshTiboFeed()
+                }
             case let .failure(error):
                 self.quotaState = .failed(error.localizedDescription, previous: previous)
                 self.scheduleQuotaRetry()
@@ -177,9 +215,52 @@ final class MonitorStore: ObservableObject {
 
     func refreshAll() {
         refreshQuota()
+        refreshTiboFeed()
         consumeHookEvents()
         refreshSessionActivity { [weak self] in
             self?.refreshCost()
+        }
+    }
+
+    func refreshNotificationStatus() {
+        quotaResetNotifier.refreshAuthorizationStatus { [weak self] status in
+            self?.quotaNotificationStatus = status
+        }
+    }
+
+    func openNotificationSettings() {
+        _ = quotaResetNotifier.openNotificationSettings()
+    }
+
+    func refreshTiboFeed(ifOlderThan minimumAge: TimeInterval = 0) {
+        guard !isTiboFeedLoading else { return }
+        if minimumAge > 0, let fetchedAt = tiboFeedFetchedAt,
+           Date().timeIntervalSince(fetchedAt) < minimumAge {
+            return
+        }
+        isTiboFeedLoading = true
+        tiboFeedService.fetch { [weak self] result in
+            guard let self else { return }
+            self.isTiboFeedLoading = false
+            switch result {
+            case let .success((feed, fetchedAt)):
+                self.tiboFeed = feed
+                self.tiboFeedFetchedAt = fetchedAt
+                self.tiboFeedError = feed.monitor.status == "ok"
+                    ? nil
+                    : "数据源状态：\(feed.monitor.errorCode ?? feed.monitor.status)"
+                self.handleQuotaResetEvents(self.quotaResetMonitor.reconcile(feed: feed))
+            case let .failure(error):
+                // Preserve the last verified feed during transient outages.
+                self.tiboFeedError = error.localizedDescription
+            }
+        }
+    }
+
+    private func handleQuotaResetEvents(_ events: [QuotaResetEvent]) {
+        quotaResetEvents = quotaResetMonitor.history
+        for event in events where event.reason.isNotifiable {
+            quotaResetNotifier.notify(event)
         }
     }
 
@@ -227,9 +308,13 @@ final class MonitorStore: ObservableObject {
                 return
             }
             self.isReadingSession = false
+            let catalog = CodexProjectCatalog.loadState()
+            let catalogChanged = self.lastProjectCatalogState.map { $0 != catalog } ?? false
+            self.lastProjectCatalogState = catalog
             let discovered = ProjectActivityAggregator.projects(
                 snapshots: snapshots,
-                hookTasks: self.tasks
+                hookTasks: self.tasks,
+                catalog: catalog
             )
             self.projectDisplayOrder = CompactProjectLayout.reconcileOrder(
                 existing: self.projectDisplayOrder,
@@ -242,6 +327,7 @@ final class MonitorStore: ObservableObject {
                 self.selectedProjectID = nil
             }
             completion?()
+            if catalogChanged { self.refreshCost() }
         }
     }
 

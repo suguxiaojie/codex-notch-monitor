@@ -26,6 +26,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         store.start()
     }
 
+    func applicationDidBecomeActive(_ notification: Notification) {
+        store.refreshNotificationStatus()
+    }
+
     private func installStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.button?.image = NSImage(systemSymbolName: "gauge.with.dots.needle.33percent", accessibilityDescription: "Codex Monitor")

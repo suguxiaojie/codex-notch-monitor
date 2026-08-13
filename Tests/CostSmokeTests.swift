@@ -4,6 +4,7 @@ import Foundation
 enum CostSmokeTests {
     static func main() {
         verifyArchivedSessionsAreIncludedOnce()
+        verifyMovedThreadUsesCurrentProject()
         let service = CostService()
         service.fetch { snapshot in
             check(snapshot.today.series.count == 24, "24-hour trend")
@@ -33,7 +34,7 @@ enum CostSmokeTests {
                 check(!projectNames.contains("AI博主选题"), "folder name replaced by media sidebar alias")
             }
             print(String(format:
-                "Cost and usage smoke tests passed (22 checks): today $%.2f / %d tokens, month $%.2f / %d tokens. Aliases: %@",
+                "Cost and usage smoke tests passed (24 checks): today $%.2f / %d tokens, month $%.2f / %d tokens. Aliases: %@",
                 snapshot.today.dollars, snapshot.today.tokens,
                 snapshot.month.dollars, snapshot.month.tokens,
                 snapshot.estimatedModelAliases.description
@@ -41,6 +42,37 @@ enum CostSmokeTests {
             exit(0)
         }
         RunLoop.main.run()
+    }
+
+    private static func verifyMovedThreadUsesCurrentProject() {
+        let event = TokenUsageEvent(
+            provider: .codex,
+            timestamp: Date(),
+            model: "gpt-5.4",
+            sessionID: "moved-session",
+            projectPath: "/tmp/OldProject",
+            input: 100,
+            output: 10,
+            cacheCreate: 0,
+            cacheRead: 0
+        )
+        let catalog = CodexProjectCatalog.State(
+            namesByPath: ["/tmp/NewProject": "新项目"],
+            assignmentsByThread: [
+                "moved-session": CodexProjectCatalog.Assignment(
+                    projectID: "new-project",
+                    projectName: "新项目",
+                    path: "/tmp/NewProject"
+                ),
+            ]
+        )
+        let remapped = CostService.remapEvents(
+            [event],
+            sessionPathOverrides: ["moved-session": "/tmp/HookStillOld"],
+            catalog: catalog
+        )
+        check(remapped.first?.projectPath == "/tmp/NewProject", "moved thread remaps usage and cost path")
+        check(remapped.first?.sessionID == "moved-session", "moved thread retains usage session identity")
     }
 
     private static func verifyArchivedSessionsAreIncludedOnce() {

@@ -348,9 +348,11 @@ enum ProjectActivityAggregator {
     static func projects(
         snapshots: [LocalSessionSnapshot],
         hookTasks: [MonitoredTask],
-        now: Date = Date()
+        now: Date = Date(),
+        catalog: CodexProjectCatalog.State? = nil
     ) -> [ActiveProjectState] {
-        let projectNames = CodexProjectCatalog.loadNamesByPath()
+        let catalog = catalog ?? CodexProjectCatalog.loadState()
+        let projectNames = catalog.namesByPath
         let latestHooks = Dictionary(grouping: hookTasks, by: \.id).compactMapValues {
             $0.max(by: { $0.updatedAt < $1.updatedAt })
         }
@@ -366,8 +368,9 @@ enum ProjectActivityAggregator {
                hook.phase.attentionPriority < phase.attentionPriority {
                 phase = hook.phase
             }
-            let path = normalizedPath(snapshot.cwd, sessionID: snapshot.sessionID)
-            let name = projectName(path: snapshot.cwd, projectNames: projectNames)
+            let assigned = catalog.assignmentsByThread[snapshot.sessionID]
+            let path = normalizedPath(assigned?.path ?? snapshot.cwd, sessionID: snapshot.sessionID)
+            let name = assigned?.projectName ?? projectName(path: path, projectNames: projectNames)
             let task = MonitoredTask(
                 id: snapshot.sessionID,
                 turnID: snapshot.turnID,
@@ -388,10 +391,12 @@ enum ProjectActivityAggregator {
                 // session_meta.cwd is immutable history. A lifecycle hook can
                 // report the same live session after its project directory was
                 // renamed, so prefer the hook's current normalized path.
-                let hookPath = normalizedPath(hook.projectPath, sessionID: hook.id)
+                let assigned = catalog.assignmentsByThread[hook.id]
+                let hookPath = normalizedPath(assigned?.path ?? hook.projectPath, sessionID: hook.id)
                 if hookPath != task.projectPath {
                     task.projectPath = hookPath
-                    task.projectName = projectName(path: hookPath, projectNames: projectNames)
+                    task.projectName = assigned?.projectName
+                        ?? projectName(path: hookPath, projectNames: projectNames)
                 }
                 if hook.phase.attentionPriority <= existing.task.phase.attentionPriority {
                     task.phase = hook.phase
@@ -400,7 +405,12 @@ enum ProjectActivityAggregator {
                 }
                 sessions[hook.id] = ActiveSessionState(task: task, activities: existing.activities)
             } else {
-                sessions[hook.id] = ActiveSessionState(task: hook, activities: [])
+                var assignedTask = hook
+                if let assigned = catalog.assignmentsByThread[hook.id] {
+                    assignedTask.projectPath = normalizedPath(assigned.path, sessionID: hook.id)
+                    assignedTask.projectName = assigned.projectName
+                }
+                sessions[hook.id] = ActiveSessionState(task: assignedTask, activities: [])
             }
         }
 
@@ -469,54 +479,5 @@ enum ProjectActivityAggregator {
         }
         let name = URL(fileURLWithPath: path).lastPathComponent
         return name.isEmpty ? "Codex 任务" : name
-    }
-}
-
-/// Codex Desktop keeps user-renamed project labels in this non-sensitive local
-/// state file. Reading it on each activity refresh makes sidebar renames appear
-/// without restarting the monitor; the directory name remains a safe fallback.
-enum CodexProjectCatalog {
-    private static var stateURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".codex/.codex-global-state.json")
-    }
-
-    static func loadNamesByPath() -> [String: String] {
-        guard let data = try? Data(contentsOf: stateURL) else { return [:] }
-        return namesByPath(from: data)
-    }
-
-    static func namesByPath(from data: Data) -> [String: String] {
-        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let projects = root["local-projects"] as? [String: Any]
-        else { return [:] }
-
-        var result: [String: String] = [:]
-        for value in projects.values {
-            guard let project = value as? [String: Any],
-                  let rawName = project["name"] as? String,
-                  let roots = project["rootPaths"] as? [String]
-            else { continue }
-            let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !name.isEmpty else { continue }
-            for rootPath in roots where !rootPath.isEmpty {
-                result[normalize(rootPath)] = name
-            }
-        }
-        return result
-    }
-
-    static func displayName(for path: String, namesByPath: [String: String]) -> String? {
-        guard !path.isEmpty else { return nil }
-        let normalized = normalize(path)
-        if let exact = namesByPath[normalized] { return exact }
-        return namesByPath
-            .filter { normalized.hasPrefix($0.key + "/") }
-            .max { $0.key.count < $1.key.count }?
-            .value
-    }
-
-    private static func normalize(_ path: String) -> String {
-        URL(fileURLWithPath: path).standardizedFileURL.path
     }
 }

@@ -130,14 +130,29 @@ enum ModelSmokeTests {
 
         let catalogFixture: [String: Any] = [
             "local-projects": [
-                "project-id": [
+                "media-project": [
+                    "id": "media-project",
                     "name": "自媒体选题",
                     "rootPaths": ["/tmp/AI博主选题"],
+                ],
+                "moved-project": [
+                    "id": "moved-project",
+                    "name": "新项目",
+                    "rootPaths": ["/tmp/NewProject"],
+                ],
+            ],
+            "thread-project-assignments": [
+                "session-a": [
+                    "projectKind": "local",
+                    "projectId": "moved-project",
+                    "cwd": "/tmp/NewProject",
+                    "pendingCoreUpdate": true,
                 ],
             ],
         ]
         let catalogData = try! JSONSerialization.data(withJSONObject: catalogFixture)
-        let catalogNames = CodexProjectCatalog.namesByPath(from: catalogData)
+        let catalogState = CodexProjectCatalog.state(from: catalogData)
+        let catalogNames = catalogState.namesByPath
         check(catalogNames["/tmp/AI博主选题"] == "自媒体选题", "read Codex saved project label")
         check(
             CodexProjectCatalog.displayName(
@@ -145,6 +160,14 @@ enum ModelSmokeTests {
                 namesByPath: catalogNames
             ) == "自媒体选题",
             "saved project label also resolves child cwd"
+        )
+        check(
+            catalogState.assignmentsByThread["session-a"]?.projectName == "新项目",
+            "read moved thread project name"
+        )
+        check(
+            catalogState.assignmentsByThread["session-a"]?.path == "/tmp/NewProject",
+            "read moved thread project path"
         )
 
         let oldActivity = SessionActivityItem(
@@ -173,6 +196,12 @@ enum ModelSmokeTests {
         )
         check(renamedProjects.first?.name == "ProjectA-Renamed", "live hook updates renamed project")
         check(renamedProjects.first?.task.phase == .usingTool, "rename keeps higher-priority live tool phase")
+        let reassignedProjects = ProjectActivityAggregator.projects(
+            snapshots: [projectA], hookTasks: [renamedHook],
+            now: baseDate.addingTimeInterval(20), catalog: catalogState
+        )
+        check(reassignedProjects.first?.name == "新项目", "thread assignment updates live card name")
+        check(reassignedProjects.first?.path == "/tmp/NewProject", "thread assignment beats historical and hook cwd")
 
         let staleCompletionHook = MonitoredTask(
             id: "session-b", turnID: "turn-b", projectName: "ProjectB",
@@ -264,7 +293,7 @@ enum ModelSmokeTests {
         )
         try? FileManager.default.removeItem(at: fixtureURL)
 
-        print("Model smoke tests passed (46 checks).")
+        print("Model smoke tests passed (50 checks).")
     }
 
     private static func check(_ condition: @autoclosure () -> Bool, _ label: String) {
