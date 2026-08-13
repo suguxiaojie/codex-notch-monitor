@@ -209,7 +209,7 @@ final class QuotaResetMonitor {
 
     private func matchingOfficialEvent(in feed: TiboFeed?, since: Date, now: Date) -> TiboEvent? {
         guard let feed else { return nil }
-        return feed.events
+        return feed.officialEvidenceEvents(now: now)
             .filter { event in
                 switch event.kind {
                 case .resetCompleted:

@@ -8,7 +8,8 @@ struct QuotaResetMonitorTests {
         try detectsOfficialReset()
         try delaysUnverifiedJump()
         try mergesMultipleWindows()
-        print("Quota reset tests: 5/5 passed")
+        try detectsManualCompletionEvidence()
+        print("Quota reset tests: 6/6 passed")
     }
 
     static func firstSnapshotDoesNotNotify() throws {
@@ -90,6 +91,35 @@ struct QuotaResetMonitorTests {
         expect(result.events.first?.changes.count == 2, "通知应包含两个额度窗口")
     }
 
+    static func detectsManualCompletionEvidence() throws {
+        let monitor = makeMonitor("manual")
+        let start = Date(timeIntervalSince1970: 2_000_400_000)
+        _ = monitor.evaluate(buckets: [bucket(remaining: 40)], feed: nil, now: start)
+        let schedule = event(kind: .resetScheduled, announcedAt: start, effectiveAt: start.addingTimeInterval(30))
+        let timeline = TiboResetTimeline(manualCompletions: [TiboManualCompletion(
+            id: "manual:test",
+            completedAt: iso(start.addingTimeInterval(60)),
+            visibleUntil: iso(start.addingTimeInterval(10 * 24 * 60 * 60)),
+            representativePostId: schedule.source.postId,
+            schedulePostIds: [schedule.source.postId],
+            schedules: [schedule],
+            fulfillmentOrigin: "manual"
+        )])
+        let result = monitor.evaluate(
+            buckets: [bucket(remaining: 100)],
+            feed: TiboFeed(
+                schemaVersion: 1,
+                generatedAt: iso(start.addingTimeInterval(90)),
+                lastSuccessfulCheckAt: iso(start.addingTimeInterval(90)),
+                monitor: TiboFeedMonitor(status: "ok", errorCode: nil),
+                events: [],
+                resetTimeline: timeline
+            ),
+            now: start.addingTimeInterval(90)
+        )
+        expect(result.events.first?.reason == .officialCompleted, "人工确认重置应成为通知证据")
+    }
+
     static func makeMonitor(_ name: String) -> QuotaResetMonitor {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("quota-reset-test-\(name)-\(UUID().uuidString).json")
@@ -113,23 +143,30 @@ struct QuotaResetMonitorTests {
     }
 
     static func feed(kind: TiboEventKind, announcedAt: Date, effectiveAt: Date? = nil) -> TiboFeed {
-        let formatter = ISO8601DateFormatter()
         return TiboFeed(
             schemaVersion: 1,
-            generatedAt: formatter.string(from: announcedAt),
-            lastSuccessfulCheckAt: formatter.string(from: announcedAt),
+            generatedAt: iso(announcedAt),
+            lastSuccessfulCheckAt: iso(announcedAt),
             monitor: TiboFeedMonitor(status: "ok", errorCode: nil),
-            events: [TiboEvent(
-                kind: kind,
-                announcedAt: formatter.string(from: announcedAt),
-                effectiveAt: effectiveAt.map(formatter.string),
-                scope: TiboEventScope(plans: ["pro"], windows: ["5h"]),
-                source: TiboEventSource(handle: "thsottiaux", postId: "post-1", url: "https://x.com/thsottiaux/status/post-1"),
-                confidence: 1,
-                rationale: "test",
-                text: "test"
-            )]
+            events: [event(kind: kind, announcedAt: announcedAt, effectiveAt: effectiveAt)]
         )
+    }
+
+    static func event(kind: TiboEventKind, announcedAt: Date, effectiveAt: Date? = nil) -> TiboEvent {
+        TiboEvent(
+            kind: kind,
+            announcedAt: iso(announcedAt),
+            effectiveAt: effectiveAt.map(iso),
+            scope: TiboEventScope(plans: ["pro"], windows: ["5h"]),
+            source: TiboEventSource(handle: "thsottiaux", postId: "post-1", url: "https://x.com/thsottiaux/status/post-1"),
+            confidence: 1,
+            rationale: "test",
+            text: "test"
+        )
+    }
+
+    static func iso(_ date: Date) -> String {
+        ISO8601DateFormatter().string(from: date)
     }
 
     static func expect(_ condition: @autoclosure () -> Bool, _ message: String) {

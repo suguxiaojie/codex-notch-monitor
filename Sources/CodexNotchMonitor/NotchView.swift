@@ -496,9 +496,9 @@ struct NotchView: View {
             VStack(spacing: 10) {
                 quotaResetHistoryCard
                 tiboSourceCard
-                if let feed = store.tiboFeed, !feed.events.isEmpty {
-                    ForEach(feed.events.prefix(12)) { event in
-                        tiboEventCard(event)
+                if let feed = store.tiboFeed, !feed.displayEvents().isEmpty {
+                    ForEach(feed.displayEvents().prefix(12)) { item in
+                        tiboEventCard(item)
                     }
                 } else if store.isTiboFeedLoading {
                     VStack(spacing: 9) {
@@ -685,13 +685,14 @@ struct NotchView: View {
         .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
-    private func tiboEventCard(_ event: TiboEvent) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+    private func tiboEventCard(_ item: TiboDisplayEvent) -> some View {
+        let event = item.event
+        return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 7) {
                 Image(systemName: tiboEventSymbol(event.kind))
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(tiboEventColor(event.kind))
-                Text(tiboEventTitle(event.kind))
+                Text(item.isManualCompletion ? "已确认额度重置" : tiboEventTitle(event.kind))
                     .font(.system(size: 10.5, weight: .semibold))
                 Spacer()
                 Text(tiboRelativeTime(event.announcedDate))
@@ -706,6 +707,15 @@ struct NotchView: View {
                 .lineSpacing(2)
                 .lineLimit(5)
                 .frame(maxWidth: .infinity, alignment: .leading)
+
+            if !item.supportingSchedules.isEmpty {
+                HStack(spacing: 5) {
+                    Image(systemName: "checkmark.seal.fill")
+                    Text("由 \(item.supportingSchedules.count) 条计划动态确认")
+                }
+                .font(.system(size: 8, weight: .semibold))
+                .foregroundStyle(.green.opacity(0.72))
+            }
 
             tiboTranslationBlock(for: event)
 

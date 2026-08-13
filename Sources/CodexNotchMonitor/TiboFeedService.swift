@@ -40,15 +40,177 @@ struct TiboEvent: Codable, Identifiable, Equatable {
     var effectiveDate: Date? { effectiveAt.flatMap(TiboFeedDate.parse) }
 }
 
+struct TiboResetWindow: Codable, Equatable {
+    let startAt: String?
+    let endAt: String?
+    let precision: String?
+}
+
+struct TiboNextSchedule: Codable, Equatable {
+    let event: TiboEvent
+    let window: TiboResetWindow?
+}
+
+struct TiboFulfilledSchedule: Codable, Equatable {
+    let schedule: TiboEvent
+    let window: TiboResetWindow?
+    let completionPostId: String?
+    let completedAt: String?
+    let visibleUntil: String?
+}
+
+struct TiboManualCompletion: Codable, Equatable {
+    let id: String
+    let completedAt: String
+    let visibleUntil: String?
+    let representativePostId: String?
+    let schedulePostIds: [String]?
+    let schedules: [TiboEvent]
+    let fulfillmentOrigin: String?
+
+    var completedDate: Date? { TiboFeedDate.parse(completedAt) }
+    var visibleUntilDate: Date? { visibleUntil.flatMap(TiboFeedDate.parse) }
+}
+
+struct TiboResetTimeline: Codable, Equatable {
+    let nextSchedule: TiboNextSchedule?
+    let recentNonCompletedPostId: String?
+    let fulfilledSchedules: [TiboFulfilledSchedule]
+    let manualCompletions: [TiboManualCompletion]
+    let suppressedPostIds: [String]
+
+    init(
+        nextSchedule: TiboNextSchedule? = nil,
+        recentNonCompletedPostId: String? = nil,
+        fulfilledSchedules: [TiboFulfilledSchedule] = [],
+        manualCompletions: [TiboManualCompletion] = [],
+        suppressedPostIds: [String] = []
+    ) {
+        self.nextSchedule = nextSchedule
+        self.recentNonCompletedPostId = recentNonCompletedPostId
+        self.fulfilledSchedules = fulfilledSchedules
+        self.manualCompletions = manualCompletions
+        self.suppressedPostIds = suppressedPostIds
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case nextSchedule, recentNonCompletedPostId, fulfilledSchedules
+        case manualCompletions, suppressedPostIds
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        nextSchedule = try values.decodeIfPresent(TiboNextSchedule.self, forKey: .nextSchedule)
+        recentNonCompletedPostId = try values.decodeIfPresent(String.self, forKey: .recentNonCompletedPostId)
+        fulfilledSchedules = try values.decodeIfPresent([TiboFulfilledSchedule].self, forKey: .fulfilledSchedules) ?? []
+        manualCompletions = try values.decodeIfPresent([TiboManualCompletion].self, forKey: .manualCompletions) ?? []
+        suppressedPostIds = try values.decodeIfPresent([String].self, forKey: .suppressedPostIds) ?? []
+    }
+}
+
+struct TiboDisplayEvent: Identifiable, Equatable {
+    let id: String
+    let event: TiboEvent
+    let isManualCompletion: Bool
+    let supportingSchedules: [TiboEvent]
+}
+
 struct TiboFeed: Codable, Equatable {
     let schemaVersion: Int
     let generatedAt: String
     let lastSuccessfulCheckAt: String?
     let monitor: TiboFeedMonitor
     let events: [TiboEvent]
+    let resetTimeline: TiboResetTimeline?
+
+    init(
+        schemaVersion: Int,
+        generatedAt: String,
+        lastSuccessfulCheckAt: String?,
+        monitor: TiboFeedMonitor,
+        events: [TiboEvent],
+        resetTimeline: TiboResetTimeline? = nil
+    ) {
+        self.schemaVersion = schemaVersion
+        self.generatedAt = generatedAt
+        self.lastSuccessfulCheckAt = lastSuccessfulCheckAt
+        self.monitor = monitor
+        self.events = events
+        self.resetTimeline = resetTimeline
+    }
 
     var generatedDate: Date? { TiboFeedDate.parse(generatedAt) }
     var lastSuccessfulCheckDate: Date? { lastSuccessfulCheckAt.flatMap(TiboFeedDate.parse) }
+
+    func displayEvents(now: Date = Date()) -> [TiboDisplayEvent] {
+        let suppressed = Set(resetTimeline?.suppressedPostIds ?? [])
+        var result: [TiboDisplayEvent] = []
+
+        for manual in resetTimeline?.manualCompletions ?? [] {
+            guard let completed = manual.completedDate,
+                  completed <= now,
+                  manual.visibleUntilDate.map({ now <= $0 }) ?? true,
+                  let representative = manual.schedules.first(where: {
+                      $0.source.postId == manual.representativePostId
+                  }) ?? manual.schedules.first
+            else { continue }
+            let event = TiboEvent(
+                kind: .resetCompleted,
+                announcedAt: manual.completedAt,
+                effectiveAt: manual.completedAt,
+                scope: representative.scope,
+                source: representative.source,
+                confidence: representative.confidence,
+                rationale: "Confirmed without an X completion post.",
+                text: representative.text
+            )
+            result.append(TiboDisplayEvent(
+                id: manual.id,
+                event: event,
+                isManualCompletion: true,
+                supportingSchedules: manual.schedules
+            ))
+        }
+
+        var ordinary = events.filter { !suppressed.contains($0.source.postId) }
+        if let next = resetTimeline?.nextSchedule?.event,
+           !suppressed.contains(next.source.postId),
+           !ordinary.contains(where: { $0.source.postId == next.source.postId }) {
+            ordinary.append(next)
+        }
+        for event in ordinary {
+            let supporting = (resetTimeline?.fulfilledSchedules ?? [])
+                .filter { $0.completionPostId == event.source.postId }
+                .map(\.schedule)
+            result.append(TiboDisplayEvent(
+                id: "event:\(event.source.postId)",
+                event: event,
+                isManualCompletion: false,
+                supportingSchedules: supporting
+            ))
+        }
+
+        var seen = Set<String>()
+        return result
+            .sorted { lhs, rhs in
+                let leftFuture = lhs.event.kind == .resetScheduled
+                    && (lhs.event.effectiveDate ?? .distantPast) > now
+                let rightFuture = rhs.event.kind == .resetScheduled
+                    && (rhs.event.effectiveDate ?? .distantPast) > now
+                if leftFuture != rightFuture { return leftFuture }
+                if leftFuture, rightFuture {
+                    return (lhs.event.effectiveDate ?? .distantFuture)
+                        < (rhs.event.effectiveDate ?? .distantFuture)
+                }
+                return (lhs.event.announcedDate ?? .distantPast)
+                    > (rhs.event.announcedDate ?? .distantPast)
+            }
+            .filter { seen.insert($0.id).inserted }
+    }
+
+    func officialEvidenceEvents(now: Date = Date()) -> [TiboEvent] {
+        displayEvents(now: now).map(\.event)
+    }
 }
 
 enum TiboFeedDate {
@@ -141,6 +303,16 @@ final class TiboFeedService {
         }
         guard feed.events.count <= 100 else { return .rejected("事件数量异常") }
         guard feed.events.allSatisfy(isValid) else { return .rejected("事件来源校验失败") }
+        if let timeline = feed.resetTimeline {
+            let timelineEvents = timeline.fulfilledSchedules.map(\.schedule)
+                + timeline.manualCompletions.flatMap(\.schedules)
+                + [timeline.nextSchedule?.event].compactMap { $0 }
+            guard timeline.manualCompletions.count <= 100,
+                  timelineEvents.count <= 300,
+                  timelineEvents.allSatisfy(isValid),
+                  timeline.manualCompletions.allSatisfy({ $0.completedDate != nil })
+            else { return .rejected("重置时间线校验失败") }
+        }
         return .feed(feed)
     }
 
@@ -150,9 +322,14 @@ final class TiboFeedService {
         request.timeoutInterval = 20
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if let etag = existing?.etag { request.setValue(etag, forHTTPHeaderField: "If-None-Match") }
-        if let modified = existing?.lastModified {
-            request.setValue(modified, forHTTPHeaderField: "If-Modified-Since")
+        // v1.2.0 decoded only `events` and re-encoded its cache without the
+        // newer resetTimeline extension. Reusing that cache's validators can
+        // yield 304 forever, so perform one unconditional migration fetch.
+        if existing?.feed.resetTimeline != nil {
+            if let etag = existing?.etag { request.setValue(etag, forHTTPHeaderField: "If-None-Match") }
+            if let modified = existing?.lastModified {
+                request.setValue(modified, forHTTPHeaderField: "If-Modified-Since")
+            }
         }
 
         session.dataTask(with: request) { [weak self] data, response, error in

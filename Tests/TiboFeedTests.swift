@@ -50,7 +50,73 @@ enum TiboFeedTests {
             "reject noncanonical source URL"
         )
 
-        print("Tibo feed tests passed (7 checks).")
+        let timelineFixture = Data("""
+        {
+          "schemaVersion":1,
+          "generatedAt":"2026-08-13T11:00:02.869Z",
+          "lastSuccessfulCheckAt":"2026-08-13T11:00:02.869Z",
+          "monitor":{"status":"ok","errorCode":null},
+          "events":[{
+            "kind":"reset_completed",
+            "announcedAt":"2026-08-11T00:27:44.000Z",
+            "effectiveAt":null,
+            "scope":{"plans":["all"],"windows":["unknown"]},
+            "source":{"handle":"thsottiaux","postId":"2086972802457063486","url":"https://x.com/thsottiaux/status/2086972802457063486"},
+            "confidence":0.97,
+            "rationale":"Explicit reset.",
+            "text":"Hi. It is done."
+          }],
+          "resetTimeline":{
+            "nextSchedule":null,
+            "recentNonCompletedPostId":null,
+            "fulfilledSchedules":[],
+            "manualCompletions":[{
+              "id":"manual:latest",
+              "completedAt":"2026-08-13T04:35:00.000Z",
+              "visibleUntil":"2026-08-23T04:35:00.000Z",
+              "representativePostId":"2087706104814023111",
+              "schedulePostIds":["2087423996115681767","2087706104814023111"],
+              "schedules":[
+                {
+                  "kind":"reset_scheduled",
+                  "announcedAt":"2026-08-12T06:20:37.000Z",
+                  "effectiveAt":"2026-08-12T07:00:00.000Z",
+                  "scope":{"plans":["all"],"windows":["unknown"]},
+                  "source":{"handle":"thsottiaux","postId":"2087423996115681767","url":"https://x.com/thsottiaux/status/2087423996115681767"},
+                  "confidence":0.8,
+                  "rationale":"Schedule.",
+                  "text":"Little surprise for you tomorrow."
+                },
+                {
+                  "kind":"reset_scheduled",
+                  "announcedAt":"2026-08-13T01:01:37.000Z",
+                  "effectiveAt":"2026-08-13T02:01:37.000Z",
+                  "scope":{"plans":["all"],"windows":["unknown"]},
+                  "source":{"handle":"thsottiaux","postId":"2087706104814023111","url":"https://x.com/thsottiaux/status/2087706104814023111"},
+                  "confidence":0.97,
+                  "rationale":"Schedule.",
+                  "text":"Landing in the next hour or so."
+                }
+              ],
+              "fulfillmentOrigin":"manual"
+            }],
+            "suppressedPostIds":["2087423996115681767","2087706104814023111"]
+          }
+        }
+        """.utf8)
+        guard case let .feed(timelineFeed) = TiboFeedService.interpret(status: 200, data: timelineFixture) else {
+            fail("decode resetTimeline feed")
+        }
+        let displayAt = TiboFeedDate.parse("2026-08-13T11:05:00.000Z")!
+        let displayEvents = timelineFeed.displayEvents(now: displayAt)
+        check(displayEvents.count == 2, "manual completion joins ordinary timeline")
+        check(displayEvents.first?.isManualCompletion == true, "manual completion is pinned first")
+        check(displayEvents.first?.event.source.postId == "2087706104814023111", "representative post is preserved")
+        check(displayEvents.first?.supportingSchedules.count == 2, "manual completion retains schedule evidence")
+        check(!displayEvents.contains(where: { $0.event.kind == .resetScheduled }), "suppressed schedules do not duplicate")
+        check(timelineFeed.officialEvidenceEvents(now: displayAt).first?.kind == .resetCompleted, "manual completion becomes reset evidence")
+
+        print("Tibo feed tests passed (13 checks).")
     }
 
     private static func check(_ condition: @autoclosure () -> Bool, _ label: String) {
