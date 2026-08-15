@@ -76,7 +76,7 @@ final class CodexAppServerClient {
                             "clientInfo": [
                                 "name": "codex-notch-monitor",
                                 "title": "Codex Notch Monitor",
-                                "version": "1.2.1",
+                                "version": "1.3.0",
                             ],
                             "capabilities": ["experimentalApi": false],
                         ],
