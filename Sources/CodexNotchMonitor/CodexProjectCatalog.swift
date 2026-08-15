@@ -28,7 +28,11 @@ enum CodexProjectCatalog {
     }
 
     static func loadState() -> State {
-        guard let data = try? Data(contentsOf: stateURL) else { return .empty }
+        loadState(from: stateURL)
+    }
+
+    static func loadState(from url: URL) -> State {
+        guard let data = try? Data(contentsOf: url) else { return .empty }
         return state(from: data)
     }
 

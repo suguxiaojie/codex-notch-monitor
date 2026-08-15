@@ -20,6 +20,32 @@ EVENTS = [
 ]
 
 
+def merge_monitor_hooks(document: dict, command: str) -> dict:
+    hooks = document.setdefault("hooks", {})
+    marker = "CodexNotchMonitor"
+    for event in EVENTS:
+        groups = hooks.setdefault(event, [])
+        filtered = []
+        for group in groups:
+            handlers = group.get("hooks", []) if isinstance(group, dict) else []
+            if any(marker in str(handler.get("command", "")) for handler in handlers if isinstance(handler, dict)):
+                continue
+            filtered.append(group)
+
+        # Some released Codex builds still skip background hooks even though
+        # newer documentation describes async support. The relay only writes a
+        # tiny local JSON event, so a synchronous two-second ceiling is both
+        # compatible and short enough not to hold up normal tool execution.
+        handler = {
+            "type": "command",
+            "command": command,
+            "timeout": 2,
+        }
+        filtered.append({"hooks": [handler]})
+        hooks[event] = filtered
+    return document
+
+
 def main() -> int:
     project = pathlib.Path(__file__).resolve().parent.parent
     installed_helper = pathlib.Path("/Applications/CodexNotchMonitor.app/Contents/Helpers/CodexMonitorHook")
@@ -46,27 +72,8 @@ def main() -> int:
     else:
         document = {"description": "User-level Codex lifecycle hooks", "hooks": {}}
 
-    hooks = document.setdefault("hooks", {})
-    marker = "CodexNotchMonitor"
     command = str(helper)
-    for event in EVENTS:
-        groups = hooks.setdefault(event, [])
-        filtered = []
-        for group in groups:
-            handlers = group.get("hooks", []) if isinstance(group, dict) else []
-            if any(marker in str(handler.get("command", "")) for handler in handlers if isinstance(handler, dict)):
-                continue
-            filtered.append(group)
-
-        handler = {
-            "type": "command",
-            "command": command,
-            "timeout": 2,
-        }
-        if event != "SessionEnd":
-            handler["async"] = True
-        filtered.append({"hooks": [handler]})
-        hooks[event] = filtered
+    merge_monitor_hooks(document, command)
 
     temporary = config_path.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

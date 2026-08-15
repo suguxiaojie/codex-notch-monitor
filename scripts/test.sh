@@ -7,7 +7,8 @@ cost_test_binary="$(mktemp /tmp/codex-notch-cost-tests.XXXXXX)"
 catalog_test_binary="$(mktemp /tmp/codex-notch-catalog-tests.XXXXXX)"
 tibo_test_binary="$(mktemp /tmp/codex-notch-tibo-tests.XXXXXX)"
 reset_test_binary="$(mktemp /tmp/codex-notch-reset-tests.XXXXXX)"
-trap 'rm -f "$test_binary" "$cost_test_binary" "$catalog_test_binary" "$tibo_test_binary" "$reset_test_binary"' EXIT
+continuity_test_binary="$(mktemp /tmp/codex-notch-continuity-tests.XXXXXX)"
+trap 'rm -f "$test_binary" "$cost_test_binary" "$catalog_test_binary" "$tibo_test_binary" "$reset_test_binary" "$continuity_test_binary"' EXIT
 
 cd "$project_dir"
 swiftc \
@@ -15,6 +16,7 @@ swiftc \
   -parse-as-library \
   Sources/CodexNotchMonitor/CoverAILinks.swift \
   Sources/CodexNotchMonitor/CodexProjectCatalog.swift \
+  Sources/CodexNotchMonitor/CodexAppServerClient.swift \
   Sources/CodexNotchMonitor/Models.swift \
   Sources/CodexNotchMonitor/QuotaService.swift \
   Sources/CodexNotchMonitor/SessionActivityService.swift \
@@ -61,3 +63,21 @@ swiftc \
   Tests/QuotaResetMonitorTests.swift \
   -o "$reset_test_binary"
 "$reset_test_binary"
+
+swiftc \
+  -swift-version 5 \
+  -parse-as-library \
+  Sources/CodexNotchMonitor/AppPaths.swift \
+  Sources/CodexNotchMonitor/CodexAppServerClient.swift \
+  Sources/CodexNotchMonitor/CodexProjectCatalog.swift \
+  Sources/CodexNotchMonitor/CodexAccountStateWatcher.swift \
+  Sources/CodexNotchMonitor/AccountContinuity.swift \
+  Sources/CodexNotchMonitor/SessionContinuityService.swift \
+  Sources/CodexNotchMonitor/SessionExportService.swift \
+  Sources/CodexNotchMonitor/SessionImportService.swift \
+  Sources/CodexNotchMonitor/SessionRecoveryService.swift \
+  Tests/ContinuityTests.swift \
+  -o "$continuity_test_binary"
+"$continuity_test_binary"
+
+python3 Tests/InstallHooksTests.py

@@ -65,6 +65,27 @@ final class QuotaResetNotifier: NSObject, UNUserNotificationCenterDelegate {
         center.add(UNNotificationRequest(identifier: event.id, content: content, trigger: nil))
     }
 
+    func notifyAccountSwitch(
+        _ transition: AccountTransition,
+        projectCount: Int,
+        sessionCount: Int,
+        recoverableCount: Int
+    ) {
+        let content = UNMutableNotificationContent()
+        content.title = "Codex 账号已切换"
+        if recoverableCount == 0 {
+            content.body = "\(transition.previousAlias) → \(transition.currentAlias)，已同步 \(projectCount) 个本地项目与 \(sessionCount) 条会话。"
+        } else {
+            content.body = "\(transition.previousAlias) → \(transition.currentAlias)，发现 \(recoverableCount) 条本地会话待恢复。"
+        }
+        content.sound = .default
+        center.add(UNNotificationRequest(
+            identifier: "account-switch-\(Int(transition.detectedAt.timeIntervalSince1970))",
+            content: content,
+            trigger: nil
+        ))
+    }
+
     static func body(for event: QuotaResetEvent) -> String {
         let details = event.changes.map { change in
             "\(change.bucketName) \(change.windowLabel)：\(change.previousRemainingPercent)% → \(change.currentRemainingPercent)%"

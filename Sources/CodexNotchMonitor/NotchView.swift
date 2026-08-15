@@ -18,6 +18,7 @@ private enum ExpandedPage: String, CaseIterable, Identifiable {
     case usage = "Usage"
     case cost = "Cost"
     case tibo = "动态"
+    case continuity = "会话"
     var id: String { rawValue }
 }
 
@@ -33,6 +34,11 @@ struct NotchView: View {
     @State private var usagePeriod: UsagePeriod = .day
     @State private var compactHideWorkItem: DispatchWorkItem?
     @State private var compactHovered = false
+    @State private var confirmsContinuityRecovery = false
+    @State private var confirmsContinuityRollback = false
+    @State private var confirmsSessionImport = false
+    @State private var confirmsSessionImportRollback = false
+    @State private var expandedContinuityProjectID: String?
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -401,8 +407,11 @@ struct NotchView: View {
                 } else if expandedPage == .cost {
                     costPage
                         .transition(pageTransition)
-                } else {
+                } else if expandedPage == .tibo {
                     tiboPage
+                        .transition(pageTransition)
+                } else {
+                    continuityPage
                         .transition(pageTransition)
                 }
             }
@@ -455,6 +464,7 @@ struct NotchView: View {
         case .usage: return "触控板双指左右滑动 · 数据仅在本机处理"
         case .cost: return "API 等价成本估算 · 不代表订阅实际扣款"
         case .tibo: return "非官方动态 · 以原始 X 内容为准"
+        case .continuity: return "本地会话管理 · 不读取或保存账号凭据"
         }
     }
 
@@ -469,9 +479,17 @@ struct NotchView: View {
                             RoundedRectangle(cornerRadius: 8, style: .continuous)
                                 .fill(Color.white.opacity(0.11))
                         }
-                        Text(page.rawValue)
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(expandedPage == page ? .white : .white.opacity(0.42))
+                        HStack(spacing: 4) {
+                            Text(page.rawValue)
+                            if page == .continuity,
+                               (!store.continuitySnapshot.recoverableThreads.isEmpty || store.continuityError != nil) {
+                                Circle()
+                                    .fill(store.continuityError == nil ? Color.cyan : Color.orange)
+                                    .frame(width: 4, height: 4)
+                            }
+                        }
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(expandedPage == page ? .white : .white.opacity(0.42))
                     }
                     .frame(maxWidth: .infinity, minHeight: 24, maxHeight: 24)
                     // An explicit rectangular hit shape makes the complete
@@ -489,6 +507,515 @@ struct NotchView: View {
 
     private var pageTransition: AnyTransition {
         .opacity.combined(with: .offset(x: expandedPage == .usage ? -14 : 14))
+    }
+
+    private var continuityPage: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(spacing: 10) {
+                continuityAccountCard
+                continuitySummaryCard
+                if let preview = store.sessionImportPreview {
+                    sessionImportPreviewCard(preview)
+                }
+                if let message = store.continuityStatusMessage {
+                    continuityMessageCard(message, color: .cyan)
+                }
+                if let error = store.continuityError {
+                    continuityMessageCard(error, color: .orange)
+                }
+                continuityThreadCard
+                if store.lastContinuityBackupURL != nil {
+                    continuityBackupCard
+                }
+                if store.lastSessionImportBackupURL != nil {
+                    sessionImportBackupCard
+                }
+            }
+        }
+        .alert("备份并恢复本地会话", isPresented: $confirmsContinuityRecovery) {
+            Button("取消", role: .cancel) { }
+            Button("备份并恢复") { store.recoverHiddenThreads() }
+        } message: {
+            Text("请先使用 Cmd + Q 完全退出 Codex／ChatGPT Desktop。插件会先备份本地索引，再通过官方 App Server 重新扫描会话；不会改写原始 JSONL 对话。")
+        }
+        .alert("恢复到操作前", isPresented: $confirmsContinuityRollback) {
+            Button("取消", role: .cancel) { }
+            Button("确认回滚") { store.rollbackLastContinuityRecovery() }
+        } message: {
+            Text("请先完全退出 Codex／ChatGPT Desktop。当前索引会先保存到备份目录，再恢复上次操作前的状态。")
+        }
+        .alert("导入会话备份", isPresented: $confirmsSessionImport) {
+            Button("取消", role: .cancel) { }
+            Button("备份并导入") { store.importSelectedSessionBundle() }
+        } message: {
+            Text("请先使用 Cmd + Q 完全退出 Codex／ChatGPT Desktop。插件会先备份本地索引和项目状态；默认跳过同 ID 会话，不会覆盖现有对话。")
+        }
+        .alert("撤销上次导入", isPresented: $confirmsSessionImportRollback) {
+            Button("取消", role: .cancel) { }
+            Button("确认撤销") { store.rollbackLastSessionImport() }
+        } message: {
+            Text("请先完全退出 Codex／ChatGPT Desktop。本次新建的会话将被移除，导入前的索引和项目状态将从校验备份恢复。")
+        }
+    }
+
+    private var continuityAccountCard: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                Circle().fill(Color.cyan.opacity(0.12)).frame(width: 42, height: 42)
+                Image(systemName: "person.crop.circle.badge.checkmark")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(.cyan)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(store.continuityAccountTitle)
+                    .font(.system(size: 12, weight: .bold))
+                if let subtitle = store.continuityAccountSubtitle, !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(.system(size: 8.5, weight: .medium, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.42))
+                }
+            }
+            Spacer()
+            if store.isContinuityLoading {
+                ProgressView().controlSize(.small).tint(.cyan)
+            } else {
+                Button { store.refreshContinuity(forceInventory: true) } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 28, height: 28)
+                        .background(.white.opacity(0.06), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .help("重新检查账号与本地会话")
+            }
+        }
+        .padding(12)
+        .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private var continuitySummaryCard: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            HStack {
+                Text("本地连续性")
+                    .font(.system(size: 11, weight: .bold))
+                Spacer()
+                Text(continuitySummaryStatus)
+                    .font(.system(size: 8.5, weight: .semibold))
+                    .foregroundStyle(continuitySummaryStatusColor)
+            }
+            HStack(spacing: 0) {
+                continuityMetric(store.continuitySnapshot.projectCount, "项目")
+                continuityMetric(store.continuitySnapshot.sessionCount, "会话")
+                continuityMetric(store.continuitySnapshot.archivedCount, "已归档")
+                continuityMetric(store.continuitySnapshot.recoverableThreads.count, "待恢复")
+            }
+            if !store.continuitySnapshot.recoverableThreads.isEmpty {
+                Button {
+                    confirmsContinuityRecovery = true
+                } label: {
+                    HStack {
+                        Image(systemName: "externaldrive.badge.plus")
+                        Text("备份并恢复待处理会话")
+                        Spacer()
+                        if store.isContinuityRecovering { ProgressView().controlSize(.mini).tint(.cyan) }
+                    }
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundStyle(.cyan)
+                    .padding(.horizontal, 11)
+                    .frame(height: 31)
+                    .background(Color.cyan.opacity(0.09), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(store.isContinuityRecovering)
+            }
+            Button {
+                store.chooseSessionImportBundle()
+            } label: {
+                HStack {
+                    Image(systemName: "square.and.arrow.down")
+                    Text("导入 .codexmonitorbundle")
+                    Spacer()
+                    if store.isSessionImporting { ProgressView().controlSize(.mini).tint(.cyan) }
+                }
+                .font(.system(size: 9.5, weight: .semibold))
+                .foregroundStyle(.cyan)
+                .padding(.horizontal, 11)
+                .frame(height: 31)
+                .background(Color.cyan.opacity(0.09), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(store.isSessionImporting)
+            .help("选择并校验 Codex Notch Monitor 会话备份")
+        }
+        .padding(12)
+        .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private var continuitySummaryStatus: String {
+        if let progress = store.continuityScanProgress, progress.total > 0 {
+            return "正在扫描 \(progress.completed)/\(progress.total)"
+        }
+        if store.isContinuityLoading { return "正在确认" }
+        return store.continuitySnapshot.recoverableThreads.isEmpty ? "记录完整" : "需要处理"
+    }
+
+    private func sessionImportPreviewCard(_ preview: SessionImportPreview) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Image(systemName: "checkmark.shield.fill")
+                    .foregroundStyle(.green)
+                Text("备份校验通过")
+                    .font(.system(size: 11, weight: .bold))
+                Spacer()
+                Text(SessionPortableManifest.supportedFormat)
+                    .font(.system(size: 7.5, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.32))
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(preview.manifest.project.displayName)
+                    .font(.system(size: 10, weight: .semibold))
+                Text(preview.bundleURL.lastPathComponent)
+                    .font(.system(size: 8, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.36))
+                    .lineLimit(1)
+            }
+
+            HStack(spacing: 0) {
+                continuityMetric(preview.sessionCount, "总会话")
+                continuityMetric(preview.activeCount, "活动")
+                continuityMetric(preview.archivedCount, "已归档")
+                continuityMetric(preview.duplicateCount, "重复")
+            }
+
+            if preview.requiresPathMapping {
+                Button {
+                    store.chooseSessionImportProjectDirectory()
+                } label: {
+                    HStack(spacing: 7) {
+                        Image(systemName: "folder.badge.questionmark")
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(store.sessionImportMappedProjectURL == nil ? "原路径不存在，选择新项目目录" : "已映射到新项目")
+                            Text(store.sessionImportMappedProjectURL?.path ?? preview.manifest.project.originalPath)
+                                .font(.system(size: 7.5, weight: .medium, design: .monospaced))
+                                .foregroundStyle(.white.opacity(0.35))
+                                .lineLimit(1)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                    }
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(store.sessionImportMappedProjectURL == nil ? .orange : .cyan)
+                    .padding(.horizontal, 10)
+                    .frame(height: 39)
+                    .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            } else {
+                HStack(spacing: 7) {
+                    Image(systemName: "folder.fill").foregroundStyle(.cyan)
+                    Text(preview.manifest.project.originalPath)
+                        .font(.system(size: 8, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.46))
+                        .lineLimit(1)
+                }
+            }
+
+            if preview.duplicateCount > 0 {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("同 ID 会话处理")
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.42))
+                    HStack(spacing: 5) {
+                        ForEach(SessionImportDuplicateStrategy.allCases, id: \.rawValue) { strategy in
+                            Button {
+                                store.sessionImportDuplicateStrategy = strategy
+                            } label: {
+                                Text(strategy == .skip ? "跳过重复" : "作为副本")
+                                    .font(.system(size: 8.5, weight: .semibold))
+                                    .frame(maxWidth: .infinity, minHeight: 27)
+                                    .background(
+                                        store.sessionImportDuplicateStrategy == strategy
+                                            ? Color.cyan.opacity(0.16)
+                                            : Color.white.opacity(0.04),
+                                        in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    )
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(store.sessionImportDuplicateStrategy == strategy ? .cyan : .white.opacity(0.5))
+                        }
+                    }
+                }
+            }
+
+            HStack(spacing: 7) {
+                Button("取消") { store.cancelSessionImport() }
+                    .frame(maxWidth: .infinity, minHeight: 30)
+                    .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .buttonStyle(.plain)
+                Button("备份并导入") { confirmsSessionImport = true }
+                    .frame(maxWidth: .infinity, minHeight: 30)
+                    .background(Color.cyan.opacity(0.13), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.cyan)
+                    .disabled(preview.requiresPathMapping && store.sessionImportMappedProjectURL == nil)
+            }
+            .font(.system(size: 9, weight: .semibold))
+        }
+        .padding(12)
+        .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private var continuitySummaryStatusColor: Color {
+        if store.isContinuityLoading { return .cyan }
+        return store.continuitySnapshot.recoverableThreads.isEmpty ? .green : .orange
+    }
+
+    private func continuityMetric(_ value: Int, _ label: String) -> some View {
+        VStack(spacing: 2) {
+            Text("\(value)")
+                .font(.system(size: 15, weight: .bold, design: .rounded))
+                .monospacedDigit()
+            Text(label)
+                .font(.system(size: 8, weight: .medium))
+                .foregroundStyle(.white.opacity(0.38))
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func continuityMessageCard(_ message: String, color: Color) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: color == .orange ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                .foregroundStyle(color)
+            Text(message)
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(.white.opacity(0.67))
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(11)
+        .background(color.opacity(0.075), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .strokeBorder(color.opacity(0.18), lineWidth: 0.7)
+        }
+    }
+
+    private var continuityThreadCard: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack {
+                Text("最近项目会话")
+                    .font(.system(size: 11, weight: .bold))
+                Spacer()
+                if store.continuitySnapshot.baselineOwnershipCount > 0 {
+                    Text("\(store.continuitySnapshot.baselineOwnershipCount) 条基线前会话")
+                        .font(.system(size: 8, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.35))
+                        .help("插件建立账号基线前已存在，无法可靠反推创建账号")
+                } else if store.continuitySnapshot.unknownOwnershipCount > 0 {
+                    Text("\(store.continuitySnapshot.unknownOwnershipCount) 条尚未建立归属")
+                        .font(.system(size: 8, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.35))
+                }
+            }
+            if store.continuitySnapshot.userThreads.isEmpty {
+                Text("暂未发现本地 Codex 会话")
+                    .font(.system(size: 9.5, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.4))
+                    .frame(maxWidth: .infinity, minHeight: 54)
+            } else {
+                ForEach(store.continuitySnapshot.projectGroups) { project in
+                    continuityProjectSection(project)
+                }
+            }
+        }
+        .padding(12)
+        .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .onAppear {
+            if expandedContinuityProjectID == nil {
+                expandedContinuityProjectID = store.continuitySnapshot.projectGroups.first?.id
+            }
+        }
+        .onChange(of: store.continuitySnapshot.projectGroups.map(\.id)) { projectIDs in
+            if let expandedContinuityProjectID,
+               projectIDs.contains(expandedContinuityProjectID) {
+                return
+            }
+            expandedContinuityProjectID = projectIDs.first
+        }
+    }
+
+    private func continuityProjectSection(_ project: ContinuityProjectGroup) -> some View {
+        let isExpanded = expandedContinuityProjectID == project.id
+        return VStack(spacing: 7) {
+            HStack(spacing: 6) {
+                Button {
+                    withAnimation(.islandContentSwap) {
+                        expandedContinuityProjectID = isExpanded ? nil : project.id
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "folder.fill")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.cyan)
+                            .frame(width: 18, height: 18)
+                            .background(Color.cyan.opacity(0.09), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                        Text(project.name)
+                            .font(.system(size: 10, weight: .bold))
+                            .lineLimit(1)
+                        Spacer(minLength: 6)
+                        Text("\(project.threads.count) 个对话")
+                            .font(.system(size: 8, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.34))
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(.white.opacity(0.32))
+                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 29)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    store.exportProject(project)
+                } label: {
+                    Image(systemName: "square.and.arrow.up")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.cyan)
+                        .frame(width: 27, height: 27)
+                        .background(Color.cyan.opacity(0.08), in: Circle())
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .help("导出此项目的 \(project.threads.count) 条会话")
+            }
+
+            if isExpanded {
+                HStack(alignment: .top, spacing: 9) {
+                    Capsule()
+                        .fill(Color.cyan.opacity(0.16))
+                        .frame(width: 1.5)
+                    VStack(spacing: 7) {
+                        ForEach(project.threads) { thread in
+                            continuityThreadRow(thread)
+                        }
+                    }
+                }
+                .padding(.leading, 8)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 7)
+        .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+    }
+
+    private func continuityThreadRow(_ thread: LocalThreadRecord) -> some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(thread.visibility == .visible ? Color.green : (thread.visibility == .localOnly ? .orange : .red))
+                .frame(width: 5, height: 5)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(thread.title)
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .lineLimit(1)
+                HStack(spacing: 5) {
+                    Text(thread.visibility.title)
+                    if thread.isArchived { Text("· 已归档") }
+                    Text("·")
+                    Text(ownershipTitle(thread.ownership))
+                }
+                .font(.system(size: 8, weight: .medium))
+                .foregroundStyle(.white.opacity(0.36))
+            }
+            Spacer(minLength: 6)
+            if thread.canExportSummary {
+                Button {
+                    store.copyHandoffSummary(for: thread)
+                } label: {
+                    Text("复制摘要")
+                        .font(.system(size: 8.5, weight: .semibold))
+                        .foregroundStyle(.cyan)
+                        .padding(.horizontal, 8)
+                        .frame(height: 23)
+                        .background(Color.cyan.opacity(0.08), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .help("复制经脱敏的本地交接摘要，不会创建新会话")
+            }
+            Button {
+                store.exportSession(thread)
+            } label: {
+                Text("导出")
+                    .font(.system(size: 8.5, weight: .semibold))
+                    .foregroundStyle(.cyan)
+                    .padding(.horizontal, 8)
+                    .frame(height: 23)
+                    .background(Color.cyan.opacity(0.08), in: Capsule())
+                    .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .help("导出脱敏的可读副本或原始可恢复备份")
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func ownershipTitle(_ ownership: SessionOwnership) -> String {
+        switch ownership.confidence {
+        case .observed:
+            return ownership.accountAlias ?? "已观察账号"
+        case .baseline:
+            return "基线前未记录"
+        case .unknown:
+            return "尚未建立归属"
+        }
+    }
+
+    private var continuityBackupCard: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "clock.arrow.circlepath")
+                .foregroundStyle(.white.opacity(0.55))
+            VStack(alignment: .leading, spacing: 2) {
+                Text("已保留操作前备份")
+                    .font(.system(size: 9.5, weight: .semibold))
+                Text(store.lastContinuityBackupURL?.lastPathComponent ?? "")
+                    .font(.system(size: 7.5, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.32))
+            }
+            Spacer()
+            Button("回滚") { confirmsContinuityRollback = true }
+                .font(.system(size: 8.5, weight: .semibold))
+                .buttonStyle(.plain)
+                .foregroundStyle(.orange)
+        }
+        .padding(11)
+        .background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+    }
+
+    private var sessionImportBackupCard: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "arrow.uturn.backward.circle")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("已保留导入前备份")
+                    .font(.system(size: 9.5, weight: .semibold))
+                Text(store.lastSessionImportBackupURL?.lastPathComponent ?? "")
+                    .font(.system(size: 7.5, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.32))
+            }
+            Spacer()
+            Button("撤销导入") { confirmsSessionImportRollback = true }
+                .font(.system(size: 8.5, weight: .semibold))
+                .buttonStyle(.plain)
+                .foregroundStyle(.orange)
+                .disabled(store.isSessionImporting)
+        }
+        .padding(11)
+        .background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
     }
 
     private var tiboPage: some View {

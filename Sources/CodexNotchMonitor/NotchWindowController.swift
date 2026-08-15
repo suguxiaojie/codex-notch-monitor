@@ -279,6 +279,10 @@ final class NotchWindowController: NSObject {
     }
 
     private func collapseIfClickIsOutside(at screenLocation: NSPoint) {
+        // Save/open panels are separate app-modal windows. Treating clicks in
+        // them as desktop clicks would collapse the island halfway through an
+        // export or recovery workflow.
+        guard NSApp.modalWindow == nil else { return }
         guard store.isExpanded, !visibleIslandFrameOnScreen().contains(screenLocation) else { return }
         setExpanded(false)
     }

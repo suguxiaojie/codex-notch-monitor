@@ -28,6 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidBecomeActive(_ notification: Notification) {
         store.refreshNotificationStatus()
+        store.refreshContinuity()
     }
 
     private func installStatusItem() {

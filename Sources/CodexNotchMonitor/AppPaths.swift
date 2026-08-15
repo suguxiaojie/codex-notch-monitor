@@ -10,9 +10,22 @@ enum AppPaths {
         supportDirectory.appendingPathComponent("events", isDirectory: true)
     }
 
+    static var accountContinuityState: URL {
+        supportDirectory.appendingPathComponent("account-continuity.json")
+    }
+
+    static var continuityBackups: URL {
+        supportDirectory.appendingPathComponent("continuity-backups", isDirectory: true)
+    }
+
     static func prepareDirectories() throws {
         try FileManager.default.createDirectory(
             at: eventInbox,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try FileManager.default.createDirectory(
+            at: continuityBackups,
             withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700]
         )

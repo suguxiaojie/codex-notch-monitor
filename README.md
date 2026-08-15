@@ -30,6 +30,10 @@
 - Usage 页复用本地结构化会话日志的一次扫描，同时统计 `~/.codex/sessions/` 与 `~/.codex/archived_sessions/`，会话归档后当日／本周／本月的 Usage 和 Cost 不会减少；若迁移期间两处短暂存在同一会话，会按结构化 Token 事件去重。页面支持今日／本周／本月切换；分别显示 Token 总量、输入／输出／缓存拆分、会话与项目数量、按小时或按日的非累计折线趋势，以及根据真实 `session_meta.cwd` 聚合的项目排行。趋势使用青色折线、渐变面积和“统计截至当前”的末端光点，只绘制到当前小时／当前星期／今天，不会把未来空桶画成虚假的骤降；鼠标在折线区域移动时会吸附最近节点，以参考线、光点和气泡显示对应小时或日期的精确 Token；切换周期只使用内存快照，不会重新扫描磁盘。
 - 项目目录在会话运行期间改名时，插件会用同一 `session_id` 的最新 Hook 路径覆盖历史 `session_meta.cwd`，因此改名前后的 Token 会合并到新项目名；顶部刷新按钮会同时刷新额度、运行状态与 Usage/Cost，而不再只刷新额度。
 - Usage 项目排行以完整路径作为稳定统计主键，但显示名称优先读取 Codex 本地 `local-projects` 的侧栏别名；因此只在 Codex 左侧栏修改项目名（不修改磁盘文件夹）后，刷新即可同步为新名称。未设置侧栏别名时才回退到文件夹名称。
+- 展开面板新增“会话”模块，为同一台 Mac 上的 Codex 项目与会话提供本地盘点：通过官方 App Server `account/read` 识别当前账号，只保存带随机盐的本机指纹、脱敏邮箱和本地观察到的会话归属；基线前的历史会话不会被猜测为当前账号。应用只监听 Codex 账号状态文件的修改时间、大小与文件编号，不读取文件内容；切换账号后会防抖约 0.8 秒并立即重新盘点，30 秒轮询只作为文件事件丢失时的兜底。
+- “会话”模块会同时盘点活动与已归档 JSONL，并用 App Server 的仅状态库视图发现“本地文件仍在、当前列表缺失”的会话。恢复前强制要求完全退出 Codex／ChatGPT Desktop，自动备份 SQLite 状态库、会话索引和项目映射，再让官方 App Server 扫描 JSONL 并修复索引；原始会话 JSONL 不会被改写。
+- 会话初始化采用文件头／文件尾有界解析：大文件最多读取 1.5 MiB，并按路径、大小和修改时间复用进程内解析缓存。账号确认、App Server 可见性查询和本地日志扫描并行执行；扫描中显示真实进度并保留上一次结果，不再把多 GB 历史日志完整载入内存。
+- 会话行保留“复制摘要”，并新增单会话“导出”和项目级批量导出。系统保存面板可选择脱敏 Markdown、脱敏自包含 HTML，或原始 `.codexmonitorbundle` 可恢复备份；备份包使用 `codex-notch-session/v1` 清单、逐文件 SHA-256、活动／归档状态、项目路径和可靠观察到的账号别名，但不包含账号指纹、`auth.json`、Cookie 或 Token。原始 JSONL 可能含提示词、源码、终端输出、绝对路径和图片，只适合私下备份，不应公开分享。导出过程不会调用 `thread/start` 或 `turn/start`，不会创建新 Codex 会话，也不会消耗额度。“会话”页可重新导入该备份：写入前会校验包路径、符号链接、Manifest、JSONL 内部 ID／项目路径和 SHA-256；原项目缺失时要求手动映射新目录，同 ID 默认跳过，也可生成新 ID 作为副本。
 - 展开面板新增“动态”模块，读取 Codex Runway 的公开 `https://www.codexrunway.com/api/status.json`，显示 `@thsottiaux` 与 Codex 额度相关的已完成重置、计划重置、额度提升等结构化消息。兼容 `resetTimeline` 扩展：人工确认的重置会置顶，已履行的计划作为证据合并展示，并按 `suppressedPostIds` 去重；旧版缺少时间线的 ETag 缓存会自动执行一次完整迁移请求。请求支持 ETag／Last-Modified、本地最后成功缓存、来源账号与规范 X 链接校验；网络或上游异常时保留旧数据并提示可能延迟，点击“在 X 查看”可打开原始内容。macOS 15 及以上版本可按条调用系统 Translation 框架翻译成简体中文，译文只在当前应用内存中缓存，不调用第三方翻译服务；旧版 macOS 继续显示原文和明确的兼容性提示。该数据源非 OpenAI 官方，也不是 Tibo 的完整推文时间线。
 - 动态页同时监控额度从低位恢复至满额：窗口 `resetsAt` 可以确认自然到期重置，近期 Tibo 动态可以确认官方临时或计划重置；缺少证据的跳变会先进入待核验队列，避免首次启动、切换账号或接口抖动造成误报。确认后通过 macOS 系统通知显示具体额度窗口与前后百分比，并在本地保留最近记录；通知关闭时可从卡片直接跳转到 Codex Monitor 的系统通知设置。
 - 收起栏顶部仅在摄像头左右安全翼显示项目数量/运行状态和额度，物理摄像头所在中段不再放置文字。摄像头下方使用自适应项目板：1 个项目单列、2 个项目左右双列、3 个项目采用“2＋1”、4 个项目采用“2×2”，超过 4 个时显示 3 个高优先级项目和一个 `+N` 汇总格。每格独立显示状态点、项目名与动作摘要，点击会展开并选中该项目；项目槽位在运行期间保持稳定。
@@ -137,7 +141,7 @@ build/CodexNotchMonitor-v<version>-<architecture>.dmg
 | `Stop` | 任务已完成 |
 | `SessionEnd` | 会话已结束 |
 
-除了 `SessionEnd`，Relay Hooks 均以 `async: true` 运行，避免等待应用处理事件。`SessionEnd` 按 Codex 的官方行为始终同步运行，Helper 本身只写入一个小型 JSON 文件后立即退出。
+所有 Relay Hooks 都以同步、2 秒超时模式运行，以兼容仍会跳过 `async: true` Hook 的 Codex 版本。Helper 不读取项目文件或执行网络请求，只向应用支持目录写入一个小型 JSON 事件后立即退出；即使 Helper 异常，单次同步等待也不会超过 2 秒。安装脚本会移除旧版监控 Hook 的异步定义，同时保留其他已有 Hooks。
 
 ## 本地数据和隐私
 
@@ -147,12 +151,18 @@ build/CodexNotchMonitor-v<version>-<architecture>.dmg
 - Hook 提供的会话 ID、Turn ID、工作目录、模型、工具名称、事件名称和时间。
 - `~/Library/Application Support/CodexNotchMonitor/events/` 下的临时事件文件。
 - `~/.codex/sessions/` 最近 24 小时有写入的候选会话 JSONL 中的任务边界、工作目录、模型、commentary 进度文字，以及工具名称/命令短摘要。会话按实际修改时间跨日期目录发现，不以任务创建日期判断活跃性。
+- “会话”页盘点 `~/.codex/sessions/` 与 `~/.codex/archived_sessions/` 的线程 ID、项目目录、Git 分支、修改时间和最近可读的用户／助手消息；消息正文只保存在当前应用内存中，仅用于用户主动复制交接摘要或生成导出文件，不写入插件状态文件。可读导出会流式扫描所选原始 JSONL 并脱敏；可恢复备份则逐字节复制所选 JSONL，因此需要按敏感本地记录保护。
+- 会话连续性统计只包含有真实用户消息的主会话；Guardian／Subagent 内部线程和无用户消息的系统记录不计入“会话”或“待恢复”。插件首次建立账号基线前已存在的会话会标记为“基线前未记录”，不会猜测历史账号归属。
+- App Server `account/read` 返回的账号类型、套餐与邮箱。邮箱只以脱敏形式显示；持久状态使用每台 Mac 独立随机盐生成的不可逆指纹，不保存登录 Token 或原始邮箱。
+- 执行会话恢复时，`state_5.sqlite`、WAL/SHM、`session_index.jsonl` 和 `.codex-global-state.json` 的操作前备份。备份仅保存在 `~/Library/Application Support/CodexNotchMonitor/continuity-backups/`，带 SHA-256 校验清单，供面板回滚使用。
+- 导入 `.codexmonitorbundle` 时，只有用户在预览后确认才会写入 `~/.codex/sessions/` 或 `~/.codex/archived_sessions/`。导入前备份索引和项目状态，并记录本次新建文件；面板可在 Codex 完全退出时撤销导入。导入不读取、复制或改写登录凭据。
 - Cost 页扫描当月活动及已归档 Codex JSONL 中的 `turn_context.payload.model` 和 `event_msg.token_count.info.last_token_usage`，不读取提示词、回答或工具输出正文。
 - Cost 模型价格来自 CodexIsland 的公开 HTTPS 目录。应用先使用本地缓存或内置价格立即计算，后台每 24 小时最多成功刷新一次；失败后至少等待 6 小时再重试。请求使用 ETag，目录未变化时不重复下载正文。
 
 应用不会保存或显示：
 
-- 用户提示词正文和模型推理内容。
+- 用户提示词正文和助手消息正文不会被插件持久化或默认显示；只有用户点击“复制摘要”时，最近可读消息才会经过脱敏并写入本机剪贴板。
+- 模型推理内容和加密推理数据。
 - 工具输出或项目文件内容。
 - Codex 认证 Token。
 - 项目文件内容。
@@ -174,6 +184,13 @@ build/CodexNotchMonitor-v<version>-<architecture>.dmg
 ```text
 Sources/CodexNotchMonitor/
   App.swift                    应用生命周期和菜单栏入口
+  AccountContinuity.swift      当前账号脱敏识别、本机指纹与观察式归属
+  CodexAccountStateWatcher.swift 账号状态文件元数据监听与切换防抖
+  CodexAppServerClient.swift   可复用的本机 App Server 协议客户端
+  SessionContinuityService.swift 本地会话盘点、可见性和安全交接摘要
+  SessionExportService.swift    会话 Markdown／HTML 渲染和校验备份包
+  SessionImportService.swift    备份预检、路径映射、安全导入和事务回滚
+  SessionRecoveryService.swift 恢复前备份、官方索引回填与回滚
   NotchWindowController.swift  顶部 NSPanel、多屏和展开动画
   NotchView.swift              收起/展开 SwiftUI 界面
   QuotaService.swift           Codex App Server JSON-RPC 客户端
@@ -194,6 +211,9 @@ Sources/CodexMonitorHook/
 - App Server 额度返回的是额度窗口使用比例，不是固定“剩余消息条数”。
 - Cost 是按参考模型单价折算的 API 等价估值，不是 ChatGPT/Codex 订阅的真实账单；普通未知模型会列出并按 $0 处理。Codex 内部的 `codex-auto-review` 路由会按本地时间线上当时使用的主模型估算，并在界面中明确显示映射关系。
 - 当前只显示最近 8 个本机会话状态，不读取远程 Cloud 任务详情。
+- 账号归属采用“从启用后观察”的证据口径：首次盘点前已经存在的历史会话保持未知；离线期间创建并在下一次盘点前又切换账号的会话也不能可靠归属。应用不会为填满界面而猜测。
+- 会话管理仅面向本地 JSONL 和本应用生成的 `codex-notch-session/v1` 备份。它不会迁移 `auth.json`、云端任务、审批状态、加密推理内容或模型内部缓存；复制的交接摘要由用户自行检查和决定是否粘贴到新会话。导入后会请求本机 App Server 重新发现，但 Codex 版本变化仍可能导致“JSONL 已写入、App Server 暂不可见”；界面会如实报告可见数，不把复制成功冒充恢复成功。
+- 若 App Server 只返回 API Key 登录类型而没有稳定账号标识，一期无法可靠区分两把不同 Key，因此不会宣称已检测到切换；ChatGPT 登录会使用本机加盐后的邮箱指纹识别，原始邮箱不落盘。
 - 应用目前使用 ad-hoc 签名，正式分发前应加入 Developer ID、Notarization 和 Sparkle 更新签名。
 
 ## 官方协议依据
