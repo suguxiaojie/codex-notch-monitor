@@ -4,7 +4,7 @@
 
 **在 Mac 顶部实时掌握 Codex 额度、成本与多项目运行状态**
 
-[![Download v1.3.0](https://img.shields.io/badge/Download-v1.3.0-27C2FF?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/suguxiaojie/codex-notch-monitor/releases/latest)
+[![Download v1.3.1](https://img.shields.io/badge/Download-v1.3.1-27C2FF?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/suguxiaojie/codex-notch-monitor/releases/latest)
 [![CoverAI](https://img.shields.io/badge/Built%20by-CoverAI-111827?style=for-the-badge&labelColor=111827&color=0EA5E9)](https://coverai.store/?utm_source=github&utm_medium=repository&utm_campaign=codex_notch_monitor_header)
 
 由 [**CoverAI**](https://coverai.store/?utm_source=github&utm_medium=repository&utm_campaign=codex_notch_monitor_header) 打造<br>
@@ -21,7 +21,7 @@
 当前 MVP 已实现：
 
 - 通过官方 Codex App Server 的 `account/rateLimits/read` 读取真实额度。
-- 显示多额度桶、剩余百分比、套餐类型和重置时间。
+- 显示多额度桶、剩余百分比、套餐类型和重置时间；倒计时按剩余长度细化为“天＋小时”“小时＋分钟”或分钟，并在服务端时间到期后明确等待额度刷新。
 - 同一 Codex 额度桶的短周期与长周期窗口会独立显示：若 App Server 同时返回 5 小时和周限额，展开页分别显示两行；没有返回的窗口不制造空占位。收起态优先显示周期最短、最需要即时关注的窗口，且不依赖 `primary/secondary` 字段顺序。
 - 通过 Codex lifecycle Hooks 接收开始、工具调用、等待批准、完成等状态。
 - 只读监听最近活跃的多份 Codex 会话，通过结构化 `task_started` / `task_complete` 信号同时识别多个项目；同一路径的多个会话会聚合为一个项目，等待批准的项目优先成为收起栏焦点。
@@ -39,7 +39,7 @@
 - 收起栏顶部仅在摄像头左右安全翼显示项目数量/运行状态和额度，物理摄像头所在中段不再放置文字。摄像头下方使用自适应项目板：1 个项目单列、2 个项目左右双列、3 个项目采用“2＋1”、4 个项目采用“2×2”，超过 4 个时显示 3 个高优先级项目和一个 `+N` 汇总格。每格独立显示状态点、项目名与动作摘要，点击会展开并选中该项目；项目槽位在运行期间保持稳定。
 - 收起栏采用 CodexIsland 风格的 `compact → peek` 交互：默认只显示菜单栏内的状态和额度，不向下遮挡当前应用；鼠标移入后才展开多项目动作板，离开整个区域 450ms 后自动收起，等待批准时保持可见。活跃状态点以约 2.4 秒周期呼吸，新活动到达时轻弹；运行期间有一条状态色角向渐变沿整个收起态轮廓约 3.6 秒环绕一周；项目悬停与按压提供短促反馈。展开使用较柔和的弹簧，收起更快，且所有动效均保持物理摄像头安全区不承载文字；空闲时停止逐帧动画。
 - 默认待命态采用“隐形岛”设计：黑底直接与实体摄像头融合，不绘制横跨整条胶囊的静态描边或环境光。左翼使用 ChatGPT.app 自带的 Retina 菜单栏模板旋结替代普通状态点：待命时低亮度慢呼吸，运行时增强蓝光和闪烁节奏，等待批准时随状态切换为橙色；右翼是迷你环形额度表与百分比徽标。鼠标移入时两翼局部提亮，只有运行时才出现沿完整外轮廓移动的动态环绕光。
-- 展开面板支持 `Usage / Cost / 动态` 点击、触控板双指横向滑动或 `Shift + 鼠标滚轮` 切换。窗口级 AppKit 监听会在内部 ScrollView 消费事件前累计手势；横向累计达到 30pt 且明显占优时立即切一页，不再依赖可能丢失的结束事件。一次物理手势有触发锁，惯性不会造成第二次切页；纵向事件仍原样进入内容滚动。Cost 仅读取 `~/.codex/sessions/` 的结构化模型、时间和 token 计数字段，估算今天与本月至今的 API 等价美元成本、输入/输出/缓存 token 和今日每小时趋势；暂不扫描 Claude 日志。
+- 展开面板支持 `Usage / Cost / 动态` 点击、触控板双指横向滑动或 `Shift + 鼠标滚轮` 切换。窗口级 AppKit 监听会在内部 ScrollView 消费事件前累计手势；横向累计达到 30pt 且明显占优时立即切一页，不再依赖可能丢失的结束事件。一次物理手势有触发锁，惯性不会造成第二次切页；纵向事件仍原样进入内容滚动。Cost 仅读取 `~/.codex/sessions/` 与归档会话中的结构化模型、时间和 token 计数字段，支持今日／本周／本月 API 等价美元成本、输入／输出／缓存 token 和本地日志来源统计；趋势按小时或自然日展示非累计成本，只绘制到当前时间，鼠标移动时以参考线、节点和气泡显示对应时段的具体美元估值。Cost 暂不扫描 Claude 日志。
 - 不读取推理内容、工具输出或项目文件内容；命令摘要会截断，并遮盖常见 Token、密钥和密码参数。
 - 有刘海屏幕使用系统报告的左右辅助区域测量摄像头宽度，收起态内容分布在刘海左右双翼；展开态整体位于刘海下方。无刘海或外接显示器显示顶部浮动胶囊。
 - 收起态高度跟随当前菜单栏高度；横向宽度会参考刘海几何和右侧实时菜单栏项目边界自动计算。中间留白按实体遮挡近似宽度计算，而不是 macOS 额外加宽的保守安全区；切换分辨率、显示器或菜单栏项目时会重新适配。
