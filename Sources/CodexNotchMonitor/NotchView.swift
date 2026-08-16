@@ -32,6 +32,7 @@ struct NotchView: View {
     let onToggle: () -> Void
     @State private var expandedPage: ExpandedPage = .usage
     @State private var usagePeriod: UsagePeriod = .day
+    @State private var costPeriod: UsagePeriod = .day
     @State private var compactHideWorkItem: DispatchWorkItem?
     @State private var compactHovered = false
     @State private var confirmsContinuityRecovery = false
@@ -1370,16 +1371,72 @@ struct NotchView: View {
     private var costPage: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 10) {
-                HStack(spacing: 10) {
-                    CostMetricCard(title: "今天", totals: store.costSnapshot.today)
-                    CostMetricCard(title: "本月至今", totals: store.costSnapshot.month)
-                }
-
+                costOverviewCard
                 costTrendCard
                 providerCostCard
                 coverAIPromoCard
             }
         }
+    }
+
+    private var costOverviewCard: some View {
+        let totals = selectedCost
+        return VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 3) {
+                ForEach(UsagePeriod.allCases) { period in
+                    Button {
+                        withAnimation(.islandContentSwap) { costPeriod = period }
+                    } label: {
+                        Text(period.rawValue)
+                            .font(.system(size: 9, weight: .semibold))
+                            .frame(maxWidth: .infinity, minHeight: 22)
+                            .foregroundStyle(costPeriod == period ? .white : .white.opacity(0.4))
+                            .background(
+                                costPeriod == period ? Color.white.opacity(0.11) : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            )
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(3)
+            .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(costPeriodTitle)
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.46))
+                    Text(formatDollars(totals.dollars))
+                        .font(.system(size: 21, weight: .bold, design: .rounded))
+                        .foregroundStyle(.cyan.opacity(0.9))
+                        .monospacedDigit()
+                }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("Token 吞吐量")
+                        .font(.system(size: 8, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.36))
+                    Text(formatTokens(totals.tokens))
+                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                }
+            }
+
+            HStack(spacing: 8) {
+                Text("输入 \(formatCompactTokens(totals.inputTokens))")
+                Text("输出 \(formatCompactTokens(totals.outputTokens))")
+                Text("缓存 \(formatCompactTokens(totals.cacheTokens))")
+                Spacer(minLength: 0)
+                if store.isCostLoading { ProgressView().controlSize(.mini).tint(.cyan) }
+            }
+            .font(.system(size: 8, weight: .medium, design: .rounded))
+            .foregroundStyle(.white.opacity(0.38))
+            .lineLimit(1)
+        }
+        .padding(12)
+        .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
     private var coverAIPromoCard: some View {
@@ -1448,16 +1505,23 @@ struct NotchView: View {
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.55))
                 Spacer()
-                Text("今日 · 按小时累计")
+                Text(costTrendContext)
                     .font(.system(size: 9, weight: .medium))
                     .foregroundStyle(.white.opacity(0.34))
             }
-            CostSparkline(values: store.costSnapshot.today.series)
-                .stroke(Color.cyan, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
-                .frame(height: 38)
-                .overlay(alignment: .bottom) {
-                    Rectangle().fill(.white.opacity(0.07)).frame(height: 1)
-                }
+            CostTrendChart(
+                values: Array(selectedCost.series.prefix(costVisiblePointCount)),
+                period: costPeriod
+            )
+            .frame(height: 58)
+
+            HStack {
+                Text(costTrendStartLabel)
+                Spacer()
+                Text(costTrendEndLabel)
+            }
+            .font(.system(size: 7.5, weight: .medium, design: .rounded))
+            .foregroundStyle(.white.opacity(0.28))
         }
         .padding(11)
         .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -1479,6 +1543,7 @@ struct NotchView: View {
                 .buttonStyle(.plain)
             }
             ForEach(store.costSnapshot.providers) { provider in
+                let totals = provider.totals(for: costPeriod)
                 VStack(spacing: 4) {
                     HStack {
                         Circle()
@@ -1487,24 +1552,24 @@ struct NotchView: View {
                         Text(provider.provider.rawValue)
                             .font(.system(size: 10, weight: .semibold))
                         Spacer()
-                        Text("今日统计")
+                        Text(costPeriod.rawValue + "统计")
                             .font(.system(size: 8, weight: .medium))
                             .foregroundStyle(.white.opacity(0.34))
                     }
                     HStack {
-                        if provider.month.tokens == 0 {
+                        if totals.tokens == 0 {
                             Text("暂无 Codex 本地日志")
                                 .foregroundStyle(.white.opacity(0.42))
                         } else {
                             Text("Token 吞吐量")
                                 .foregroundStyle(.white.opacity(0.42))
-                            Text(formatTokens(provider.today.tokens))
+                            Text(formatTokens(totals.tokens))
                                 .foregroundStyle(.cyan.opacity(0.78))
                                 .monospacedDigit()
                             Spacer()
                             Text("等价成本")
                                 .foregroundStyle(.white.opacity(0.42))
-                            Text(formatDollars(provider.today.dollars))
+                            Text(formatDollars(totals.dollars))
                                 .fontWeight(.bold)
                                 .monospacedDigit()
                         }
@@ -1561,6 +1626,56 @@ struct NotchView: View {
 
     private func formatDollars(_ value: Double) -> String {
         value < 10 ? String(format: "$%.2f", value) : String(format: "$%.1f", value)
+    }
+
+    private var selectedCost: CostTotals {
+        store.costSnapshot.totals(for: costPeriod)
+    }
+
+    private var costPeriodTitle: String {
+        switch costPeriod {
+        case .day: return "今日 API 等价成本"
+        case .week: return "本周 API 等价成本"
+        case .month: return "本月 API 等价成本"
+        }
+    }
+
+    private var costTrendContext: String {
+        switch costPeriod {
+        case .day: return "今日 · 每小时成本"
+        case .week: return "本周 · 每日成本"
+        case .month: return "本月 · 每日成本"
+        }
+    }
+
+    private var costVisiblePointCount: Int {
+        let calendar = Calendar.current
+        switch costPeriod {
+        case .day:
+            return min(selectedCost.series.count, calendar.component(.hour, from: Date()) + 1)
+        case .week:
+            let weekday = calendar.component(.weekday, from: Date())
+            let mondayBasedDay = (weekday + 5) % 7
+            return min(selectedCost.series.count, mondayBasedDay + 1)
+        case .month:
+            return min(selectedCost.series.count, calendar.component(.day, from: Date()))
+        }
+    }
+
+    private var costTrendStartLabel: String {
+        switch costPeriod {
+        case .day: return "00 时"
+        case .week: return "周一"
+        case .month: return "1 日"
+        }
+    }
+
+    private var costTrendEndLabel: String {
+        switch costPeriod {
+        case .day: return "23 时"
+        case .week: return "周日"
+        case .month: return "月末"
+        }
     }
 
     private var selectedUsage: UsageTotals {
@@ -2275,9 +2390,11 @@ private struct QuotaRow: View {
                         }
                     }
                         .font(.system(size: 12, weight: .semibold))
-                    Text(resetText)
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.42))
+                    TimelineView(.periodic(from: .now, by: 60)) { context in
+                        Text(resetText(relativeTo: context.date))
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.42))
+                    }
                 }
                 Spacer()
                 Text("\(window.remainingPercent)%")
@@ -2306,14 +2423,12 @@ private struct QuotaRow: View {
         return .cyan
     }
 
-    private var resetText: String {
+    private func resetText(relativeTo now: Date) -> String {
         guard let date = window.resetsAt else { return window.windowLabel }
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        let relative = formatter.localizedString(for: date, relativeTo: Date())
+        let countdown = QuotaResetCountdown.text(until: date, relativeTo: now)
         return bucket.windows.count > 1
-            ? "\(relative)重置"
-            : "\(window.windowLabel) · \(relative)重置"
+            ? countdown
+            : "\(window.windowLabel) · \(countdown)"
     }
 }
 
@@ -2440,49 +2555,143 @@ private struct TiboChineseTranslationView: View {
 }
 #endif
 
-private struct CostMetricCard: View {
-    let title: String
-    let totals: CostTotals
+private struct CostTrendChart: View {
+    let values: [Double]
+    let period: UsagePeriod
+    @State private var hoveredIndex: Int?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(title)
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.46))
-            Text(formatDollars(totals.dollars))
-                .font(.system(size: 21, weight: .bold, design: .rounded))
-                .monospacedDigit()
-            Text(formatTokens(totals.tokens))
-                .font(.system(size: 9, weight: .medium, design: .rounded))
-                .foregroundStyle(.cyan.opacity(0.78))
-                .monospacedDigit()
-            HStack(spacing: 5) {
-                Text("输入 \(formatCompact(totals.inputTokens))")
-                Text("输出 \(formatCompact(totals.outputTokens))")
-                Text("缓存 \(formatCompact(totals.cacheTokens))")
+        GeometryReader { proxy in
+            let points = UsageTrendGeometry.points(values: values, in: proxy.size)
+            ZStack {
+                VStack(spacing: 0) {
+                    ForEach(0..<3, id: \.self) { _ in
+                        Rectangle()
+                            .fill(.white.opacity(0.045))
+                            .frame(height: 0.5)
+                        Spacer(minLength: 0)
+                    }
+                }
+
+                if values.contains(where: { $0 > 0 }) {
+                    UsageTrendArea(points: points)
+                        .fill(
+                            LinearGradient(
+                                colors: [.cyan.opacity(0.24), .cyan.opacity(0.07), .clear],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+
+                    UsageTrendLine(points: points)
+                        .stroke(
+                            LinearGradient(
+                                colors: [.cyan.opacity(0.68), .cyan],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            ),
+                            style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round)
+                        )
+                        .shadow(color: .cyan.opacity(0.28), radius: 2)
+
+                    if let endpoint = points.last {
+                        Circle()
+                            .fill(.cyan.opacity(0.18))
+                            .frame(width: 13, height: 13)
+                            .blur(radius: 1.5)
+                            .position(endpoint)
+                        Circle()
+                            .fill(.cyan)
+                            .frame(width: 5.5, height: 5.5)
+                            .overlay(Circle().stroke(.white.opacity(0.42), lineWidth: 0.7))
+                            .shadow(color: .cyan.opacity(0.75), radius: 3)
+                            .position(endpoint)
+                    }
+
+                    if let hoveredIndex,
+                       values.indices.contains(hoveredIndex),
+                       points.indices.contains(hoveredIndex) {
+                        let point = points[hoveredIndex]
+                        Rectangle()
+                            .fill(.white.opacity(0.13))
+                            .frame(width: 0.7, height: max(1, proxy.size.height - 18))
+                            .position(x: point.x, y: proxy.size.height / 2 + 9)
+
+                        Circle()
+                            .fill(.black)
+                            .frame(width: 9, height: 9)
+                            .overlay(Circle().stroke(.cyan, lineWidth: 2))
+                            .shadow(color: .cyan.opacity(0.8), radius: 4)
+                            .position(point)
+
+                        Text("\(bucketLabel(for: hoveredIndex)) · \(formatDollars(values[hoveredIndex]))")
+                            .font(.system(size: 7.5, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.white.opacity(0.92))
+                            .lineLimit(1)
+                            .padding(.horizontal, 6)
+                            .frame(height: 16)
+                            .background(.black.opacity(0.92), in: Capsule(style: .continuous))
+                            .overlay {
+                                Capsule(style: .continuous)
+                                    .strokeBorder(.cyan.opacity(0.28), lineWidth: 0.6)
+                            }
+                            .fixedSize()
+                            .position(
+                                x: tooltipX(point.x, width: proxy.size.width),
+                                y: 8
+                            )
+                    }
+                } else {
+                    Text("当前周期暂无可估算成本")
+                        .font(.system(size: 8, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.3))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             }
-            .font(.system(size: 7.5, weight: .medium, design: .rounded))
-            .foregroundStyle(.white.opacity(0.33))
-            .lineLimit(1)
+            .contentShape(Rectangle())
+            .onContinuousHover { phase in
+                switch phase {
+                case let .active(location):
+                    guard !points.isEmpty else {
+                        hoveredIndex = nil
+                        return
+                    }
+                    let denominator = max(1, points.count - 1)
+                    let ratio = min(1, max(0, location.x / max(1, proxy.size.width)))
+                    hoveredIndex = min(points.count - 1, max(0, Int((ratio * CGFloat(denominator)).rounded())))
+                case .ended:
+                    hoveredIndex = nil
+                }
+            }
         }
-        .frame(maxWidth: .infinity, minHeight: 83, alignment: .leading)
-        .padding(11)
-        .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .accessibilityLabel("美元成本趋势")
+    }
+
+    private func bucketLabel(for index: Int) -> String {
+        let calendar = Calendar.current
+        let now = Date()
+        switch period {
+        case .day:
+            return String(format: "%02d:00–%02d:59", index, index)
+        case .week:
+            let weekday = calendar.component(.weekday, from: now)
+            let daysSinceMonday = (weekday + 5) % 7
+            let today = calendar.startOfDay(for: now)
+            let monday = calendar.date(byAdding: .day, value: -daysSinceMonday, to: today) ?? today
+            let date = calendar.date(byAdding: .day, value: index, to: monday) ?? monday
+            let names = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+            return "\(names[min(6, max(0, index))]) · \(calendar.component(.month, from: date))月\(calendar.component(.day, from: date))日"
+        case .month:
+            return "\(calendar.component(.month, from: now))月\(index + 1)日"
+        }
     }
 
     private func formatDollars(_ value: Double) -> String {
-        value < 10 ? String(format: "$%.2f", value) : String(format: "$%.1f", value)
+        value < 1 ? String(format: "$%.4f", value) : String(format: "$%.2f", value)
     }
 
-    private func formatTokens(_ value: Int) -> String {
-        "\(formatCompact(value)) tokens"
-    }
-
-    private func formatCompact(_ value: Int) -> String {
-        if value >= 1_000_000_000 { return String(format: "%.1fB", Double(value) / 1_000_000_000) }
-        if value >= 1_000_000 { return String(format: "%.1fM", Double(value) / 1_000_000) }
-        if value >= 1_000 { return String(format: "%.1fK", Double(value) / 1_000) }
-        return "\(value)"
+    private func tooltipX(_ pointX: CGFloat, width: CGFloat) -> CGFloat {
+        min(max(pointX, 76), max(76, width - 76))
     }
 }
 
@@ -2687,26 +2896,6 @@ private struct UsageTrendArea: Shape {
         for point in points.dropFirst() { path.addLine(to: point) }
         path.addLine(to: CGPoint(x: last.x, y: rect.maxY))
         path.closeSubpath()
-        return path
-    }
-}
-
-private struct CostSparkline: Shape {
-    let values: [Double]
-
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        guard values.count > 1, let maximum = values.max(), maximum > 0 else {
-            path.move(to: CGPoint(x: rect.minX, y: rect.maxY))
-            path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
-            return path
-        }
-        for index in values.indices {
-            let x = rect.minX + rect.width * CGFloat(index) / CGFloat(values.count - 1)
-            let y = rect.maxY - rect.height * CGFloat(values[index] / maximum)
-            if index == values.startIndex { path.move(to: CGPoint(x: x, y: y)) }
-            else { path.addLine(to: CGPoint(x: x, y: y)) }
-        }
         return path
     }
 }

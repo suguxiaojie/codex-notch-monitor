@@ -12,6 +12,38 @@ enum ModelSmokeTests {
             "remaining percentage clamp"
         )
 
+        let countdownNow = Date(timeIntervalSince1970: 1_800_000_000)
+        check(
+            QuotaResetCountdown.text(
+                until: countdownNow.addingTimeInterval(3 * 86_400 + 19 * 3_600),
+                relativeTo: countdownNow
+            ) == "3天19小时后重置",
+            "quota countdown shows days and hours"
+        )
+        check(
+            QuotaResetCountdown.text(
+                until: countdownNow.addingTimeInterval(19 * 3_600 + 26 * 60),
+                relativeTo: countdownNow
+            ) == "19小时26分钟后重置",
+            "quota countdown shows hours and minutes"
+        )
+        check(
+            QuotaResetCountdown.text(
+                until: countdownNow.addingTimeInterval(26 * 60),
+                relativeTo: countdownNow
+            ) == "26分钟后重置",
+            "quota countdown shows minutes"
+        )
+        check(
+            QuotaResetCountdown.text(until: countdownNow.addingTimeInterval(30), relativeTo: countdownNow)
+                == "即将重置",
+            "quota countdown handles the final minute"
+        )
+        check(
+            QuotaResetCountdown.text(until: countdownNow, relativeTo: countdownNow) == "等待额度刷新",
+            "quota countdown handles an elapsed reset time"
+        )
+
         let payload: [String: Any] = [
             "rateLimitsByLimitId": [
                 "codex": [

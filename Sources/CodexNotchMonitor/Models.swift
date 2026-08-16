@@ -26,6 +26,34 @@ struct RateLimitWindow: Equatable {
     }
 }
 
+enum QuotaResetCountdown {
+    static func text(until resetDate: Date, relativeTo now: Date) -> String {
+        let remainingSeconds = Int(resetDate.timeIntervalSince(now))
+        guard remainingSeconds > 0 else { return "等待额度刷新" }
+
+        let totalMinutes = remainingSeconds / 60
+        guard totalMinutes > 0 else { return "即将重置" }
+
+        let totalHours = totalMinutes / 60
+        if totalHours >= 24 {
+            let days = totalHours / 24
+            let hours = totalHours % 24
+            return hours > 0
+                ? "\(days)天\(hours)小时后重置"
+                : "\(days)天后重置"
+        }
+
+        if totalHours > 0 {
+            let minutes = totalMinutes % 60
+            return minutes > 0
+                ? "\(totalHours)小时\(minutes)分钟后重置"
+                : "\(totalHours)小时后重置"
+        }
+
+        return "\(totalMinutes)分钟后重置"
+    }
+}
+
 struct RateLimitBucket: Identifiable, Equatable {
     let id: String
     let name: String

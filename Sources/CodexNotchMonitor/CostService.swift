@@ -64,11 +64,21 @@ struct ProviderCostTotals: Identifiable, Equatable {
     var id: String { provider.rawValue }
     let provider: CostProvider
     var today: CostTotals
+    var week: CostTotals
     var month: CostTotals
+
+    func totals(for period: UsagePeriod) -> CostTotals {
+        switch period {
+        case .day: return today
+        case .week: return week
+        case .month: return month
+        }
+    }
 }
 
 struct CostSnapshot: Equatable {
     var today: CostTotals
+    var week: CostTotals
     var month: CostTotals
     var providers: [ProviderCostTotals]
     var unknownModels: [String]
@@ -76,11 +86,25 @@ struct CostSnapshot: Equatable {
     var usage: UsageSnapshot
     var updatedAt: Date
 
+    func totals(for period: UsagePeriod) -> CostTotals {
+        switch period {
+        case .day: return today
+        case .week: return week
+        case .month: return month
+        }
+    }
+
     static let empty = CostSnapshot(
         today: CostTotals(series: Array(repeating: 0, count: 24)),
+        week: CostTotals(series: Array(repeating: 0, count: 7)),
         month: CostTotals(series: []),
         providers: CostProvider.allCases.map {
-            ProviderCostTotals(provider: $0, today: CostTotals(), month: CostTotals())
+            ProviderCostTotals(
+                provider: $0,
+                today: CostTotals(),
+                week: CostTotals(),
+                month: CostTotals()
+            )
         },
         unknownModels: [],
         estimatedModelAliases: [:],
@@ -389,12 +413,20 @@ final class CostService {
         let calendar = Calendar.current
         let now = Date()
         let todayStart = calendar.startOfDay(for: now)
+        let weekStart = startOfWeek(containing: now, calendar: calendar)
         let monthStart = calendar.date(from: calendar.dateComponents([.year, .month], from: now)) ?? todayStart
+        let earliestRelevantDate = min(weekStart, monthStart)
         let daysInMonth = calendar.range(of: .day, in: .month, for: now)?.count ?? 31
         var today = CostTotals(series: Array(repeating: 0, count: 24))
+        var week = CostTotals(series: Array(repeating: 0, count: 7))
         var month = CostTotals(series: Array(repeating: 0, count: daysInMonth))
         var providerTotals = Dictionary(uniqueKeysWithValues: CostProvider.allCases.map {
-            ($0, ProviderCostTotals(provider: $0, today: CostTotals(), month: CostTotals()))
+            ($0, ProviderCostTotals(
+                provider: $0,
+                today: CostTotals(),
+                week: CostTotals(),
+                month: CostTotals()
+            ))
         })
         var unknown = Set<String>()
         var estimatedAliases: [String: String] = [:]
@@ -407,7 +439,7 @@ final class CostService {
             ModelPricing.resolvedRates(for: $0.model) != nil
         })?.model
 
-        for event in orderedEvents where event.timestamp >= monthStart {
+        for event in orderedEvents where event.timestamp >= earliestRelevantDate {
             if !ModelPricing.isInternalAutomaticModel(event.model),
                ModelPricing.resolvedRates(for: event.model) != nil {
                 currentPrimaryModel = event.model
@@ -421,13 +453,24 @@ final class CostService {
             }
             let cost = estimatedCost(event, billingModel: billingModel)
             if cost == nil { unknown.insert(event.model) }
-            add(event, cost: cost ?? 0, to: &month)
-            if let day = calendar.dateComponents([.day], from: event.timestamp).day,
-               month.series.indices.contains(day - 1) {
-                month.series[day - 1] += cost ?? 0
+
+            if event.timestamp >= monthStart {
+                add(event, cost: cost ?? 0, to: &month)
+                if let day = calendar.dateComponents([.day], from: event.timestamp).day,
+                   month.series.indices.contains(day - 1) {
+                    month.series[day - 1] += cost ?? 0
+                }
             }
+
+            if event.timestamp >= weekStart {
+                add(event, cost: cost ?? 0, to: &week)
+                let day = calendar.dateComponents([.day], from: weekStart, to: event.timestamp).day ?? 0
+                if week.series.indices.contains(day) { week.series[day] += cost ?? 0 }
+            }
+
             if var item = providerTotals[event.provider] {
-                add(event, cost: cost ?? 0, to: &item.month)
+                if event.timestamp >= monthStart { add(event, cost: cost ?? 0, to: &item.month) }
+                if event.timestamp >= weekStart { add(event, cost: cost ?? 0, to: &item.week) }
                 if event.timestamp >= todayStart { add(event, cost: cost ?? 0, to: &item.today) }
                 providerTotals[event.provider] = item
             }
@@ -437,10 +480,9 @@ final class CostService {
                 if today.series.indices.contains(hour) { today.series[hour] += cost ?? 0 }
             }
         }
-        today.series = cumulative(today.series)
-        month.series = cumulative(month.series)
         return CostSnapshot(
             today: today,
+            week: week,
             month: month,
             providers: CostProvider.allCases.compactMap { providerTotals[$0] },
             unknownModels: unknown.sorted(),
@@ -536,11 +578,6 @@ final class CostService {
                 Double(event.output) * rate.outputPerMillion +
                 Double(event.cacheCreate) * rate.cacheCreationPerMillion +
                 Double(event.cacheRead) * rate.cacheReadPerMillion) / 1_000_000
-    }
-
-    private static func cumulative(_ values: [Double]) -> [Double] {
-        var total = 0.0
-        return values.map { total += $0; return total }
     }
 
     private static func integer(_ value: Any?) -> Int {

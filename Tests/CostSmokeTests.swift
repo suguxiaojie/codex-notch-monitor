@@ -8,9 +8,16 @@ enum CostSmokeTests {
         let service = CostService()
         service.fetch { snapshot in
             check(snapshot.today.series.count == 24, "24-hour trend")
+            check(snapshot.week.series.count == 7, "7-day cost trend")
             check(snapshot.month.series.count >= 28, "month trend")
             check(snapshot.month.tokens >= snapshot.today.tokens, "month contains today")
+            check(snapshot.week.tokens >= snapshot.today.tokens, "week cost contains today")
             check(snapshot.month.dollars >= snapshot.today.dollars, "month cost contains today")
+            check(snapshot.week.dollars >= snapshot.today.dollars, "week dollars contain today")
+            check(
+                abs(snapshot.week.series.reduce(0, +) - snapshot.week.dollars) < 0.000_001,
+                "weekly cost buckets sum to total cost"
+            )
             check(snapshot.month.tokens > 0, "local Codex token events")
             check(snapshot.month.dollars > 0 || !snapshot.unknownModels.isEmpty, "priced or reported unknown models")
             check(
@@ -34,7 +41,7 @@ enum CostSmokeTests {
                 check(!projectNames.contains("AI博主选题"), "folder name replaced by media sidebar alias")
             }
             print(String(format:
-                "Cost and usage smoke tests passed (24 checks): today $%.2f / %d tokens, month $%.2f / %d tokens. Aliases: %@",
+                "Cost and usage smoke tests passed (28 checks): today $%.2f / %d tokens, month $%.2f / %d tokens. Aliases: %@",
                 snapshot.today.dollars, snapshot.today.tokens,
                 snapshot.month.dollars, snapshot.month.tokens,
                 snapshot.estimatedModelAliases.description
