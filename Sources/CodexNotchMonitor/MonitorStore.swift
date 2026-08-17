@@ -14,6 +14,7 @@ final class MonitorStore: ObservableObject {
     @Published private(set) var activeProjects: [ActiveProjectState] = []
     @Published var selectedProjectID: String?
     @Published private(set) var costSnapshot: CostSnapshot = .empty
+    @Published private(set) var usageAccountOptions: [UsageAccountOption] = []
     @Published private(set) var isCostLoading = false
     @Published private(set) var tiboFeed: TiboFeed?
     @Published private(set) var tiboFeedFetchedAt: Date?
@@ -71,6 +72,7 @@ final class MonitorStore: ObservableObject {
     private var sessionTimer: Timer?
     private var isReadingSession = false
     private var costTimer: Timer?
+    private var costRequestID: UUID?
     private var tiboFeedTimer: Timer?
     private var notificationStatusTimer: Timer?
     private var accountTimer: Timer?
@@ -263,10 +265,24 @@ final class MonitorStore: ObservableObject {
     func refreshCost() {
         guard !isCostLoading else { return }
         isCostLoading = true
+        let requestID = UUID()
+        costRequestID = requestID
         let overrides = sessionProjectPathOverrides
-        costService.fetch(sessionPathOverrides: overrides) { [weak self] snapshot in
-            self?.costSnapshot = snapshot
-            self?.isCostLoading = false
+        let accountContext = accountContinuityStore.usageAccountContext()
+        usageAccountOptions = accountContext.accounts
+        costService.fetch(
+            sessionPathOverrides: overrides,
+            accountContext: accountContext
+        ) { [weak self] snapshot in
+            guard let self else { return }
+            guard self.costRequestID == requestID else { return }
+            if self.accountContinuityStore.usageAccountContext() != accountContext {
+                self.isCostLoading = false
+                self.refreshCost()
+                return
+            }
+            self.costSnapshot = snapshot
+            self.isCostLoading = false
         }
     }
 
@@ -731,6 +747,7 @@ final class MonitorStore: ObservableObject {
         account: CodexAccountInfo
     ) {
         do {
+            let previousUsageContext = accountContinuityStore.usageAccountContext()
             let observation = try accountContinuityStore.observe(
                 account: account,
                 localSessionIDs: Set(snapshot.userThreads.map(\.id))
@@ -739,6 +756,9 @@ final class MonitorStore: ObservableObject {
             accountTransition = observation.transition
             continuitySnapshot = snapshot.applyingOwnership(observation.ownershipByThread)
             continuityError = nil
+            if accountContinuityStore.usageAccountContext() != previousUsageContext {
+                refreshCost()
+            }
             if let transition = observation.transition {
                 let recoverableCount = snapshot.recoverableThreads.count
                 if recoverableCount == 0 {

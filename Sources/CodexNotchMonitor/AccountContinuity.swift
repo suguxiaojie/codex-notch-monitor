@@ -11,11 +11,31 @@ struct CodexAccountInfo: Equatable {
         Self.mask(email: email)
     }
 
+    var menuEmailSummary: String? {
+        Self.summarize(email: email)
+    }
+
     static func mask(email: String?) -> String? {
         guard let email, let at = email.firstIndex(of: "@") else { return nil }
         let local = String(email[..<at])
         let domain = String(email[email.index(after: at)...])
         guard !local.isEmpty, !domain.isEmpty else { return nil }
+        return "\(local.prefix(1))***@\(domain)"
+    }
+
+    static func summarize(email: String?) -> String? {
+        guard let email = email?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              let at = email.firstIndex(of: "@")
+        else { return nil }
+        let local = String(email[..<at])
+        let domain = String(email[email.index(after: at)...])
+        guard !local.isEmpty, !domain.isEmpty else { return nil }
+        if local.count >= 5 {
+            return "\(local.prefix(2))***\(local.suffix(2))@\(domain)"
+        }
+        if local.count >= 2 {
+            return "\(local.prefix(1))***\(local.suffix(1))@\(domain)"
+        }
         return "\(local.prefix(1))***@\(domain)"
     }
 }
@@ -89,6 +109,7 @@ final class AccountContinuityStore {
 
     private struct PersistedAccount: Codable, Equatable {
         var alias: String
+        var emailSummary: String?
         var firstSeenAt: Date
         var lastSeenAt: Date
     }
@@ -133,11 +154,15 @@ final class AccountContinuityStore {
 
         if var account = state.accounts[fingerprint] {
             account.lastSeenAt = now
+            if let summary = info.menuEmailSummary {
+                account.emailSummary = summary
+            }
             state.accounts[fingerprint] = account
         } else {
             let alias = "账号 \(state.accounts.count + 1)"
             state.accounts[fingerprint] = PersistedAccount(
                 alias: alias,
+                emailSummary: info.menuEmailSummary,
                 firstSeenAt: now,
                 lastSeenAt: now
             )
@@ -184,6 +209,28 @@ final class AccountContinuityStore {
         lock.lock()
         defer { lock.unlock() }
         return ownershipLocked()
+    }
+
+    func usageAccountContext() -> UsageAccountContext {
+        lock.lock()
+        defer { lock.unlock() }
+        let accounts = state.accounts.map { fingerprint, account in
+            UsageAccountOption(
+                id: fingerprint,
+                alias: account.alias,
+                emailSummary: account.emailSummary,
+                isCurrent: fingerprint == state.currentAccountFingerprint
+            )
+        }.sorted {
+            $0.alias.localizedStandardCompare($1.alias) == .orderedAscending
+        }
+        return UsageAccountContext(
+            accounts: accounts,
+            accountIDByThread: ownershipLocked().compactMapValues { ownership in
+                guard ownership.confidence == .observed else { return nil }
+                return ownership.accountFingerprint
+            }
+        )
     }
 
     func accountChanged(_ info: CodexAccountInfo) -> Bool {

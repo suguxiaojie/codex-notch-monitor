@@ -56,7 +56,7 @@ struct UsageSnapshot: Equatable {
     static let empty = UsageSnapshot(
         day: UsageTotals(series: Array(repeating: 0, count: 24)),
         week: UsageTotals(series: Array(repeating: 0, count: 7)),
-        month: UsageTotals(series: [])
+        month: UsageTotals(series: Array(repeating: 0, count: 30))
     )
 }
 
@@ -76,7 +76,7 @@ struct ProviderCostTotals: Identifiable, Equatable {
     }
 }
 
-struct CostSnapshot: Equatable {
+struct CostScopeSnapshot: Equatable {
     var today: CostTotals
     var week: CostTotals
     var month: CostTotals
@@ -84,7 +84,6 @@ struct CostSnapshot: Equatable {
     var unknownModels: [String]
     var estimatedModelAliases: [String: String]
     var usage: UsageSnapshot
-    var updatedAt: Date
 
     func totals(for period: UsagePeriod) -> CostTotals {
         switch period {
@@ -94,10 +93,10 @@ struct CostSnapshot: Equatable {
         }
     }
 
-    static let empty = CostSnapshot(
+    static let empty = CostScopeSnapshot(
         today: CostTotals(series: Array(repeating: 0, count: 24)),
         week: CostTotals(series: Array(repeating: 0, count: 7)),
-        month: CostTotals(series: []),
+        month: CostTotals(series: Array(repeating: 0, count: 30)),
         providers: CostProvider.allCases.map {
             ProviderCostTotals(
                 provider: $0,
@@ -108,7 +107,38 @@ struct CostSnapshot: Equatable {
         },
         unknownModels: [],
         estimatedModelAliases: [:],
-        usage: .empty,
+        usage: .empty
+    )
+}
+
+struct CostSnapshot: Equatable {
+    var aggregate: CostScopeSnapshot
+    var byAccount: [String: CostScopeSnapshot]
+    var unknownAccount: CostScopeSnapshot
+    var updatedAt: Date
+
+    var today: CostTotals { aggregate.today }
+    var week: CostTotals { aggregate.week }
+    var month: CostTotals { aggregate.month }
+    var providers: [ProviderCostTotals] { aggregate.providers }
+    var unknownModels: [String] { aggregate.unknownModels }
+    var estimatedModelAliases: [String: String] { aggregate.estimatedModelAliases }
+    var usage: UsageSnapshot { aggregate.usage }
+
+    func scope(for id: String) -> CostScopeSnapshot {
+        if id == UsageAccountScope.unknown { return unknownAccount }
+        if id == UsageAccountScope.all { return aggregate }
+        return byAccount[id] ?? .empty
+    }
+
+    func totals(for period: UsagePeriod) -> CostTotals {
+        aggregate.totals(for: period)
+    }
+
+    static let empty = CostSnapshot(
+        aggregate: .empty,
+        byAccount: [:],
+        unknownAccount: .empty,
         updatedAt: .distantPast
     )
 }
@@ -148,6 +178,7 @@ final class CostService {
 
     func fetch(
         sessionPathOverrides: [String: String] = [:],
+        accountContext: UsageAccountContext = UsageAccountContext(accounts: [], accountIDByThread: [:]),
         completion: @escaping (CostSnapshot) -> Void
     ) {
         queue.async {
@@ -159,7 +190,11 @@ final class CostService {
                 catalog: catalog
             )
             let projectNames = catalog.namesByPath
-            let snapshot = Self.summarize(events, projectNames: projectNames)
+            let snapshot = Self.summarize(
+                events,
+                projectNames: projectNames,
+                accountContext: accountContext
+            )
             DispatchQueue.main.async { completion(snapshot) }
 
             // The first result is deliberately local and immediate. Refresh
@@ -168,7 +203,11 @@ final class CostService {
             Task {
                 guard await PricingCatalog.refreshIfNeeded() == .updated else { return }
                 self.queue.async {
-                    let refreshed = Self.summarize(events, projectNames: projectNames)
+                    let refreshed = Self.summarize(
+                        events,
+                        projectNames: projectNames,
+                        accountContext: accountContext
+                    )
                     DispatchQueue.main.async { completion(refreshed) }
                 }
             }
@@ -217,19 +256,15 @@ final class CostService {
         calendar: Calendar = .current
     ) -> [TokenUsageEvent] {
         let root = homeDirectory.appendingPathComponent(".codex/sessions", isDirectory: true)
-        let monthStart = calendar.date(from: calendar.dateComponents([.year, .month], from: now)) ?? now
-        let weekStart = startOfWeek(containing: now, calendar: calendar)
-        let earliestRelevantDate = min(monthStart, weekStart)
-        let roots = Set([monthStart, weekStart].compactMap { date -> String? in
-            let parts = calendar.dateComponents([.year, .month], from: date)
-            guard let year = parts.year, let month = parts.month else { return nil }
-            return root
-                .appendingPathComponent(String(format: "%04d", year), isDirectory: true)
-                .appendingPathComponent(String(format: "%02d", month), isDirectory: true)
-                .path
-        })
-        let liveFiles = roots.flatMap {
-            jsonlFiles(in: URL(fileURLWithPath: $0, isDirectory: true))
+        let todayStart = calendar.startOfDay(for: now)
+        let rollingMonthStart = calendar.date(byAdding: .day, value: -29, to: todayStart) ?? todayStart
+        let earliestRelevantDate = rollingMonthStart
+        // A thread can continue receiving token events long after the month in
+        // which its rollout file was created. Filter the complete live tree by
+        // modification time so rolling windows do not omit such long-running
+        // sessions merely because their directory is older.
+        let liveFiles = jsonlFiles(in: root).filter {
+            modificationDate(of: $0) >= earliestRelevantDate
         }
         let archiveRoot = homeDirectory.appendingPathComponent(
             ".codex/archived_sessions",
@@ -406,20 +441,65 @@ final class CostService {
             ?? .distantPast
     }
 
-    private static func summarize(
+    static func summarize(
         _ events: [TokenUsageEvent],
-        projectNames: [String: String]
+        projectNames: [String: String],
+        accountContext: UsageAccountContext,
+        now: Date = Date(),
+        calendar: Calendar = .current
     ) -> CostSnapshot {
-        let calendar = Calendar.current
-        let now = Date()
+        let accountIDByThread = accountContext.accountIDByThread
+        let knownAccountIDs = Set(accountContext.accounts.map(\.id))
+        let aggregate = summarizeScope(
+            events,
+            projectNames: projectNames,
+            now: now,
+            calendar: calendar,
+            include: { _ in true }
+        )
+        let byAccount = Dictionary(uniqueKeysWithValues: accountContext.accounts.map { account in
+            (account.id, summarizeScope(
+                events,
+                projectNames: projectNames,
+                now: now,
+                calendar: calendar,
+                include: { event in
+                    accountIDByThread[event.sessionID] == account.id
+                }
+            ))
+        })
+        let unknownAccount = summarizeScope(
+            events,
+            projectNames: projectNames,
+            now: now,
+            calendar: calendar,
+            include: { event in
+                guard let accountID = accountIDByThread[event.sessionID] else { return true }
+                return !knownAccountIDs.contains(accountID)
+            }
+        )
+        return CostSnapshot(
+            aggregate: aggregate,
+            byAccount: byAccount,
+            unknownAccount: unknownAccount,
+            updatedAt: now
+        )
+    }
+
+    private static func summarizeScope(
+        _ events: [TokenUsageEvent],
+        projectNames: [String: String],
+        now: Date,
+        calendar: Calendar,
+        include: (TokenUsageEvent) -> Bool
+    ) -> CostScopeSnapshot {
         let todayStart = calendar.startOfDay(for: now)
-        let weekStart = startOfWeek(containing: now, calendar: calendar)
-        let monthStart = calendar.date(from: calendar.dateComponents([.year, .month], from: now)) ?? todayStart
-        let earliestRelevantDate = min(weekStart, monthStart)
-        let daysInMonth = calendar.range(of: .day, in: .month, for: now)?.count ?? 31
+        let weekStart = calendar.date(byAdding: .day, value: -6, to: todayStart) ?? todayStart
+        let monthStart = calendar.date(byAdding: .day, value: -29, to: todayStart) ?? todayStart
+        let earliestRelevantDate = monthStart
         var today = CostTotals(series: Array(repeating: 0, count: 24))
         var week = CostTotals(series: Array(repeating: 0, count: 7))
-        var month = CostTotals(series: Array(repeating: 0, count: daysInMonth))
+        var month = CostTotals(series: Array(repeating: 0, count: 30))
         var providerTotals = Dictionary(uniqueKeysWithValues: CostProvider.allCases.map {
             ($0, ProviderCostTotals(
                 provider: $0,
@@ -448,6 +528,7 @@ final class CostService {
                 for: event.model,
                 currentPrimaryModel: currentPrimaryModel
             )
+            guard include(event) else { continue }
             if billingModel != event.model {
                 estimatedAliases[event.model] = billingModel
             }
@@ -456,10 +537,8 @@ final class CostService {
 
             if event.timestamp >= monthStart {
                 add(event, cost: cost ?? 0, to: &month)
-                if let day = calendar.dateComponents([.day], from: event.timestamp).day,
-                   month.series.indices.contains(day - 1) {
-                    month.series[day - 1] += cost ?? 0
-                }
+                let day = calendar.dateComponents([.day], from: monthStart, to: event.timestamp).day ?? 0
+                if month.series.indices.contains(day) { month.series[day] += cost ?? 0 }
             }
 
             if event.timestamp >= weekStart {
@@ -480,15 +559,19 @@ final class CostService {
                 if today.series.indices.contains(hour) { today.series[hour] += cost ?? 0 }
             }
         }
-        return CostSnapshot(
+        return CostScopeSnapshot(
             today: today,
             week: week,
             month: month,
             providers: CostProvider.allCases.compactMap { providerTotals[$0] },
             unknownModels: unknown.sorted(),
             estimatedModelAliases: estimatedAliases,
-            usage: summarizeUsage(events, now: now, calendar: calendar, projectNames: projectNames),
-            updatedAt: now
+            usage: summarizeUsage(
+                events.filter(include),
+                now: now,
+                calendar: calendar,
+                projectNames: projectNames
+            )
         )
     }
 
@@ -499,9 +582,8 @@ final class CostService {
         projectNames: [String: String]
     ) -> UsageSnapshot {
         let todayStart = calendar.startOfDay(for: now)
-        let weekStart = startOfWeek(containing: now, calendar: calendar)
-        let monthStart = calendar.date(from: calendar.dateComponents([.year, .month], from: now)) ?? todayStart
-        let daysInMonth = calendar.range(of: .day, in: .month, for: now)?.count ?? 31
+        let weekStart = calendar.date(byAdding: .day, value: -6, to: todayStart) ?? todayStart
+        let monthStart = calendar.date(byAdding: .day, value: -29, to: todayStart) ?? todayStart
         return UsageSnapshot(
             day: usageTotals(events, from: todayStart, seriesCount: 24, projectNames: projectNames) { event in
                 calendar.component(.hour, from: event.timestamp)
@@ -509,8 +591,8 @@ final class CostService {
             week: usageTotals(events, from: weekStart, seriesCount: 7, projectNames: projectNames) { event in
                 max(0, min(6, calendar.dateComponents([.day], from: weekStart, to: event.timestamp).day ?? 0))
             },
-            month: usageTotals(events, from: monthStart, seriesCount: daysInMonth, projectNames: projectNames) { event in
-                max(0, (calendar.component(.day, from: event.timestamp)) - 1)
+            month: usageTotals(events, from: monthStart, seriesCount: 30, projectNames: projectNames) { event in
+                max(0, min(29, calendar.dateComponents([.day], from: monthStart, to: event.timestamp).day ?? 0))
             }
         )
     }
@@ -555,13 +637,6 @@ final class CostService {
             $0.tokens == $1.tokens ? $0.name.localizedStandardCompare($1.name) == .orderedAscending : $0.tokens > $1.tokens
         }
         return result
-    }
-
-    private static func startOfWeek(containing date: Date, calendar: Calendar) -> Date {
-        let day = calendar.startOfDay(for: date)
-        let weekday = calendar.component(.weekday, from: day)
-        let daysSinceMonday = (weekday + 5) % 7
-        return calendar.date(byAdding: .day, value: -daysSinceMonday, to: day) ?? day
     }
 
     private static func add(_ event: TokenUsageEvent, cost: Double, to total: inout CostTotals) {

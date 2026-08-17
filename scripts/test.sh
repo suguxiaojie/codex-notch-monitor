@@ -30,6 +30,7 @@ swiftc \
   Sources/CodexNotchMonitor/PricingCatalog.swift \
   Sources/CodexNotchMonitor/ModelPricing.swift \
   Sources/CodexNotchMonitor/CodexProjectCatalog.swift \
+  Sources/CodexNotchMonitor/UsageAccountContext.swift \
   Sources/CodexNotchMonitor/CostService.swift \
   Tests/CostSmokeTests.swift \
   -o "$cost_test_binary"
@@ -71,6 +72,7 @@ swiftc \
   Sources/CodexNotchMonitor/CodexAppServerClient.swift \
   Sources/CodexNotchMonitor/CodexProjectCatalog.swift \
   Sources/CodexNotchMonitor/CodexAccountStateWatcher.swift \
+  Sources/CodexNotchMonitor/UsageAccountContext.swift \
   Sources/CodexNotchMonitor/AccountContinuity.swift \
   Sources/CodexNotchMonitor/SessionContinuityService.swift \
   Sources/CodexNotchMonitor/SessionExportService.swift \

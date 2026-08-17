@@ -33,6 +33,7 @@ struct NotchView: View {
     @State private var expandedPage: ExpandedPage = .usage
     @State private var usagePeriod: UsagePeriod = .day
     @State private var costPeriod: UsagePeriod = .day
+    @State private var usageAccountScopeID = UsageAccountScope.all
     @State private var compactHideWorkItem: DispatchWorkItem?
     @State private var compactHovered = false
     @State private var confirmsContinuityRecovery = false
@@ -1403,6 +1404,8 @@ struct NotchView: View {
             .padding(3)
             .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
 
+            accountScopeControl
+
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(costPeriodTitle)
@@ -1542,7 +1545,7 @@ struct NotchView: View {
                 }
                 .buttonStyle(.plain)
             }
-            ForEach(store.costSnapshot.providers) { provider in
+            ForEach(selectedCostScope.providers) { provider in
                 let totals = provider.totals(for: costPeriod)
                 VStack(spacing: 4) {
                     HStack {
@@ -1579,14 +1582,14 @@ struct NotchView: View {
                     .minimumScaleFactor(0.85)
                 }
             }
-            if !store.costSnapshot.unknownModels.isEmpty {
+            if !selectedCostScope.unknownModels.isEmpty {
                 HStack(alignment: .top, spacing: 6) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.system(size: 8))
                         .padding(.top, 1)
                     VStack(alignment: .leading, spacing: 1) {
-                        Text("\(store.costSnapshot.unknownModels.count) 个未定价模型未计入美元估值")
-                        Text(store.costSnapshot.unknownModels.joined(separator: ", "))
+                        Text("\(selectedCostScope.unknownModels.count) 个未定价模型未计入美元估值")
+                        Text(selectedCostScope.unknownModels.joined(separator: ", "))
                             .font(.system(size: 8, weight: .semibold, design: .monospaced))
                     }
                     Spacer(minLength: 0)
@@ -1595,10 +1598,10 @@ struct NotchView: View {
                 .foregroundStyle(.orange.opacity(0.82))
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            if !store.costSnapshot.estimatedModelAliases.isEmpty {
+            if !selectedCostScope.estimatedModelAliases.isEmpty {
                 VStack(alignment: .leading, spacing: 2) {
-                    ForEach(store.costSnapshot.estimatedModelAliases.keys.sorted(), id: \.self) { model in
-                        if let billingModel = store.costSnapshot.estimatedModelAliases[model] {
+                    ForEach(selectedCostScope.estimatedModelAliases.keys.sorted(), id: \.self) { model in
+                        if let billingModel = selectedCostScope.estimatedModelAliases[model] {
                             HStack(spacing: 5) {
                                 Image(systemName: "equal.circle.fill")
                                     .font(.system(size: 8))
@@ -1617,6 +1620,87 @@ struct NotchView: View {
         .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
+    private var accountScopeControl: some View {
+        VStack(spacing: 3) {
+            Menu {
+                accountScopeButton(id: UsageAccountScope.all, title: "全部账号")
+                Divider()
+                ForEach(store.usageAccountOptions) { account in
+                    accountScopeButton(
+                        id: account.id,
+                        title: accountScopeTitle(account)
+                    )
+                }
+                Divider()
+                accountScopeButton(id: UsageAccountScope.unknown, title: "归属未知")
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "person.2.fill")
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundStyle(.cyan.opacity(0.72))
+                    Text("账号")
+                        .font(.system(size: 8.5, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.42))
+                    Spacer(minLength: 6)
+                    Text(selectedAccountScopeTitle)
+                        .font(.system(size: 8.5, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.78))
+                        .lineLimit(1)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 6.5, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.32))
+                }
+                .padding(.horizontal, 9)
+                .frame(maxWidth: .infinity, minHeight: 24)
+                .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize(horizontal: false, vertical: true)
+
+            Text(accountScopeEvidenceText)
+                .font(.system(size: 7.2, weight: .medium))
+                .foregroundStyle(.white.opacity(0.28))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .lineLimit(1)
+        }
+    }
+
+    private func accountScopeButton(id: String, title: String) -> some View {
+        Button {
+            withAnimation(.islandContentSwap) { usageAccountScopeID = id }
+        } label: {
+            if usageAccountScopeID == id {
+                Label(title, systemImage: "checkmark")
+            } else {
+                Text(title)
+            }
+        }
+    }
+
+    private var selectedAccountScopeTitle: String {
+        if usageAccountScopeID == UsageAccountScope.all { return "全部账号" }
+        if usageAccountScopeID == UsageAccountScope.unknown { return "归属未知" }
+        guard let account = store.usageAccountOptions.first(where: { $0.id == usageAccountScopeID })
+        else { return "全部账号" }
+        return accountScopeTitle(account)
+    }
+
+    private func accountScopeTitle(_ account: UsageAccountOption) -> String {
+        let summary = account.emailSummary ?? "邮箱待记录"
+        return "\(account.alias) · \(summary)" + (account.isCurrent ? "（当前）" : "")
+    }
+
+    private var accountScopeEvidenceText: String {
+        if usageAccountScopeID == UsageAccountScope.all {
+            return "综合统计包含归属未知的基线前记录"
+        }
+        if usageAccountScopeID == UsageAccountScope.unknown {
+            return "仅显示基线前或尚无可靠账号归属的记录"
+        }
+        return "仅显示插件可靠观察到归属该账号的会话"
+    }
+
     private func formatTokens(_ value: Int) -> String {
         if value >= 1_000_000_000 { return String(format: "%.1fB tokens", Double(value) / 1_000_000_000) }
         if value >= 1_000_000 { return String(format: "%.1fM tokens", Double(value) / 1_000_000) }
@@ -1629,22 +1713,26 @@ struct NotchView: View {
     }
 
     private var selectedCost: CostTotals {
-        store.costSnapshot.totals(for: costPeriod)
+        selectedCostScope.totals(for: costPeriod)
+    }
+
+    private var selectedCostScope: CostScopeSnapshot {
+        store.costSnapshot.scope(for: usageAccountScopeID)
     }
 
     private var costPeriodTitle: String {
         switch costPeriod {
         case .day: return "今日 API 等价成本"
-        case .week: return "本周 API 等价成本"
-        case .month: return "本月 API 等价成本"
+        case .week: return "近 7 日 API 等价成本"
+        case .month: return "近 30 日 API 等价成本"
         }
     }
 
     private var costTrendContext: String {
         switch costPeriod {
         case .day: return "今日 · 每小时成本"
-        case .week: return "本周 · 每日成本"
-        case .month: return "本月 · 每日成本"
+        case .week: return "近 7 日 · 每日成本"
+        case .month: return "近 30 日 · 每日成本"
         }
     }
 
@@ -1654,32 +1742,29 @@ struct NotchView: View {
         case .day:
             return min(selectedCost.series.count, calendar.component(.hour, from: Date()) + 1)
         case .week:
-            let weekday = calendar.component(.weekday, from: Date())
-            let mondayBasedDay = (weekday + 5) % 7
-            return min(selectedCost.series.count, mondayBasedDay + 1)
+            return min(selectedCost.series.count, 7)
         case .month:
-            return min(selectedCost.series.count, calendar.component(.day, from: Date()))
+            return min(selectedCost.series.count, 30)
         }
     }
 
     private var costTrendStartLabel: String {
         switch costPeriod {
         case .day: return "00 时"
-        case .week: return "周一"
-        case .month: return "1 日"
+        case .week: return rollingDateLabel(daysAgo: 6)
+        case .month: return rollingDateLabel(daysAgo: 29)
         }
     }
 
     private var costTrendEndLabel: String {
         switch costPeriod {
         case .day: return "23 时"
-        case .week: return "周日"
-        case .month: return "月末"
+        case .week, .month: return rollingDateLabel(daysAgo: 0)
         }
     }
 
     private var selectedUsage: UsageTotals {
-        store.costSnapshot.usage.totals(for: usagePeriod)
+        selectedCostScope.usage.totals(for: usagePeriod)
     }
 
     private var usageOverviewCard: some View {
@@ -1705,6 +1790,8 @@ struct NotchView: View {
             }
             .padding(3)
             .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+
+            accountScopeControl
 
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
@@ -1799,8 +1886,8 @@ struct NotchView: View {
     private var usagePeriodTitle: String {
         switch usagePeriod {
         case .day: return "今日 Token"
-        case .week: return "本周 Token"
-        case .month: return "本月 Token"
+        case .week: return "近 7 日 Token"
+        case .month: return "近 30 日 Token"
         }
     }
 
@@ -1810,28 +1897,32 @@ struct NotchView: View {
         case .day:
             return min(selectedUsage.series.count, calendar.component(.hour, from: Date()) + 1)
         case .week:
-            let weekday = calendar.component(.weekday, from: Date())
-            let mondayBasedDay = (weekday + 5) % 7
-            return min(selectedUsage.series.count, mondayBasedDay + 1)
+            return min(selectedUsage.series.count, 7)
         case .month:
-            return min(selectedUsage.series.count, calendar.component(.day, from: Date()))
+            return min(selectedUsage.series.count, 30)
         }
     }
 
     private var usageTrendStartLabel: String {
         switch usagePeriod {
         case .day: return "00 时"
-        case .week: return "周一"
-        case .month: return "1 日"
+        case .week: return rollingDateLabel(daysAgo: 6)
+        case .month: return rollingDateLabel(daysAgo: 29)
         }
     }
 
     private var usageTrendEndLabel: String {
         switch usagePeriod {
         case .day: return "23 时"
-        case .week: return "周日"
-        case .month: return "月末"
+        case .week, .month: return rollingDateLabel(daysAgo: 0)
         }
+    }
+
+    private func rollingDateLabel(daysAgo: Int) -> String {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let date = calendar.date(byAdding: .day, value: -daysAgo, to: today) ?? today
+        return "\(calendar.component(.month, from: date))/\(calendar.component(.day, from: date))"
     }
 
     private func formatCompactTokens(_ value: Int) -> String {
@@ -2674,15 +2765,15 @@ private struct CostTrendChart: View {
         case .day:
             return String(format: "%02d:00–%02d:59", index, index)
         case .week:
-            let weekday = calendar.component(.weekday, from: now)
-            let daysSinceMonday = (weekday + 5) % 7
             let today = calendar.startOfDay(for: now)
-            let monday = calendar.date(byAdding: .day, value: -daysSinceMonday, to: today) ?? today
-            let date = calendar.date(byAdding: .day, value: index, to: monday) ?? monday
-            let names = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
-            return "\(names[min(6, max(0, index))]) · \(calendar.component(.month, from: date))月\(calendar.component(.day, from: date))日"
+            let start = calendar.date(byAdding: .day, value: -6, to: today) ?? today
+            let date = calendar.date(byAdding: .day, value: index, to: start) ?? start
+            return "\(calendar.component(.month, from: date))月\(calendar.component(.day, from: date))日"
         case .month:
-            return "\(calendar.component(.month, from: now))月\(index + 1)日"
+            let today = calendar.startOfDay(for: now)
+            let start = calendar.date(byAdding: .day, value: -29, to: today) ?? today
+            let date = calendar.date(byAdding: .day, value: index, to: start) ?? start
+            return "\(calendar.component(.month, from: date))月\(calendar.component(.day, from: date))日"
         }
     }
 
@@ -2831,15 +2922,15 @@ private struct UsageTrendChart: View {
         case .day:
             return String(format: "%02d:00–%02d:59", index, index)
         case .week:
-            let weekday = calendar.component(.weekday, from: now)
-            let daysSinceMonday = (weekday + 5) % 7
             let today = calendar.startOfDay(for: now)
-            let monday = calendar.date(byAdding: .day, value: -daysSinceMonday, to: today) ?? today
-            let date = calendar.date(byAdding: .day, value: index, to: monday) ?? monday
-            let names = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
-            return "\(names[min(6, max(0, index))]) · \(calendar.component(.month, from: date))月\(calendar.component(.day, from: date))日"
+            let start = calendar.date(byAdding: .day, value: -6, to: today) ?? today
+            let date = calendar.date(byAdding: .day, value: index, to: start) ?? start
+            return "\(calendar.component(.month, from: date))月\(calendar.component(.day, from: date))日"
         case .month:
-            return "\(calendar.component(.month, from: now))月\(index + 1)日"
+            let today = calendar.startOfDay(for: now)
+            let start = calendar.date(byAdding: .day, value: -29, to: today) ?? today
+            let date = calendar.date(byAdding: .day, value: index, to: start) ?? start
+            return "\(calendar.component(.month, from: date))月\(calendar.component(.day, from: date))日"
         }
     }
 

@@ -9,6 +9,8 @@ enum ContinuityTests {
         }
         try accountObservationDoesNotGuessHistory()
         try accountTransitionTracksOnlyNewSessions()
+        try usageAccountContextExposesOnlyObservedOwnership()
+        try emailSummaryIsRedactedAndBackwardCompatible()
         threadKindsFollowAppServerSourceSemantics()
         continuityCountsOnlyUserConversations()
         projectGroupsContainTheirConversations()
@@ -21,7 +23,7 @@ enum ContinuityTests {
         try sessionImportValidatesMapsSkipsAndRollsBack()
         try duplicateImportGeneratesNewThreadID()
         try damagedPortableBundleIsRejected()
-        print("Continuity tests: 14/14 passed")
+        print("Continuity tests: 16/16 passed")
     }
 
     private static func runLocalInventoryBenchmark() {
@@ -155,6 +157,72 @@ enum ContinuityTests {
             switched.ownershipByThread["second-new"]?.accountAlias == "账号 2",
             "切号后新增会话应归属新账号"
         )
+    }
+
+    private static func usageAccountContextExposesOnlyObservedOwnership() throws {
+        let store = makeStore("usage-context")
+        _ = try store.observe(
+            account: account("first@example.com", at: 1_800_000_000),
+            localSessionIDs: ["baseline"]
+        )
+        _ = try store.observe(
+            account: account("first@example.com", at: 1_800_000_100),
+            localSessionIDs: ["baseline", "account-1-session"]
+        )
+        _ = try store.observe(
+            account: account("second@example.com", at: 1_800_000_200),
+            localSessionIDs: ["baseline", "account-1-session", "account-2-session"]
+        )
+        let context = store.usageAccountContext()
+        expect(context.accounts.map(\.alias) == ["账号 1", "账号 2"], "账号筛选应按别名稳定排序")
+        expect(context.accounts.first(where: { $0.alias == "账号 2" })?.isCurrent == true, "当前账号标记")
+        expect(context.accountIDByThread["baseline"] == nil, "基线前会话必须进入归属未知")
+        expect(context.accountIDByThread["account-1-session"] == context.accounts[0].id, "账号 1 会话归属")
+        expect(context.accountIDByThread["account-2-session"] == context.accounts[1].id, "账号 2 会话归属")
+        expect(context.accounts[0].emailSummary == "fi***st@example.com", "账号筛选应暴露脱敏邮箱摘要")
+        expect(context.accounts[1].emailSummary == "se***nd@example.com", "当前账号摘要")
+    }
+
+    private static func emailSummaryIsRedactedAndBackwardCompatible() throws {
+        let manager = FileManager.default
+        let root = manager.temporaryDirectory.appendingPathComponent("email-summary-\(UUID().uuidString)")
+        defer { try? manager.removeItem(at: root) }
+        try manager.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let stateURL = root.appendingPathComponent("account-continuity.json")
+        let store = AccountContinuityStore(stateURL: stateURL)
+        _ = try store.observe(
+            account: account("owner@example.com", at: 1_800_000_000),
+            localSessionIDs: []
+        )
+        let persisted = try String(contentsOf: stateURL, encoding: .utf8)
+        expect(persisted.contains("ow***er@example.com"), "状态文件应保存脱敏邮箱摘要")
+        expect(!persisted.contains("owner@example.com"), "状态文件不得保存完整邮箱")
+        expect(store.usageAccountContext().accounts.first?.emailSummary == "ow***er@example.com", "摘要应供账号菜单使用")
+        expect(CodexAccountInfo.summarize(email: "ab@example.com") == "a***b@example.com", "短邮箱本地部分也要脱敏")
+
+        let legacyURL = root.appendingPathComponent("legacy-account-continuity.json")
+        let legacy = """
+        {
+          "version": 1,
+          "salt": "legacy-salt",
+          "currentAccountFingerprint": "legacy-fingerprint",
+          "accounts": {
+            "legacy-fingerprint": {
+              "alias": "账号 1",
+              "firstSeenAt": "2027-01-15T08:00:00Z",
+              "lastSeenAt": "2027-01-15T08:00:00Z"
+            }
+          },
+          "knownSessionIDs": [],
+          "sessionOwnership": {}
+        }
+        """
+        try Data(legacy.utf8).write(to: legacyURL)
+        let legacyStore = AccountContinuityStore(stateURL: legacyURL)
+        let legacyAccount = legacyStore.usageAccountContext().accounts.first
+        expect(legacyAccount?.alias == "账号 1", "旧状态文件仍应正常读取")
+        expect(legacyAccount?.emailSummary == nil, "旧账号在再次观察前应显示邮箱待记录")
     }
 
     private static func handoffRedactsSecrets() {
