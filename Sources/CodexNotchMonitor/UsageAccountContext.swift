@@ -12,7 +12,20 @@ struct UsageAccountOption: Identifiable, Equatable {
     let isCurrent: Bool
 }
 
+struct UsageAccountObservation: Equatable {
+    let accountID: String
+    let startsAt: Date
+}
+
 struct UsageAccountContext: Equatable {
     let accounts: [UsageAccountOption]
     let accountIDByThread: [String: String]
+    let accountTimeline: [UsageAccountObservation]
+
+    func accountID(for sessionID: String, at timestamp: Date) -> String? {
+        if let observation = accountTimeline.last(where: { $0.startsAt <= timestamp }) {
+            return observation.accountID
+        }
+        return accountIDByThread[sessionID]
+    }
 }

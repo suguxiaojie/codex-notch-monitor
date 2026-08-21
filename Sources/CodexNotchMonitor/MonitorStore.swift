@@ -78,6 +78,7 @@ final class MonitorStore: ObservableObject {
     private var accountTimer: Timer?
     private var accountStateRefreshWorkItem: DispatchWorkItem?
     private var hasPendingAccountStateRefresh = false
+    private var pendingAccountChangeDetectedAt: Date?
     private var projectDisplayOrder: [String] = []
     private var lastProjectCatalogState: CodexProjectCatalog.State?
 
@@ -189,9 +190,9 @@ final class MonitorStore: ObservableObject {
         refreshCost()
         refreshTiboFeed()
         refreshContinuity(forceInventory: true)
-        accountStateWatcher.start { [weak self] in
+        accountStateWatcher.start { [weak self] detectedAt in
             Task { @MainActor in
-                self?.handleAccountStateChange()
+                self?.handleAccountStateChange(detectedAt: detectedAt)
             }
         }
         eventTimer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
@@ -306,15 +307,18 @@ final class MonitorStore: ObservableObject {
         _ = quotaResetNotifier.openNotificationSettings()
     }
 
-    func refreshContinuity(forceInventory: Bool = false) {
+    func refreshContinuity(
+        forceInventory: Bool = false,
+        accountObservedAt: Date? = nil
+    ) {
         guard !isContinuityLoading, !isContinuityRecovering else { return }
         isContinuityLoading = true
         continuityScanProgress = nil
         if forceInventory || continuitySnapshot.checkedAt == .distantPast {
-            refreshContinuityAndInventory()
+            refreshContinuityAndInventory(accountObservedAt: accountObservedAt)
             return
         }
-        accountIdentityService.fetch { [weak self] accountResult in
+        accountIdentityService.fetch(observedAt: accountObservedAt ?? Date()) { [weak self] accountResult in
             guard let self else { return }
             switch accountResult {
             case let .failure(error):
@@ -347,7 +351,7 @@ final class MonitorStore: ObservableObject {
         }
     }
 
-    private func refreshContinuityAndInventory() {
+    private func refreshContinuityAndInventory(accountObservedAt: Date? = nil) {
         var accountResult: Result<CodexAccountInfo?, Error>?
         var inventoryResult: Result<SessionContinuitySnapshot, Error>?
 
@@ -380,7 +384,7 @@ final class MonitorStore: ObservableObject {
             }
         }
 
-        accountIdentityService.fetch { result in
+        accountIdentityService.fetch(observedAt: accountObservedAt ?? Date()) { result in
             accountResult = result
             finishIfReady()
         }
@@ -396,8 +400,9 @@ final class MonitorStore: ObservableObject {
         )
     }
 
-    private func handleAccountStateChange() {
+    private func handleAccountStateChange(detectedAt: Date) {
         hasPendingAccountStateRefresh = true
+        pendingAccountChangeDetectedAt = detectedAt
         schedulePendingAccountStateRefresh(after: 0)
     }
 
@@ -410,7 +415,12 @@ final class MonitorStore: ObservableObject {
                 return
             }
             self.hasPendingAccountStateRefresh = false
-            self.refreshContinuity(forceInventory: true)
+            let detectedAt = self.pendingAccountChangeDetectedAt
+            self.pendingAccountChangeDetectedAt = nil
+            self.refreshContinuity(
+                forceInventory: true,
+                accountObservedAt: detectedAt
+            )
         }
         accountStateRefreshWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)

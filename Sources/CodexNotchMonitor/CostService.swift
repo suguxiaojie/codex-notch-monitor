@@ -178,7 +178,11 @@ final class CostService {
 
     func fetch(
         sessionPathOverrides: [String: String] = [:],
-        accountContext: UsageAccountContext = UsageAccountContext(accounts: [], accountIDByThread: [:]),
+        accountContext: UsageAccountContext = UsageAccountContext(
+            accounts: [],
+            accountIDByThread: [:],
+            accountTimeline: []
+        ),
         completion: @escaping (CostSnapshot) -> Void
     ) {
         queue.async {
@@ -448,7 +452,6 @@ final class CostService {
         now: Date = Date(),
         calendar: Calendar = .current
     ) -> CostSnapshot {
-        let accountIDByThread = accountContext.accountIDByThread
         let knownAccountIDs = Set(accountContext.accounts.map(\.id))
         let aggregate = summarizeScope(
             events,
@@ -464,7 +467,7 @@ final class CostService {
                 now: now,
                 calendar: calendar,
                 include: { event in
-                    accountIDByThread[event.sessionID] == account.id
+                    accountContext.accountID(for: event.sessionID, at: event.timestamp) == account.id
                 }
             ))
         })
@@ -474,7 +477,10 @@ final class CostService {
             now: now,
             calendar: calendar,
             include: { event in
-                guard let accountID = accountIDByThread[event.sessionID] else { return true }
+                guard let accountID = accountContext.accountID(
+                    for: event.sessionID,
+                    at: event.timestamp
+                ) else { return true }
                 return !knownAccountIDs.contains(accountID)
             }
         )

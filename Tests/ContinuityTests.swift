@@ -10,6 +10,7 @@ enum ContinuityTests {
         try accountObservationDoesNotGuessHistory()
         try accountTransitionTracksOnlyNewSessions()
         try usageAccountContextExposesOnlyObservedOwnership()
+        try accountTimelinePersistsRepeatedSwitches()
         try emailSummaryIsRedactedAndBackwardCompatible()
         threadKindsFollowAppServerSourceSemantics()
         continuityCountsOnlyUserConversations()
@@ -23,7 +24,7 @@ enum ContinuityTests {
         try sessionImportValidatesMapsSkipsAndRollsBack()
         try duplicateImportGeneratesNewThreadID()
         try damagedPortableBundleIsRejected()
-        print("Continuity tests: 16/16 passed")
+        print("Continuity tests: 17/17 passed")
     }
 
     private static func runLocalInventoryBenchmark() {
@@ -183,6 +184,50 @@ enum ContinuityTests {
         expect(context.accounts[1].emailSummary == "se***nd@example.com", "当前账号摘要")
     }
 
+    private static func accountTimelinePersistsRepeatedSwitches() throws {
+        let root = temporaryDirectory("account-timeline")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let stateURL = root.appendingPathComponent("account-continuity.json")
+        let store = AccountContinuityStore(stateURL: stateURL)
+
+        _ = try store.observe(
+            account: account("first@example.com", at: 1_800_000_000),
+            localSessionIDs: ["existing"]
+        )
+        _ = try store.observe(
+            account: account("first@example.com", at: 1_800_000_050),
+            localSessionIDs: ["existing"]
+        )
+        _ = try store.observe(
+            account: account("second@example.com", at: 1_800_000_100),
+            localSessionIDs: ["existing"]
+        )
+        _ = try store.observe(
+            account: account("first@example.com", at: 1_800_000_200),
+            localSessionIDs: ["existing"]
+        )
+
+        let context = store.usageAccountContext()
+        let account1 = context.accounts.first(where: { $0.alias == "账号 1" })!.id
+        let account2 = context.accounts.first(where: { $0.alias == "账号 2" })!.id
+        expect(context.accountTimeline.map(\.accountID) == [account1, account2, account1], "重复切号应形成有序账号时间线")
+        expect(
+            context.accountTimeline.map(\.startsAt) == [
+                Date(timeIntervalSince1970: 1_800_000_000),
+                Date(timeIntervalSince1970: 1_800_000_100),
+                Date(timeIntervalSince1970: 1_800_000_200),
+            ],
+            "账号时间线应保留可靠观察时间"
+        )
+
+        let reloaded = AccountContinuityStore(stateURL: stateURL).usageAccountContext()
+        expect(reloaded.accountTimeline == context.accountTimeline, "应用重启后账号时间线应完整恢复")
+        expect(
+            context.accountID(for: "existing", at: Date(timeIntervalSince1970: 1_800_000_150)) == account2,
+            "既有会话切号后的事件应按时间归入新账号"
+        )
+    }
+
     private static func emailSummaryIsRedactedAndBackwardCompatible() throws {
         let manager = FileManager.default
         let root = manager.temporaryDirectory.appendingPathComponent("email-summary-\(UUID().uuidString)")
@@ -223,6 +268,7 @@ enum ContinuityTests {
         let legacyAccount = legacyStore.usageAccountContext().accounts.first
         expect(legacyAccount?.alias == "账号 1", "旧状态文件仍应正常读取")
         expect(legacyAccount?.emailSummary == nil, "旧账号在再次观察前应显示邮箱待记录")
+        expect(legacyStore.usageAccountContext().accountTimeline.isEmpty, "旧状态在首次可靠观察前不应猜测时间线")
     }
 
     private static func handoffRedactsSecrets() {
@@ -533,10 +579,12 @@ enum ContinuityTests {
         let changed = DispatchSemaphore(value: 0)
         let lock = NSLock()
         var callbackCount = 0
+        var detectedAt: Date?
         let watcher = CodexAccountStateWatcher(codexHome: root, debounceInterval: 0.08)
-        watcher.start {
+        watcher.start { timestamp in
             lock.lock()
             callbackCount += 1
+            detectedAt = timestamp
             lock.unlock()
             changed.signal()
         }
@@ -560,8 +608,15 @@ enum ContinuityTests {
         Thread.sleep(forTimeInterval: 0.15)
         lock.lock()
         let finalCount = callbackCount
+        let finalDetectedAt = detectedAt
         lock.unlock()
         expect(finalCount == 1, "一次账号文件替换应防抖为一次刷新")
+        let stateModificationDate = CodexAccountStateStamp.read(at: stateURL).modificationDate
+        expect(
+            finalDetectedAt != nil && stateModificationDate != nil
+                && abs(finalDetectedAt!.timeIntervalSince(stateModificationDate!)) < 0.01,
+            "账号刷新应携带状态文件变更时间作为切号边界"
+        )
         watcher.stop()
     }
 

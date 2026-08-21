@@ -89,13 +89,16 @@ final class AccountIdentityService {
         )
     }
 
-    func fetch(completion: @escaping (Result<CodexAccountInfo?, Error>) -> Void) {
+    func fetch(
+        observedAt: Date = Date(),
+        completion: @escaping (Result<CodexAccountInfo?, Error>) -> Void
+    ) {
         CodexAppServerClient.request(
             method: "account/read",
             params: ["refreshToken": false],
             timeout: 12
         ) { result in
-            completion(result.map { Self.parseAccount(from: $0) })
+            completion(result.map { Self.parseAccount(from: $0, now: observedAt) })
         }
     }
 }
@@ -119,6 +122,11 @@ final class AccountContinuityStore {
         var firstObservedAt: Date
     }
 
+    private struct PersistedAccountObservation: Codable, Equatable {
+        var accountFingerprint: String
+        var startsAt: Date
+    }
+
     private struct State: Codable, Equatable {
         var version = 1
         var salt: String
@@ -126,6 +134,7 @@ final class AccountContinuityStore {
         var accounts: [String: PersistedAccount] = [:]
         var knownSessionIDs: Set<String> = []
         var sessionOwnership: [String: PersistedOwnership] = [:]
+        var accountTimeline: [PersistedAccountObservation]?
     }
 
     private let stateURL: URL
@@ -181,6 +190,15 @@ final class AccountContinuityStore {
             }
             state.knownSessionIDs.formUnion(localSessionIDs)
         }
+        var timeline = state.accountTimeline ?? []
+        if timeline.last?.accountFingerprint != fingerprint {
+            let minimumStart = timeline.last?.startsAt.addingTimeInterval(0.001) ?? now
+            timeline.append(PersistedAccountObservation(
+                accountFingerprint: fingerprint,
+                startsAt: max(now, minimumStart)
+            ))
+            state.accountTimeline = timeline
+        }
         state.currentAccountFingerprint = fingerprint
         try saveLocked()
 
@@ -229,7 +247,15 @@ final class AccountContinuityStore {
             accountIDByThread: ownershipLocked().compactMapValues { ownership in
                 guard ownership.confidence == .observed else { return nil }
                 return ownership.accountFingerprint
-            }
+            },
+            accountTimeline: (state.accountTimeline ?? [])
+                .sorted { $0.startsAt < $1.startsAt }
+                .map {
+                    UsageAccountObservation(
+                        accountID: $0.accountFingerprint,
+                        startsAt: $0.startsAt
+                    )
+                }
         )
     }
 

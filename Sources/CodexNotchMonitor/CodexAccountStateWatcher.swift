@@ -34,7 +34,7 @@ final class CodexAccountStateWatcher {
     private var fileSource: DispatchSourceFileSystemObject?
     private var pendingChange: DispatchWorkItem?
     private var lastStamp: CodexAccountStateStamp
-    private var handler: (() -> Void)?
+    private var handler: ((Date) -> Void)?
     private var started = false
 
     init(
@@ -48,7 +48,7 @@ final class CodexAccountStateWatcher {
         lastStamp = CodexAccountStateStamp.read(at: stateFileURL)
     }
 
-    func start(onChange: @escaping () -> Void) {
+    func start(onChange: @escaping (Date) -> Void) {
         queue.async { [weak self] in
             guard let self, !self.started else { return }
             self.started = true
@@ -121,8 +121,9 @@ final class CodexAccountStateWatcher {
         guard changed else { return }
 
         pendingChange?.cancel()
+        let detectedAt = stamp.modificationDate ?? Date()
         let workItem = DispatchWorkItem { [weak self] in
-            self?.handler?()
+            self?.handler?(detectedAt)
         }
         pendingChange = workItem
         queue.asyncAfter(deadline: .now() + debounceInterval, execute: workItem)

@@ -6,6 +6,7 @@ enum CostSmokeTests {
         verifyArchivedSessionsAreIncludedOnce()
         verifyMovedThreadUsesCurrentProject()
         verifyRollingWindowsAndAccountScopes()
+        verifyAccountTimelineSplitsExistingSession()
         let service = CostService()
         service.fetch { snapshot in
             check(snapshot.today.series.count == 24, "24-hour trend")
@@ -88,7 +89,8 @@ enum CostSmokeTests {
             accountIDByThread: [
                 "account-1-today": "account-1",
                 "account-2-week-start": "account-2",
-            ]
+            ],
+            accountTimeline: []
         )
         let snapshot = CostService.summarize(
             events,
@@ -123,6 +125,77 @@ enum CostSmokeTests {
                 abs($0.0 - $0.1.0 - $0.1.1.0 - $0.1.1.1) < 0.000_001
             },
             "account cost curves reconcile with aggregate"
+        )
+    }
+
+    private static func verifyAccountTimelineSplitsExistingSession() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let formatter = ISO8601DateFormatter()
+        let now = formatter.date(from: "2026-08-17T12:00:00Z")!
+        func event(_ sessionID: String, _ timestamp: String, _ input: Int) -> TokenUsageEvent {
+            TokenUsageEvent(
+                provider: .codex,
+                timestamp: formatter.date(from: timestamp)!,
+                model: "gpt-5.4",
+                sessionID: sessionID,
+                projectPath: "/tmp/SharedProject",
+                input: input,
+                output: 0,
+                cacheCreate: 0,
+                cacheRead: 0
+            )
+        }
+        let events = [
+            event("shared-session", "2026-08-17T08:30:00Z", 50),
+            event("unknown-session", "2026-08-17T08:45:00Z", 25),
+            event("shared-session", "2026-08-17T09:30:00Z", 100),
+            event("shared-session", "2026-08-17T10:30:00Z", 200),
+            event("shared-session", "2026-08-17T11:30:00Z", 300),
+        ]
+        let context = UsageAccountContext(
+            accounts: [
+                UsageAccountOption(id: "account-1", alias: "账号 1", emailSummary: nil, isCurrent: true),
+                UsageAccountOption(id: "account-2", alias: "账号 2", emailSummary: nil, isCurrent: false),
+            ],
+            accountIDByThread: ["shared-session": "account-2"],
+            accountTimeline: [
+                UsageAccountObservation(
+                    accountID: "account-1",
+                    startsAt: formatter.date(from: "2026-08-17T09:00:00Z")!
+                ),
+                UsageAccountObservation(
+                    accountID: "account-2",
+                    startsAt: formatter.date(from: "2026-08-17T10:00:00Z")!
+                ),
+                UsageAccountObservation(
+                    accountID: "account-1",
+                    startsAt: formatter.date(from: "2026-08-17T11:00:00Z")!
+                ),
+            ]
+        )
+        let snapshot = CostService.summarize(
+            events,
+            projectNames: [:],
+            accountContext: context,
+            now: now,
+            calendar: calendar
+        )
+        let account1 = snapshot.scope(for: "account-1")
+        let account2 = snapshot.scope(for: "account-2")
+        let unknown = snapshot.scope(for: UsageAccountScope.unknown)
+
+        check(account1.today.tokens == 400, "existing session events after switches follow account timeline")
+        check(account2.today.tokens == 250, "pre-timeline event falls back without moving old history")
+        check(unknown.today.tokens == 25, "pre-timeline session without reliable ownership stays unknown")
+        check(snapshot.today.tokens == 675, "timeline account scopes reconcile with aggregate")
+        check(
+            snapshot.today.tokens == account1.today.tokens + account2.today.tokens + unknown.today.tokens,
+            "timeline token totals partition the aggregate"
+        )
+        check(
+            abs(snapshot.today.dollars - account1.today.dollars - account2.today.dollars - unknown.today.dollars) < 0.000_001,
+            "timeline cost totals partition the aggregate"
         )
     }
 
