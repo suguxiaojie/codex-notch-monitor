@@ -5,19 +5,60 @@ enum QuotaResetReason: String, Codable, Equatable {
     case officialScheduled
     case natural
     case mixed
+    case manualCredit
+    case userConfirmed
     case unverified
 
     var title: String {
         switch self {
-        case .officialCompleted: return "官方临时重置"
-        case .officialScheduled: return "计划重置已生效"
-        case .natural: return "额度已到期重置"
-        case .mixed: return "额度已恢复"
-        case .unverified: return "检测到额度恢复"
+        case .officialCompleted, .officialScheduled, .mixed: return "Tibo 重置"
+        case .natural: return "到期重置"
+        case .manualCredit: return "手动重置"
+        case .userConfirmed: return "手动重置"
+        case .unverified: return "待确认重置"
         }
     }
 
     var isNotifiable: Bool { self != .unverified }
+
+    var defaultDisplayType: QuotaResetDisplayType? {
+        switch self {
+        case .officialCompleted, .officialScheduled, .mixed: return .tibo
+        case .natural: return .natural
+        case .manualCredit, .userConfirmed: return .manual
+        case .unverified: return nil
+        }
+    }
+}
+
+enum QuotaResetDisplayType: String, Codable, CaseIterable, Identifiable {
+    case tibo
+    case natural
+    case manual
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .tibo: return "Tibo 重置"
+        case .natural: return "到期重置"
+        case .manual: return "手动重置"
+        }
+    }
+
+    var representativeReason: QuotaResetReason {
+        switch self {
+        case .tibo: return .officialCompleted
+        case .natural: return .natural
+        case .manual: return .userConfirmed
+        }
+    }
+}
+
+struct QuotaResetConfirmationCandidate: Identifiable, Equatable {
+    let id: String
+    let detectedAt: Date
+    let changes: [QuotaResetChange]
 }
 
 struct QuotaResetChange: Codable, Equatable {
@@ -43,6 +84,29 @@ struct QuotaResetEvent: Codable, Identifiable, Equatable {
     let changes: [QuotaResetChange]
     let sourcePostID: String?
     let sourceURL: String?
+    var userDisplayType: QuotaResetDisplayType?
+
+    init(
+        id: String,
+        detectedAt: Date,
+        reason: QuotaResetReason,
+        changes: [QuotaResetChange],
+        sourcePostID: String?,
+        sourceURL: String?,
+        userDisplayType: QuotaResetDisplayType? = nil
+    ) {
+        self.id = id
+        self.detectedAt = detectedAt
+        self.reason = reason
+        self.changes = changes
+        self.sourcePostID = sourcePostID
+        self.sourceURL = sourceURL
+        self.userDisplayType = userDisplayType
+    }
+
+    var displayReason: QuotaResetReason {
+        userDisplayType?.representativeReason ?? reason
+    }
 }
 
 struct QuotaResetEvaluation {
@@ -80,6 +144,7 @@ final class QuotaResetMonitor {
         var snapshot: Snapshot?
         var pending: [Pending]
         var history: [QuotaResetEvent]
+        var manualResetRequestedAt: Date?
     }
 
     private let stateURL: URL
@@ -87,12 +152,98 @@ final class QuotaResetMonitor {
 
     init(stateURL: URL = AppPaths.supportDirectory.appendingPathComponent("quota-reset-state.json")) {
         self.stateURL = stateURL
-        self.state = Self.load(from: stateURL) ?? State(snapshot: nil, pending: [], history: [])
+        self.state = Self.load(from: stateURL) ?? State(
+            snapshot: nil,
+            pending: [],
+            history: [],
+            manualResetRequestedAt: nil
+        )
     }
 
     var history: [QuotaResetEvent] { state.history }
 
+    var confirmableRecoveries: [QuotaResetConfirmationCandidate] {
+        var seen = Set<String>()
+        let candidates = state.pending.map { pending in
+            Self.confirmationCandidate(detectedAt: pending.detectedAt, changes: pending.changes)
+        } + state.history.compactMap { event in
+            guard event.reason == .unverified else { return nil }
+            return Self.confirmationCandidate(detectedAt: event.detectedAt, changes: event.changes)
+        }
+        return candidates
+            .filter { seen.insert($0.id).inserted }
+            .sorted { $0.detectedAt > $1.detectedAt }
+    }
+
+    func confirmUserReset(candidateID: String) -> QuotaResetEvent? {
+        if let index = state.pending.firstIndex(where: {
+            Self.confirmationCandidate(detectedAt: $0.detectedAt, changes: $0.changes).id == candidateID
+        }) {
+            let pending = state.pending.remove(at: index)
+            let event = record(
+                changes: pending.changes,
+                reason: .userConfirmed,
+                source: nil,
+                now: pending.detectedAt
+            )
+            persist()
+            return event
+        }
+
+        if let index = state.history.firstIndex(where: { event in
+            event.reason == .unverified
+                && Self.confirmationCandidate(detectedAt: event.detectedAt, changes: event.changes).id == candidateID
+        }) {
+            let unverified = state.history.remove(at: index)
+            let event = record(
+                changes: unverified.changes,
+                reason: .userConfirmed,
+                source: nil,
+                now: unverified.detectedAt
+            )
+            persist()
+            return event
+        }
+        return nil
+    }
+
+    func markManualResetRequested(at date: Date = Date()) {
+        state.manualResetRequestedAt = date
+        persist()
+    }
+
+    func setDisplayType(
+        eventID: String,
+        displayType: QuotaResetDisplayType?
+    ) -> QuotaResetEvent? {
+        guard let index = state.history.firstIndex(where: { $0.id == eventID }) else {
+            return nil
+        }
+        let normalizedDisplayType = displayType == state.history[index].reason.defaultDisplayType
+            ? nil
+            : displayType
+        let previous = state.history[index].userDisplayType
+        guard previous != normalizedDisplayType else { return state.history[index] }
+
+        do {
+            try backupStateBeforeClassificationChange()
+            state.history[index].userDisplayType = normalizedDisplayType
+            try writeState()
+            return state.history[index]
+        } catch {
+            state.history[index].userDisplayType = previous
+            return nil
+        }
+    }
+
     func evaluate(buckets: [RateLimitBucket], feed: TiboFeed?, now: Date = Date()) -> QuotaResetEvaluation {
+        if let requestedAt = state.manualResetRequestedAt,
+           now.timeIntervalSince(requestedAt) > 10 * 60 {
+            state.manualResetRequestedAt = nil
+        }
+        let hasManualResetEvidence = state.manualResetRequestedAt.map {
+            now.timeIntervalSince($0) >= -60 && now.timeIntervalSince($0) <= 10 * 60
+        } ?? false
         let current = makeSnapshot(buckets: buckets, now: now)
         var events = expirePending(now: now)
 
@@ -130,7 +281,12 @@ final class QuotaResetMonitor {
             return QuotaResetEvaluation(events: events, needsFeedRefresh: false)
         }
 
-        if let official = matchingOfficialEvent(in: feed, since: previous.capturedAt, now: now) {
+        if hasManualResetEvidence {
+            state.manualResetRequestedAt = nil
+            if let event = record(changes: changes, reason: .manualCredit, source: nil, now: now) {
+                events.append(event)
+            }
+        } else if let official = matchingOfficialEvent(in: feed, since: previous.capturedAt, now: now) {
             let reason: QuotaResetReason
             if naturalEvidence {
                 reason = .mixed
@@ -274,23 +430,68 @@ final class QuotaResetMonitor {
         return event
     }
 
+    private static func confirmationCandidate(
+        detectedAt: Date,
+        changes: [QuotaResetChange]
+    ) -> QuotaResetConfirmationCandidate {
+        let identities = changes
+            .map { "\($0.bucketID)-\($0.windowDurationMinutes ?? -1)" }
+            .sorted()
+            .joined(separator: "+")
+        let milliseconds = Int64((detectedAt.timeIntervalSince1970 * 1_000).rounded())
+        return QuotaResetConfirmationCandidate(
+            id: "quota-recovery|\(milliseconds)|\(identities)",
+            detectedAt: detectedAt,
+            changes: changes
+        )
+    }
+
     private func persist() {
-        do {
-            try FileManager.default.createDirectory(
-                at: stateURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true,
-                attributes: [.posixPermissions: 0o700]
-            )
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .iso8601
-            try encoder.encode(state).write(to: stateURL, options: .atomic)
-        } catch { }
+        try? writeState()
+    }
+
+    private func writeState() throws {
+        try FileManager.default.createDirectory(
+            at: stateURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(state).write(to: stateURL, options: .atomic)
+    }
+
+    private func backupStateBeforeClassificationChange() throws {
+        let directory = stateURL.deletingLastPathComponent()
+            .appendingPathComponent("quota-reset-backups", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyyMMdd-HHmmss-SSS"
+        let backupURL = directory.appendingPathComponent(
+            "quota-reset-state-before-type-change-\(formatter.string(from: Date()))-\(UUID().uuidString.prefix(8)).json"
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(state).write(to: backupURL, options: .atomic)
     }
 
     private static func load(from url: URL) -> State? {
         guard let data = try? Data(contentsOf: url) else { return nil }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return try? decoder.decode(State.self, from: data)
+        guard var decoded = try? decoder.decode(State.self, from: data) else {
+            return nil
+        }
+        for index in decoded.history.indices
+        where decoded.history[index].userDisplayType
+            == decoded.history[index].reason.defaultDisplayType {
+            decoded.history[index].userDisplayType = nil
+        }
+        return decoded
     }
 }

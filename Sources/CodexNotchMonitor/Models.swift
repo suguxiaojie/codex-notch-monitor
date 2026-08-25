@@ -1,10 +1,16 @@
 import Foundation
 import SwiftUI
 
+enum MonitorRefreshCadence {
+    static let quota: TimeInterval = 60
+    static let cost: TimeInterval = 300
+}
+
 enum IslandPanelLayout {
+    static let glanceWidth: CGFloat = 340
     static let expandedWidth: CGFloat = 430
-    /// Fits the normal maximum Usage composition (project card, three live
-    /// actions, and two quota buckets) without requiring an initial scroll.
+    /// Fixed transparent host height for the narrow glance popover. Detailed
+    /// Usage, Cost, activity, and continuity content now lives in Monitor Center.
     static let expandedContentHeight: CGFloat = 500
     static let hostWidth: CGFloat = 460
     static let hostHeight: CGFloat = 560
@@ -54,6 +60,168 @@ enum QuotaResetCountdown {
     }
 }
 
+enum MenuBarStatusFormatter {
+    static func title(
+        for window: RateLimitWindow?,
+        relativeTo now: Date
+    ) -> String {
+        guard let window else { return "--" }
+        let reset = resetText(window.resetsAt, relativeTo: now)
+        return reset.isEmpty
+            ? "\(window.remainingPercent)%"
+            : "\(window.remainingPercent)% · \(reset)"
+    }
+
+    static func resetText(_ resetAt: Date?, relativeTo now: Date) -> String {
+        guard let resetAt else { return "" }
+        let minutes = max(0, Int(resetAt.timeIntervalSince(now) / 60))
+        let hours = minutes / 60
+        if hours >= 24 { return "\(hours / 24)天" }
+        if hours > 0 { return "\(hours)小时" }
+        return "\(max(1, minutes))分"
+    }
+}
+
+enum MenuBarQuotaIconState: Equatable {
+    case loading
+    case ready(Int)
+    case failed
+}
+
+enum MenuBarQuotaIconModel {
+    static func state(for quotaState: QuotaState) -> MenuBarQuotaIconState {
+        switch quotaState {
+        case .loading:
+            return .loading
+        case let .loaded(buckets, _):
+            let bucket = buckets.first(where: { $0.id == "codex" }) ?? buckets.first
+            guard let remaining = bucket?.headlineWindow?.remainingPercent else { return .loading }
+            return .ready(clamp(remaining))
+        case let .failed(_, previous):
+            let bucket = previous.first(where: { $0.id == "codex" }) ?? previous.first
+            guard let remaining = bucket?.headlineWindow?.remainingPercent else { return .failed }
+            return .ready(clamp(remaining))
+        }
+    }
+
+    static func progress(for remainingPercent: Int) -> Double {
+        Double(clamp(remainingPercent)) / 100
+    }
+
+    private static func clamp(_ value: Int) -> Int {
+        max(0, min(100, value))
+    }
+}
+
+enum StatusItemCoexistencePolicy {
+    static let quotaViewBundleIdentifier = "com.quotaview.menubar"
+
+    static func usesIconOnlyMode(
+        runningBundleIdentifiers: Set<String>
+    ) -> Bool {
+        runningBundleIdentifiers.contains(quotaViewBundleIdentifier)
+    }
+
+    static func effectiveDensity(
+        preference: MenuBarInformationDensity,
+        quotaViewIsRunning: Bool,
+        availableWidth: CGFloat?
+    ) -> MenuBarInformationDensity {
+        guard preference == .automatic else { return preference }
+        if quotaViewIsRunning { return .iconOnly }
+        guard let availableWidth else { return .compact }
+        if availableWidth >= 190 { return .detailed }
+        if availableWidth >= 92 { return .compact }
+        return .iconOnly
+    }
+}
+
+enum OpenAIPlanDisplayName {
+    static func resolve(_ rawValue: String?) -> String? {
+        guard let rawValue else { return nil }
+        let normalized = rawValue
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased(with: Locale(identifier: "en_US_POSIX"))
+            .replacingOccurrences(of: "-", with: "_")
+            .replacingOccurrences(of: " ", with: "_")
+        switch normalized {
+        case "free": return "Free"
+        case "go": return "Go"
+        case "plus": return "Plus"
+        case "prolite", "pro_lite", "pro_5x": return "Pro 5x"
+        case "pro", "pro_20x": return "Pro 20x"
+        case "team", "self_serve_business_usage_based", "business": return "Business"
+        case "enterprise_cbp_usage_based", "enterprise": return "Enterprise"
+        case "edu", "education": return "Edu"
+        case "api", "api_key": return "API Key"
+        default: return nil
+        }
+    }
+}
+
+enum MenuBarActivityFormatter {
+    static func title(
+        phase: TaskPhase,
+        projectName: String,
+        actionSummary: String,
+        projectCount: Int,
+        quotaTitle: String
+    ) -> String {
+        var parts = [phase.menuBarTitle]
+        let project = compact(projectName, limit: 9)
+        let action = compactAction(actionSummary, phase: phase)
+        if !action.isEmpty {
+            parts.append(action)
+        } else if !project.isEmpty {
+            parts.append(project)
+        }
+        if projectCount > 1 { parts.append("+\(projectCount - 1)") }
+        parts.append(compactQuota(quotaTitle))
+        return parts.joined(separator: " · ")
+    }
+
+    static func tooltip(
+        phase: TaskPhase,
+        projectName: String,
+        actionSummary: String,
+        projectCount: Int,
+        quotaTitle: String
+    ) -> String {
+        var lines = [
+            "\(phase.title) · \(projectName)",
+            actionSummary.replacingOccurrences(of: "\n", with: "；"),
+        ]
+        if projectCount > 1 { lines.append("同时运行 \(projectCount) 个项目") }
+        lines.append("额度 \(quotaTitle)")
+        return lines.filter { !$0.isEmpty }.joined(separator: "\n")
+    }
+
+    private static func compactAction(_ value: String, phase: TaskPhase) -> String {
+        var result = value
+            .components(separatedBy: .newlines)
+            .first?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        for prefix in ["正在", "已经", "已"] where result.hasPrefix(prefix) {
+            result.removeFirst(prefix.count)
+            break
+        }
+        guard result != phase.title,
+              result != phase.menuBarTitle
+        else { return "" }
+        return compact(result, limit: 15)
+    }
+
+    private static func compactQuota(_ value: String) -> String {
+        value.split(separator: " ").first.map(String.init) ?? value
+    }
+
+    private static func compact(_ value: String, limit: Int) -> String {
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard normalized.count > limit else { return normalized }
+        return String(normalized.prefix(max(1, limit - 1))) + "…"
+    }
+}
+
 struct RateLimitBucket: Identifiable, Equatable {
     let id: String
     let name: String
@@ -84,6 +252,53 @@ struct RateLimitBucket: Identifiable, Equatable {
     /// The compact island prioritizes the fastest-resetting constraint; the
     /// expanded panel still shows every window independently.
     var headlineWindow: RateLimitWindow? { windows.first }
+}
+
+struct QuotaResetCredit: Identifiable, Equatable {
+    let id: String
+    let resetType: String
+    let status: String
+    let grantedAt: Date?
+    let expiresAt: Date?
+    let title: String?
+    let description: String?
+}
+
+struct QuotaResetCreditSummary: Equatable {
+    let availableCount: Int
+    let credits: [QuotaResetCredit]
+
+    func nearestExpiration(relativeTo now: Date) -> Date? {
+        let dates = credits.compactMap(\.expiresAt)
+        return dates.filter { $0 > now }.min() ?? dates.max()
+    }
+
+    func nextRedeemableCredit(relativeTo now: Date) -> QuotaResetCredit? {
+        credits
+            .filter { credit in
+                let status = credit.status.lowercased()
+                let statusAllowsUse = !status.contains("expired")
+                    && !status.contains("redeemed")
+                    && !status.contains("used")
+                return statusAllowsUse && (credit.expiresAt == nil || credit.expiresAt! > now)
+            }
+            .sorted { lhs, rhs in
+                switch (lhs.expiresAt, rhs.expiresAt) {
+                case let (left?, right?): return left < right
+                case (_?, nil): return true
+                case (nil, _?): return false
+                case (nil, nil): return lhs.id < rhs.id
+                }
+            }
+            .first
+    }
+}
+
+enum QuotaResetConsumeOutcome: String, Equatable {
+    case reset
+    case nothingToReset
+    case noCredit
+    case alreadyRedeemed
 }
 
 enum QuotaState: Equatable {
@@ -122,6 +337,18 @@ enum TaskPhase: String, Codable {
         case .completed: return "任务已完成"
         case .ended: return "会话已结束"
         case .failed: return "任务失败"
+        }
+    }
+
+    var menuBarTitle: String {
+        switch self {
+        case .starting: return "开始"
+        case .working: return "思考"
+        case .usingTool: return "工具"
+        case .waitingApproval: return "待批准"
+        case .completed: return "完成"
+        case .ended: return "结束"
+        case .failed: return "失败"
         }
     }
 
@@ -241,6 +468,31 @@ struct ActiveProjectState: Identifiable, Equatable {
             if lhs.isRunning != rhs.isRunning { return !lhs.isRunning && rhs.isRunning }
             return activityDisplayPriority(lhs.kind) < activityDisplayPriority(rhs.kind)
         }
+    }
+
+    var detailedActionSummary: String {
+        guard let primary = latestDisplayActivity else { return task.phase.title }
+        let primaryTitle = displayTitle(primary)
+        let runningOthers = activities
+            .filter { $0.id != primary.id && $0.isRunning }
+            .sorted {
+                if $0.updatedAt != $1.updatedAt { return $0.updatedAt > $1.updatedAt }
+                return activityDisplayPriority($0.kind) > activityDisplayPriority($1.kind)
+            }
+        guard let secondary = runningOthers.first else { return primaryTitle }
+        let remaining = runningOthers.count - 1
+        let suffix = remaining > 0 ? " · 另有 \(remaining) 个" : ""
+        return "\(primaryTitle)\n同时：\(displayTitle(secondary))\(suffix)"
+    }
+
+    private func displayTitle(_ activity: SessionActivityItem) -> String {
+        if activity.kind == .progress
+            || activity.title.hasPrefix("正在")
+            || activity.title.hasPrefix("已")
+            || activity.title.hasPrefix("等待") {
+            return activity.title
+        }
+        return (activity.isRunning ? "正在" : "已") + activity.title
     }
 
     private func activityDisplayPriority(_ kind: SessionActivityKind) -> Int {

@@ -14,74 +14,198 @@ private extension Animation {
     static let islandContentSwap = Animation.timingCurve(0.23, 1, 0.32, 1, duration: 0.22)
 }
 
-private enum ExpandedPage: String, CaseIterable, Identifiable {
+enum MonitorCenterSection: String, CaseIterable, Identifiable {
     case usage = "Usage"
     case cost = "Cost"
-    case tibo = "动态"
-    case continuity = "会话"
+    case tibo = "动态中心"
+    case continuity = "会话管理"
+    case panelSettings = "面板设置"
+    case setup = "安装与权限"
+    case settings = "灵动岛设置"
     var id: String { rawValue }
+
+    var symbol: String {
+        switch self {
+        case .usage: return "chart.xyaxis.line"
+        case .cost: return "dollarsign.circle"
+        case .tibo: return "bolt.horizontal.circle"
+        case .continuity: return "bubble.left.and.bubble.right"
+        case .panelSettings: return "rectangle.on.rectangle"
+        case .setup: return "checkmark.shield"
+        case .settings: return "gearshape"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .usage: return "Token 与项目用量"
+        case .cost: return "API 等价成本"
+        case .tibo: return "额度信号、实时动态与已验证时间轴"
+        case .continuity: return "本地会话连续性"
+        case .panelSettings: return "管理概览卡片中的数据与操作"
+        case .setup: return "首次引导、通知权限与 Codex Hooks"
+        case .settings: return "Activity Island"
+        }
+    }
 }
 
 extension Notification.Name {
-    static let codexMonitorAdvancePage = Notification.Name("CodexMonitor.advancePage")
-    static let codexMonitorRewindPage = Notification.Name("CodexMonitor.rewindPage")
+    static let monitorCenterSelectSection = Notification.Name(
+        "CodexMonitor.monitorCenterSelectSection"
+    )
+    static let monitorCenterSectionDidChange = Notification.Name(
+        "CodexMonitor.monitorCenterSectionDidChange"
+    )
+}
+
+enum MonitorViewSurface {
+    case notch
+    case center
+}
+
+private enum UsageVisualizationMode: String, CaseIterable, Identifiable {
+    case trend = "趋势"
+    case activity = "活动"
+
+    var id: String { rawValue }
+}
+
+private enum TiboRadarMode: String, CaseIterable, Identifiable {
+    case live = "实时动态"
+    case timeline = "重置时间轴"
+
+    var id: String { rawValue }
+}
+
+private enum TiboRadarFilter: String, CaseIterable, Identifiable {
+    case all
+    case reset
+    case secondary
+
+    var id: String { rawValue }
+}
+
+private enum QuotaHistoryFilter: String, CaseIterable, Identifiable {
+    case all = "全部"
+    case tibo = "Tibo 重置"
+    case natural = "到期重置"
+    case manual = "手动重置"
+
+    var id: String { rawValue }
 }
 
 struct NotchView: View {
     @ObservedObject var store: MonitorStore
     let onToggle: () -> Void
-    @State private var expandedPage: ExpandedPage = .usage
+    let onOpenCenter: (MonitorCenterSection) -> Void
+    let surface: MonitorViewSurface
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var expandedPage: MonitorCenterSection
     @State private var usagePeriod: UsagePeriod = .day
     @State private var costPeriod: UsagePeriod = .day
     @State private var usageAccountScopeID = UsageAccountScope.all
+    @State private var usageVisualizationMode: UsageVisualizationMode = .trend
+    @State private var costVisualizationMode: UsageVisualizationMode = .trend
+    @AppStorage(ActivityIslandPreferenceKey.enabled) private var activityIslandEnabled = true
+    @AppStorage(ActivityIslandPreferenceKey.mode) private var activityIslandModeRaw = ActivityIslandMode.floating.rawValue
     @State private var compactHideWorkItem: DispatchWorkItem?
     @State private var compactHovered = false
     @State private var confirmsContinuityRecovery = false
     @State private var confirmsContinuityRollback = false
-    @State private var confirmsSessionImport = false
     @State private var confirmsSessionImportRollback = false
+    @State private var confirmsUserQuotaReset = false
+    @State private var quotaResetCandidateToConfirm: QuotaResetConfirmationCandidate?
+    @State private var tiboRadarMode: TiboRadarMode = .live
+    @State private var tiboRadarFilter: TiboRadarFilter = .all
+    @State private var showsTiboQuotaHistory = false
+    @State private var quotaHistoryFilter: QuotaHistoryFilter = .all
     @State private var expandedContinuityProjectID: String?
+    @State private var shouldCenterExpandedContinuityProject = false
+    @State private var pendingContinuityThreadDeletion: LocalThreadRecord?
+    @State private var pendingContinuityProjectDeletion: ContinuityProjectGroup?
+
+    init(
+        store: MonitorStore,
+        onToggle: @escaping () -> Void,
+        onOpenCenter: @escaping (MonitorCenterSection) -> Void = { _ in },
+        surface: MonitorViewSurface = .notch,
+        initialSection: MonitorCenterSection = .usage
+    ) {
+        self.store = store
+        self.onToggle = onToggle
+        self.onOpenCenter = onOpenCenter
+        self.surface = surface
+        _expandedPage = State(initialValue: initialSection)
+    }
 
     var body: some View {
-        ZStack(alignment: .top) {
-            compactView
-                .opacity(store.isExpanded ? 0 : 1)
-
-            // Keep the dashboard mounted even while compact. Its expensive
-            // card hierarchy is therefore not first-built on the click frame.
-            expandedView
-                .padding(.top, store.compactMenuBarHeight)
-                .opacity(store.isExpanded ? 1 : 0)
+        Group {
+            if surface == .center {
+                monitorCenterView
+            } else {
+                compactView
+            }
         }
         .frame(
-            width: IslandPanelLayout.expandedWidth,
-            height: IslandPanelLayout.expandedContentHeight + store.compactMenuBarHeight,
+            width: surface == .center ? MonitorCenterLayout.width : IslandPanelLayout.hostWidth,
+            height: surface == .center
+                ? MonitorCenterLayout.height
+                : IslandPanelLayout.expandedContentHeight + store.compactMenuBarHeight,
             alignment: .top
         )
-        .foregroundStyle(.white)
+        .foregroundStyle(MonitorTheme.primaryText)
         .background {
             RoundedRectangle(
-                cornerRadius: store.isExpanded ? 26 : 16,
+                cornerRadius: surface == .center ? 0 : MonitorTheme.compactCornerRadius,
                 style: .continuous
             )
-            .fill(Color.black.opacity(store.isExpanded ? 0.97 : 1))
+            .fill(surface == .center ? Color.clear : Color.black)
+            .overlay {
+                if surface == .center {
+                    Color.clear
+                }
+            }
             .shadow(
-                color: store.isExpanded ? statusColor.opacity(0.22) : .clear,
-                radius: store.isExpanded ? 18 : 0,
-                y: store.isExpanded ? 8 : 0
+                color: .clear,
+                radius: 0
             )
-            .frame(width: store.visibleIslandWidth, height: store.visibleIslandHeight)
+            .frame(
+                width: surface == .center ? MonitorCenterLayout.width : store.visibleIslandWidth,
+                height: surface == .center ? MonitorCenterLayout.height : store.visibleIslandHeight
+            )
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
         .mask(alignment: .top) {
-            RoundedRectangle(
-                cornerRadius: store.isExpanded ? 26 : 16,
-                style: .continuous
-            )
-            .frame(width: store.visibleIslandWidth, height: store.visibleIslandHeight)
+            if surface == .center {
+                Rectangle().frame(width: MonitorCenterLayout.width, height: MonitorCenterLayout.height)
+            } else {
+                RoundedRectangle(
+                    cornerRadius: MonitorTheme.compactCornerRadius,
+                    style: .continuous
+                )
+                .frame(width: store.visibleIslandWidth, height: store.visibleIslandHeight)
+            }
         }
-        .animation(store.isExpanded ? .islandOpen : .islandClose, value: store.isExpanded)
+        .preferredColorScheme(surface == .center ? .dark : nil)
+        .onReceive(
+            NotificationCenter.default.publisher(for: .monitorCenterSelectSection)
+        ) { notification in
+            guard surface == .center,
+                  let section = notification.object as? MonitorCenterSection
+            else { return }
+            showPage(section)
+        }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .overlay {
+            if surface == .center, let draft = store.sessionExportDraft {
+                sessionExportConfigurationOverlay(draft)
+                    .transition(.opacity.combined(with: .scale(scale: 0.97)))
+            }
+        }
+        .animation(
+            reduceMotion ? nil : .easeOut(duration: 0.18),
+            value: store.sessionExportDraft?.id
+        )
     }
 
     private var compactView: some View {
@@ -103,14 +227,17 @@ struct NotchView: View {
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .circular))
         .overlay {
             if hasLiveActivity {
-                CompactOrbitGlow(color: statusColor)
+                CompactOrbitGlow(color: statusColor, animated: !reduceMotion)
                     .allowsHitTesting(false)
             }
         }
         .opacity(store.compactContentVisible ? 1 : 0)
         .blur(radius: store.compactContentVisible ? 0 : 1)
         .allowsHitTesting(store.compactContentVisible && !store.isExpansionTransitioning)
-        .animation(.easeOut(duration: 0.08), value: store.compactContentVisible)
+        .animation(
+            reduceMotion ? nil : .easeOut(duration: 0.08),
+            value: store.compactContentVisible
+        )
         .onHover(perform: handleCompactHover)
         .onDisappear {
             compactHideWorkItem?.cancel()
@@ -119,13 +246,13 @@ struct NotchView: View {
     }
 
     private func handleCompactHover(_ hovering: Bool) {
-        withAnimation(.islandHover) { compactHovered = hovering }
+        animate(.islandHover) { compactHovered = hovering }
         compactHideWorkItem?.cancel()
         compactHideWorkItem = nil
 
         if hovering {
             guard !store.compactDetailsVisible else { return }
-            withAnimation(.islandOpen) { store.compactDetailsVisible = true }
+            animate(.islandOpen) { store.compactDetailsVisible = true }
             return
         }
 
@@ -133,7 +260,7 @@ struct NotchView: View {
         // moves toward a project button. Approval details remain forced open.
         let workItem = DispatchWorkItem {
             guard store.approvalProjectCount == 0 else { return }
-            withAnimation(.islandClose) { store.compactDetailsVisible = false }
+            animate(.islandClose) { store.compactDetailsVisible = false }
         }
         compactHideWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: workItem)
@@ -265,7 +392,8 @@ struct NotchView: View {
             GPTStatusMark(
                 active: hasLiveActivity,
                 color: statusColor,
-                refreshToken: compactStatusRefreshToken
+                refreshToken: compactStatusRefreshToken,
+                animated: !reduceMotion
             )
             Text(compactTopStatusText)
                 .font(.system(size: 11, weight: .semibold))
@@ -344,193 +472,806 @@ struct NotchView: View {
         return quotaAccent
     }
 
-    private var expandedView: some View {
+    private var glancePopover: some View {
         VStack(spacing: 0) {
-            HStack {
-                CodexMark(size: 23)
-                VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 10) {
+                CodexMark(size: 22)
+                VStack(alignment: .leading, spacing: 1) {
                     Text("CODEX MONITOR")
-                        .font(.system(size: 11, weight: .bold, design: .rounded))
-                        .tracking(1.2)
-                    Button {
-                        CoverAILinks.open(.brandAttribution)
-                    } label: {
-                        HStack(spacing: 3) {
-                            Text("BY COVERAI")
-                            Image(systemName: "arrow.up.right")
-                                .font(.system(size: 6.5, weight: .bold))
-                        }
-                        .font(.system(size: 8, weight: .semibold, design: .rounded))
-                        .tracking(0.35)
-                        .foregroundStyle(.cyan.opacity(0.62))
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help("访问 CoverAI 官网")
-                    .accessibilityLabel("访问 CoverAI 官网")
+                        .font(.system(size: 10.5, weight: .bold, design: .rounded))
+                        .tracking(1.05)
+                    Text(store.focusedProject?.task.phase.title ?? "额度与用量概览")
+                        .font(.system(size: 8.5, weight: .medium))
+                        .foregroundStyle(MonitorTheme.tertiaryText)
                 }
                 Spacer()
-                Button {
-                    store.refreshAll()
-                } label: {
+                Button { store.refreshAll() } label: {
                     Image(systemName: "arrow.clockwise")
                 }
                 .buttonStyle(IslandButtonStyle())
-                Button {
-                    NSApplication.shared.terminate(nil)
-                } label: {
-                    Image(systemName: "power")
+                Button { openCenter(.settings) } label: {
+                    Image(systemName: "gearshape")
                 }
                 .buttonStyle(IslandButtonStyle())
             }
-            .padding(.horizontal, 20)
-            .padding(.top, 17)
-            .padding(.bottom, 14)
+            .padding(.horizontal, 16)
+            .padding(.top, 15)
+            .padding(.bottom, 12)
 
-            Divider().overlay(.white.opacity(0.09))
+            Divider().overlay(.white.opacity(0.08))
 
-            pageSwitcher
-                .padding(.horizontal, 15)
-                .padding(.top, 11)
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(spacing: 10) {
+                    glanceQuotaSummary
+                    Divider().overlay(.white.opacity(0.07))
+                    glanceUsageCostSummary
+                    Divider().overlay(.white.opacity(0.07))
+                    glanceCenterActions
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 11)
+            }
 
-            Group {
-                if expandedPage == .usage {
-                    ScrollView(.vertical, showsIndicators: false) {
-                        VStack(spacing: 10) {
-                            usageOverviewCard
-                            usageProjectCard
-                            taskCard
-                            activityCard
-                            quotaCard
-                            coverAIPromoCard
-                        }
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(!activityIslandEnabled || store.activeProjects.isEmpty ? Color.gray : statusColor)
+                    .frame(width: 5, height: 5)
+                Text(
+                    !activityIslandEnabled
+                        ? "Activity Island 已关闭"
+                        : activityIslandModeStatusText
+                )
+                Spacer()
+                Text("数据仅在本机处理")
+            }
+            .font(.system(size: 7.5, weight: .medium))
+            .foregroundStyle(MonitorTheme.faintText)
+            .padding(.horizontal, 15)
+            .padding(.bottom, 11)
+        }
+        .frame(width: IslandPanelLayout.glanceWidth, height: IslandPanelLayout.expandedContentHeight)
+        .opacity(store.expandedContentVisible ? 1 : 0)
+        .offset(y: reduceMotion || store.expandedContentVisible ? 0 : -6)
+        .allowsHitTesting(store.expandedContentVisible && !store.isExpansionTransitioning)
+        .animation(reduceMotion ? nil : .islandContentSwap, value: store.expandedContentVisible)
+    }
+
+    private var glanceQuotaSummary: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("额度")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(MonitorTheme.secondaryText)
+                Spacer()
+                quotaFreshness
+                    .font(.system(size: 8, weight: .medium))
+                    .foregroundStyle(MonitorTheme.faintText)
+            }
+            if store.quotaState.buckets.isEmpty {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small).tint(.cyan)
+                    Text(quotaErrorText ?? "正在连接 Codex App Server…")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(MonitorTheme.tertiaryText)
+                }
+                .frame(maxWidth: .infinity, minHeight: 42)
+            } else {
+                ForEach(store.quotaState.buckets.prefix(2)) { bucket in
+                    ForEach(Array(bucket.windows.enumerated()), id: \.offset) { _, window in
+                        QuotaRow(bucket: bucket, window: window)
                     }
-                    .transition(pageTransition)
-                } else if expandedPage == .cost {
-                    costPage
-                        .transition(pageTransition)
-                } else if expandedPage == .tibo {
-                    tiboPage
-                        .transition(pageTransition)
-                } else {
-                    continuityPage
-                        .transition(pageTransition)
                 }
             }
-            .padding(.horizontal, 15)
-            .padding(.top, 10)
+        }
+        .padding(12)
+    }
 
-            Text(expandedFooterText)
-                .font(.system(size: 9, weight: .medium))
-                .foregroundStyle(.white.opacity(0.32))
-                .contentShape(Rectangle())
-                .onTapGesture(perform: onToggle)
-                .padding(.bottom, 12)
+    private var glanceUsageCostSummary: some View {
+        let usage = store.costSnapshot.aggregate.usage.day
+        let cost = store.costSnapshot.aggregate.today
+        return HStack(spacing: 0) {
+            glanceMetric(
+                title: "今日 Token",
+                value: formatCompactTokens(usage.tokens),
+                detail: "\(usage.sessionCount) 会话 · \(usage.projectCount) 项目",
+                color: MonitorTheme.cyanAccent
+            )
+            Divider()
+                .frame(height: 48)
+                .overlay(.white.opacity(0.08))
+                .padding(.horizontal, 12)
+            glanceMetric(
+                title: "今日 Cost",
+                value: formatDollars(cost.dollars),
+                detail: "API 等价估算",
+                color: Color(red: 0.63, green: 0.55, blue: 1.00)
+            )
         }
-        .frame(
-            width: IslandPanelLayout.expandedWidth,
-            height: IslandPanelLayout.expandedContentHeight
-        )
-        // The host window begins growing before the dense panel content is
-        // revealed. This avoids rendering the full dashboard through a
-        // menu-bar-sized clipping rectangle during the first animation frames.
-        .opacity(store.expandedContentVisible ? 1 : 0)
-        .offset(y: store.expandedContentVisible ? 0 : -8)
-        .blur(radius: store.expandedContentVisible ? 0 : 1.5)
-        .allowsHitTesting(store.expandedContentVisible && !store.isExpansionTransitioning)
-        .animation(.islandContentSwap, value: store.expandedContentVisible)
-        .onReceive(NotificationCenter.default.publisher(for: .codexMonitorAdvancePage)) { _ in
-            movePage(by: 1)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 3)
+    }
+
+    private func glanceMetric(title: String, value: String, detail: String, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.system(size: 8.5, weight: .semibold))
+                .foregroundStyle(MonitorTheme.tertiaryText)
+            Text(value)
+                .font(.system(size: 17, weight: .bold, design: .rounded))
+                .foregroundStyle(color)
+                .monospacedDigit()
+                .contentTransition(.numericText())
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+            Text(detail)
+                .font(.system(size: 7.5, weight: .medium))
+                .foregroundStyle(MonitorTheme.faintText)
+                .lineLimit(1)
         }
-        .onReceive(NotificationCenter.default.publisher(for: .codexMonitorRewindPage)) { _ in
-            movePage(by: -1)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var glanceCenterActions: some View {
+        VStack(spacing: 0) {
+            glanceActionRow(.usage, trailing: "趋势与热力图")
+            Divider().overlay(.white.opacity(0.06)).padding(.leading, 34)
+            glanceActionRow(.cost, trailing: "估算与模型")
+            Divider().overlay(.white.opacity(0.06)).padding(.leading, 34)
+            glanceActionRow(.tibo, trailing: store.tiboFeedError == nil ? "最新额度动态" : "数据可能延迟")
+            Divider().overlay(.white.opacity(0.06)).padding(.leading, 34)
+            glanceActionRow(
+                .continuity,
+                trailing: store.continuitySnapshot.recoverableThreads.isEmpty
+                    ? "\(store.continuitySnapshot.sessionCount) 条会话"
+                    : "\(store.continuitySnapshot.recoverableThreads.count) 条待恢复"
+            )
+        }
+        .padding(.horizontal, 11)
+    }
+
+    private func glanceActionRow(_ section: MonitorCenterSection, trailing: String) -> some View {
+        Button { openCenter(section) } label: {
+            HStack(spacing: 9) {
+                Image(systemName: section.symbol)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(MonitorTheme.cyanAccent.opacity(0.86))
+                    .frame(width: 18)
+                Text(section.rawValue)
+                    .font(.system(size: 9.5, weight: .semibold))
+                Spacer(minLength: 6)
+                Text(trailing)
+                    .font(.system(size: 8, weight: .medium))
+                    .foregroundStyle(MonitorTheme.faintText)
+                    .lineLimit(1)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 7, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.24))
+            }
+            .frame(minHeight: 36)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func openCenter(_ section: MonitorCenterSection) {
+        onToggle()
+        onOpenCenter(section)
+    }
+
+    private var activityIslandModeStatusText: String {
+        switch ActivityIslandMode(rawValue: activityIslandModeRaw) ?? .floating {
+        case .floating:
+            return store.activeProjects.isEmpty
+                ? "Activity Island 待命"
+                : "Activity Island 正在显示实时任务"
+        case .menuBar:
+            return "仅菜单栏状态模式"
         }
     }
 
-    private func showPage(_ page: ExpandedPage) {
-        guard store.isExpanded, store.expandedContentVisible, expandedPage != page else { return }
-        withAnimation(.spring(response: 0.30, dampingFraction: 0.86)) {
-            expandedPage = page
-        }
-    }
+    private var monitorCenterView: some View {
+        HStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 10) {
+                    CodexMark(size: 27)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Codex Monitor")
+                            .font(AstaSans.semiBold(15))
+                            .tracking(-0.15)
+                        Text("本地用量与会话")
+                            .font(AstaSans.regular(9))
+                            .foregroundStyle(MonitorTheme.tertiaryText)
+                    }
+                }
+                .padding(.horizontal, 26)
+                .padding(.top, 34)
+                .padding(.bottom, 22)
 
-    private func movePage(by offset: Int) {
-        let pages = ExpandedPage.allCases
-        guard let current = pages.firstIndex(of: expandedPage) else { return }
-        let target = max(0, min(pages.count - 1, current + offset))
-        showPage(pages[target])
-    }
-
-    private var expandedFooterText: String {
-        switch expandedPage {
-        case .usage: return "触控板双指左右滑动 · 数据仅在本机处理"
-        case .cost: return "API 等价成本估算 · 不代表订阅实际扣款"
-        case .tibo: return "非官方动态 · 以原始 X 内容为准"
-        case .continuity: return "本地会话管理 · 不读取或保存账号凭据"
-        }
-    }
-
-    private var pageSwitcher: some View {
-        HStack(spacing: 3) {
-            ForEach(ExpandedPage.allCases) { page in
-                Button {
-                    showPage(page)
-                } label: {
-                    ZStack {
-                        if expandedPage == page {
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(Color.white.opacity(0.11))
+                VStack(spacing: 3) {
+                    ForEach(MonitorCenterSection.allCases) { section in
+                        Button { showPage(section) } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: section.symbol)
+                                    .font(.system(size: 12, weight: .medium))
+                                    .frame(width: 19)
+                        Text(section.rawValue)
+                                    .font(MonitorTypography.controlLarge)
+                                Spacer(minLength: 0)
+                                if section == .continuity,
+                                   !store.continuitySnapshot.recoverableThreads.isEmpty {
+                                    Text("\(store.continuitySnapshot.recoverableThreads.count)")
+                                        .font(AstaSans.semiBold(9))
+                                        .foregroundStyle(.orange)
+                                }
+                            }
+                            .foregroundStyle(expandedPage == section ? .white.opacity(0.96) : MonitorTheme.secondaryText)
+                            .padding(.horizontal, 12)
+                            .frame(maxWidth: .infinity, minHeight: 39)
+                            .background(
+                                expandedPage == section ? MonitorTheme.selection : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            )
+                            .contentShape(Rectangle())
                         }
-                        HStack(spacing: 4) {
-                            Text(page.rawValue)
-                            if page == .continuity,
-                               (!store.continuitySnapshot.recoverableThreads.isEmpty || store.continuityError != nil) {
-                                Circle()
-                                    .fill(store.continuityError == nil ? Color.cyan : Color.orange)
-                                    .frame(width: 4, height: 4)
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 17)
+
+                Spacer()
+
+                VStack(alignment: .leading, spacing: 5) {
+                    Label("所有数据仅在本机处理", systemImage: "lock.fill")
+                    Text(store.continuityAccountSubtitle ?? store.continuityAccountTitle)
+                        .lineLimit(2)
+                }
+                .font(AstaSans.regular(9))
+                .foregroundStyle(MonitorTheme.faintText)
+                .padding(24)
+            }
+            .frame(width: MonitorCenterLayout.sidebarWidth)
+            .background(Color.black.opacity(0.08))
+
+            Divider().overlay(MonitorTheme.separator)
+
+            VStack(spacing: 0) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(expandedPage.rawValue)
+                            .font(MonitorTypography.pageTitle)
+                            .tracking(-0.21)
+                        Text(expandedPage.subtitle)
+                            .font(MonitorTypography.pageSubtitle)
+                            .foregroundStyle(MonitorTheme.tertiaryText)
+                    }
+                    Spacer()
+                    if store.isCostLoading || store.isContinuityLoading || store.isTiboFeedLoading {
+                        ProgressView().controlSize(.small).tint(.cyan)
+                    }
+                    Button { store.refreshAll() } label: {
+                        Label("刷新", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+                .padding(.horizontal, 26)
+                .padding(.top, 31)
+                .padding(.bottom, 17)
+
+                Divider().overlay(MonitorTheme.separator)
+
+                monitorCenterDetail
+                    .padding(.horizontal, 22)
+                    .padding(.vertical, 16)
+            }
+        }
+        .font(AstaSans.regular(10.5))
+        .frame(width: MonitorCenterLayout.width, height: MonitorCenterLayout.height)
+        .background(Color.clear)
+    }
+
+    private func sessionExportConfigurationOverlay(_ draft: SessionExportDraft) -> some View {
+        ZStack {
+            Color.black.opacity(0.48)
+                .contentShape(Rectangle())
+
+            VStack(spacing: 0) {
+                HStack(spacing: 12) {
+                    Image(systemName: draft.selectedFormat == .projectBundle
+                        ? "shippingbox.fill"
+                        : "square.and.arrow.up")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(.cyan)
+                        .frame(width: 38, height: 38)
+                        .background(Color.cyan.opacity(0.10), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(draft.title)
+                            .font(AstaSans.semiBold(18))
+                        Text(sessionExportOverlaySubtitle)
+                            .font(AstaSans.regular(9.5))
+                            .foregroundStyle(MonitorTheme.tertiaryText)
+                    }
+                    Spacer()
+                    Button { store.cancelSessionExportDraft() } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 11, weight: .semibold))
+                            .frame(width: 30, height: 30)
+                            .background(MonitorTheme.controlFill, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(store.isSessionExporting)
+                    .opacity(store.isSessionExporting ? 0.35 : 1)
+                    .help(store.isSessionExporting ? "导出进行中" : "关闭导出面板")
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 16)
+
+                Divider().overlay(MonitorTheme.separator)
+
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        if store.isSessionExporting || store.lastSessionExportURL != nil {
+                            sessionExportOperationSection(draft)
+                        } else {
+                            if let error = store.continuityError {
+                                continuityMessageCard(error, color: .orange)
+                            }
+                            sessionExportDestinationSection(draft)
+                            sessionExportFormatSection(draft)
+                            if draft.selectedFormat == .projectBundle {
+                                sessionExportProjectOptionsSection(draft)
                             }
                         }
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(expandedPage == page ? .white : .white.opacity(0.42))
                     }
-                    .frame(maxWidth: .infinity, minHeight: 24, maxHeight: 24)
-                    // An explicit rectangular hit shape makes the complete
-                    // segment clickable, including transparent padding.
-                    .contentShape(Rectangle())
+                    .padding(18)
                 }
-                .buttonStyle(.plain)
-                .frame(maxWidth: .infinity, minHeight: 24, maxHeight: 24)
-                .contentShape(Rectangle())
+
+                Divider().overlay(MonitorTheme.separator)
+
+                if store.isSessionExporting {
+                    HStack(spacing: 9) {
+                        ProgressView().controlSize(.small).tint(.cyan)
+                        Text("如果 macOS 请求项目目录权限，请先完成系统提示。")
+                            .font(AstaSans.regular(8.8))
+                            .foregroundStyle(MonitorTheme.tertiaryText)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 14)
+                } else if store.lastSessionExportURL != nil {
+                    HStack(spacing: 10) {
+                        Label("导出文件已安全写入所选位置。", systemImage: "checkmark.circle.fill")
+                            .font(AstaSans.regular(8.8))
+                            .foregroundStyle(.green)
+                        Spacer(minLength: 10)
+                        Button("在 Finder 中显示") { store.revealLastSessionExport() }
+                            .buttonStyle(.plain)
+                            .font(AstaSans.semiBold(9.5))
+                            .foregroundStyle(.cyan)
+                        Button("完成") { store.cancelSessionExportDraft() }
+                            .font(AstaSans.semiBold(10))
+                            .frame(width: 72, height: 32)
+                            .background(MonitorTheme.selection, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 14)
+                } else {
+                    HStack(spacing: 10) {
+                        Label(
+                            draft.selectedFormat == .projectBundle
+                                ? "项目源码和原始会话可能含敏感信息，请勿公开分享。"
+                                : "可读副本会隐藏平台注入配置和内部元数据。",
+                            systemImage: "lock.shield"
+                        )
+                        .font(AstaSans.regular(8.8))
+                        .foregroundStyle(MonitorTheme.tertiaryText)
+                        .lineLimit(2)
+                        Spacer(minLength: 10)
+                        Button("取消") { store.cancelSessionExportDraft() }
+                            .buttonStyle(.plain)
+                            .font(AstaSans.semiBold(10))
+                            .foregroundStyle(MonitorTheme.secondaryText)
+                            .frame(width: 72, height: 32)
+                            .background(MonitorTheme.controlFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        Button {
+                            store.confirmSessionExport()
+                        } label: {
+                            Label("开始导出", systemImage: "arrow.up.doc.fill")
+                                .font(AstaSans.semiBold(10))
+                                .frame(width: 108, height: 32)
+                                .background(MonitorTheme.selection, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(draft.filenameStem.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .opacity(draft.filenameStem.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.45 : 1)
+                    }
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 14)
+                }
             }
+            .frame(width: 570, height: draft.selectedFormat == .projectBundle ? 548 : 430)
+            .background(
+                Color(red: 0.075, green: 0.075, blue: 0.082).opacity(0.92),
+                in: RoundedRectangle(cornerRadius: 20, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.8)
+            }
+            .shadow(color: .black.opacity(0.5), radius: 28, y: 14)
         }
-        .padding(3)
-        .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .frame(width: MonitorCenterLayout.width, height: MonitorCenterLayout.height)
     }
 
-    private var pageTransition: AnyTransition {
-        .opacity.combined(with: .offset(x: expandedPage == .usage ? -14 : 14))
+    private var sessionExportOverlaySubtitle: String {
+        if store.lastSessionExportURL != nil { return "导出已完成，可在 Finder 中查看文件。" }
+        guard store.isSessionExporting else { return "先确认内容范围，再直接导出到指定文件夹。" }
+        switch store.sessionExportProgress?.stage {
+        case .reading: return "目录权限已返回，正在扫描项目文件。"
+        case .processing, .rendering, .writing: return "正在生成导出内容，请保持面板打开。"
+        case .compressing: return "扫描已完成，正在生成压缩包。"
+        case .completed: return "导出已完成，正在确认输出文件。"
+        case .preparing, .none: return "等待目录授权或开始扫描…"
+        }
+    }
+
+    @ViewBuilder
+    private func sessionExportOperationSection(_ draft: SessionExportDraft) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if let progress = store.sessionExportProgress {
+                sessionExportProgressCard(progress)
+            }
+            if store.lastSessionExportURL != nil {
+                sessionExportCompletedCard
+            } else {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: draft.selectedFormat == .projectBundle ? "folder.badge.gearshape" : "doc.badge.gearshape")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.cyan)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(sessionExportOverlaySubtitle)
+                            .font(AstaSans.semiBold(10.5))
+                        Text(draft.destinationDirectory.appendingPathComponent(draft.outputFilename).path)
+                            .font(AstaSans.regular(8.5))
+                            .foregroundStyle(MonitorTheme.tertiaryText)
+                            .lineLimit(2)
+                            .truncationMode(.middle)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(13)
+                .background(MonitorTheme.subtleCardFill, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+            }
+        }
+    }
+
+    private func sessionExportDestinationSection(_ draft: SessionExportDraft) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("文件与位置")
+                .font(AstaSans.semiBold(10.5))
+
+            HStack(spacing: 0) {
+                TextField(
+                    "文件名",
+                    text: Binding(
+                        get: { store.sessionExportDraft?.filenameStem ?? "" },
+                        set: { store.updateSessionExportFilenameStem($0) }
+                    )
+                )
+                .textFieldStyle(.plain)
+                .font(AstaSans.medium(10.5))
+                .padding(.leading, 12)
+                Text(".\(draft.selectedFormat.fileExtension)")
+                    .font(AstaSans.medium(9.5))
+                    .foregroundStyle(MonitorTheme.tertiaryText)
+                    .padding(.trailing, 12)
+            }
+            .frame(height: 36)
+            .background(MonitorTheme.controlFill, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.07), lineWidth: 0.7)
+            }
+
+            HStack(spacing: 9) {
+                Image(systemName: "folder.fill")
+                    .foregroundStyle(.cyan)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(draft.destinationDirectory.lastPathComponent)
+                        .font(AstaSans.semiBold(9.5))
+                    Text(draft.destinationDirectory.path)
+                        .font(AstaSans.regular(8))
+                        .foregroundStyle(MonitorTheme.faintText)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Spacer()
+                Button("更改") { store.chooseSessionExportDirectory() }
+                    .buttonStyle(.plain)
+                    .font(AstaSans.semiBold(9))
+                    .foregroundStyle(.cyan)
+                    .padding(.horizontal, 10)
+                    .frame(height: 27)
+                    .background(Color.cyan.opacity(0.08), in: Capsule())
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 45)
+            .background(MonitorTheme.subtleCardFill, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        }
+    }
+
+    private func sessionExportFormatSection(_ draft: SessionExportDraft) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("导出格式")
+                .font(AstaSans.semiBold(10.5))
+            LazyVGrid(
+                columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)],
+                spacing: 8
+            ) {
+                ForEach(draft.availableFormats, id: \.rawValue) { format in
+                    Button { store.updateSessionExportFormat(format) } label: {
+                        HStack(spacing: 9) {
+                            Image(systemName: sessionExportFormatIcon(format))
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(draft.selectedFormat == format ? .cyan : MonitorTheme.secondaryText)
+                                .frame(width: 22)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(format.title)
+                                    .font(AstaSans.semiBold(9.5))
+                                    .lineLimit(1)
+                                Text(sessionExportFormatSummary(format))
+                                    .font(AstaSans.regular(7.8))
+                                    .foregroundStyle(MonitorTheme.tertiaryText)
+                                    .lineLimit(1)
+                            }
+                            Spacer(minLength: 3)
+                            Image(systemName: draft.selectedFormat == format ? "checkmark.circle.fill" : "circle")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(draft.selectedFormat == format ? .cyan : MonitorTheme.faintText)
+                        }
+                        .padding(.horizontal, 11)
+                        .frame(maxWidth: .infinity, minHeight: 48)
+                        .background(
+                            draft.selectedFormat == format
+                                ? Color.cyan.opacity(0.09)
+                                : MonitorTheme.subtleCardFill,
+                            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        )
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .strokeBorder(
+                                    draft.selectedFormat == format
+                                        ? Color.cyan.opacity(0.42)
+                                        : Color.white.opacity(0.06),
+                                    lineWidth: 0.8
+                                )
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    private func sessionExportProjectOptionsSection(_ draft: SessionExportDraft) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("完整项目迁移范围")
+                    .font(AstaSans.semiBold(10.5))
+                Spacer()
+                if let estimate = draft.projectEstimate {
+                    Text("默认 \(estimate.includedFileCount) 个文件 · \(ByteCountFormatter.string(fromByteCount: estimate.includedBytes, countStyle: .file))")
+                        .font(AstaSans.medium(8.5))
+                        .foregroundStyle(.cyan.opacity(0.82))
+                        .monospacedDigit()
+                }
+            }
+
+            LazyVGrid(
+                columns: [GridItem(.flexible(), spacing: 7), GridItem(.flexible(), spacing: 7)],
+                spacing: 7
+            ) {
+                sessionExportOption(
+                    title: "Git 未跟踪文件",
+                    subtitle: "继续应用敏感与体积排除",
+                    keyPath: \.includeUntrackedFiles,
+                    draft: draft
+                )
+                sessionExportOption(
+                    title: "本地附件",
+                    subtitle: "包含会话引用且可读取的附件",
+                    keyPath: \.includeAttachments,
+                    draft: draft
+                )
+                sessionExportOption(
+                    title: "历史部署目录",
+                    subtitle: "默认关闭，通常可在目标机重建",
+                    keyPath: \.includeDeploymentArtifacts,
+                    draft: draft
+                )
+                sessionExportOption(
+                    title: "ZIP、DMG 等归档",
+                    subtitle: "默认关闭，避免重复打包",
+                    keyPath: \.includeArchives,
+                    draft: draft
+                )
+                sessionExportOption(
+                    title: "≥ 25 MB 其他文件",
+                    subtitle: "默认关闭，避免迁移包异常膨胀",
+                    keyPath: \.includeLargeFiles,
+                    draft: draft
+                )
+            }
+
+            if let estimate = draft.projectEstimate {
+                Text("安全范围外另发现：\(estimate.excludedDeploymentCount) 个部署目录、\(estimate.excludedArchiveCount) 个归档、\(estimate.excludedLargeFileCount) 个大型文件。打开对应选项后才会纳入。")
+                    .font(AstaSans.regular(8.2))
+                    .foregroundStyle(MonitorTheme.faintText)
+            }
+        }
+    }
+
+    private func sessionExportOption(
+        title: String,
+        subtitle: String,
+        keyPath: WritableKeyPath<ProjectTransferExportOptions, Bool>,
+        draft: SessionExportDraft
+    ) -> some View {
+        let isEnabled = draft.projectTransferOptions[keyPath: keyPath]
+        return Button {
+            var options = draft.projectTransferOptions
+            options[keyPath: keyPath].toggle()
+            store.updateSessionExportOptions(options)
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: isEnabled ? "checkmark.square.fill" : "square")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(isEnabled ? .cyan : MonitorTheme.faintText)
+                    .frame(width: 17)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(AstaSans.semiBold(9))
+                    Text(subtitle)
+                        .font(AstaSans.regular(7.6))
+                        .foregroundStyle(MonitorTheme.tertiaryText)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .frame(maxWidth: .infinity, minHeight: 43)
+            .background(
+                isEnabled ? Color.cyan.opacity(0.055) : MonitorTheme.subtleCardFill,
+                in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func sessionExportFormatIcon(_ format: SessionExportFormat) -> String {
+        switch format {
+        case .markdown: return "text.document"
+        case .html: return "safari"
+        case .portableBundle: return "archivebox"
+        case .projectBundle: return "shippingbox"
+        }
+    }
+
+    private func sessionExportFormatSummary(_ format: SessionExportFormat) -> String {
+        switch format {
+        case .markdown: return "适合阅读，隐藏敏感元数据"
+        case .html: return "浏览器阅读，带问题导航"
+        case .portableBundle: return "保留原始会话，可用于恢复"
+        case .projectBundle: return "源码、会话、Git 与附件"
+        }
+    }
+
+    @ViewBuilder
+    private var monitorCenterDetail: some View {
+        switch expandedPage {
+        case .usage:
+            ScrollView(.vertical, showsIndicators: true) {
+                VStack(spacing: 12) {
+                    usageOverviewCard
+                    usageProjectCard
+                    quotaCard
+                }
+            }
+        case .cost:
+            costPage
+        case .tibo:
+            tiboPage
+        case .continuity:
+            continuityPage
+        case .panelSettings:
+            GlanceContentSettingsView()
+        case .setup:
+            SetupPermissionsView(store: store)
+        case .settings:
+            MonitorSettingsView(store: store)
+        }
+    }
+
+    private func showPage(_ page: MonitorCenterSection) {
+        if expandedPage != page {
+            animate(.spring(response: 0.30, dampingFraction: 0.86)) {
+                expandedPage = page
+            }
+        }
+        NotificationCenter.default.post(
+            name: .monitorCenterSectionDidChange,
+            object: page
+        )
+    }
+
+    private func animate(_ animation: Animation, updates: () -> Void) {
+        if reduceMotion {
+            updates()
+        } else {
+            withAnimation(animation, updates)
+        }
     }
 
     private var continuityPage: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(spacing: 10) {
-                continuityAccountCard
-                continuitySummaryCard
-                if let preview = store.sessionImportPreview {
-                    sessionImportPreviewCard(preview)
+        ScrollViewReader { proxy in
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(spacing: 10) {
+                    continuityAccountCard
+                    continuitySummaryCard
+                    if store.pendingSidebarCleanupCount > 0 {
+                        sidebarCleanupPendingCard
+                    }
+                    if store.isSessionImportInspecting {
+                        sessionImportInspectionCard
+                    }
+                    if let preview = store.sessionImportPreview {
+                        sessionImportPreviewCard(preview)
+                    }
+                    if let preview = store.projectTransferPreview {
+                        projectTransferPreviewCard(preview)
+                    }
+                    if let progress = store.sessionImportProgress {
+                        sessionImportProgressCard(progress)
+                    }
+                    if let progress = store.sessionExportProgress {
+                        sessionExportProgressCard(progress)
+                    }
+                    if store.lastSessionExportURL != nil,
+                       store.sessionExportProgress == nil {
+                        sessionExportCompletedCard
+                    }
+                    if let message = store.continuityStatusMessage,
+                       !store.isSessionImportInspecting {
+                        continuityMessageCard(message, color: .cyan)
+                    }
+                    if let error = store.continuityError {
+                        continuityMessageCard(error, color: .orange)
+                    }
+                    continuityThreadCard
+                    if store.lastContinuityBackupURL != nil {
+                        continuityBackupCard
+                    }
+                    if store.lastSessionImportBackupURL != nil {
+                        sessionImportBackupCard
+                    }
+                    if store.lastProjectImportBackupURL != nil {
+                        projectImportBackupCard
+                    }
+                    if let outcome = store.lastSessionImportOutcome {
+                        sessionImportOutcomeCard(outcome)
+                    }
                 }
-                if let message = store.continuityStatusMessage {
-                    continuityMessageCard(message, color: .cyan)
-                }
-                if let error = store.continuityError {
-                    continuityMessageCard(error, color: .orange)
-                }
-                continuityThreadCard
-                if store.lastContinuityBackupURL != nil {
-                    continuityBackupCard
-                }
-                if store.lastSessionImportBackupURL != nil {
-                    sessionImportBackupCard
+            }
+            .onChange(of: expandedContinuityProjectID) { projectID in
+                guard shouldCenterExpandedContinuityProject,
+                      let projectID
+                else { return }
+                shouldCenterExpandedContinuityProject = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.24)) {
+                        proxy.scrollTo(continuityProjectScrollID(projectID), anchor: .center)
+                    }
                 }
             }
         }
@@ -546,34 +1287,92 @@ struct NotchView: View {
         } message: {
             Text("请先完全退出 Codex／ChatGPT Desktop。当前索引会先保存到备份目录，再恢复上次操作前的状态。")
         }
-        .alert("导入会话备份", isPresented: $confirmsSessionImport) {
-            Button("取消", role: .cancel) { }
-            Button("备份并导入") { store.importSelectedSessionBundle() }
-        } message: {
-            Text("请先使用 Cmd + Q 完全退出 Codex／ChatGPT Desktop。插件会先备份本地索引和项目状态；默认跳过同 ID 会话，不会覆盖现有对话。")
-        }
         .alert("撤销上次导入", isPresented: $confirmsSessionImportRollback) {
             Button("取消", role: .cancel) { }
             Button("确认撤销") { store.rollbackLastSessionImport() }
         } message: {
             Text("请先完全退出 Codex／ChatGPT Desktop。本次新建的会话将被移除，导入前的索引和项目状态将从校验备份恢复。")
         }
+        .alert(
+            "永久删除会话？",
+            isPresented: Binding(
+                get: { pendingContinuityThreadDeletion != nil },
+                set: { if !$0 { pendingContinuityThreadDeletion = nil } }
+            ),
+            presenting: pendingContinuityThreadDeletion
+        ) { thread in
+            Button("取消", role: .cancel) {
+                pendingContinuityThreadDeletion = nil
+            }
+            Button("永久删除", role: .destructive) {
+                pendingContinuityThreadDeletion = nil
+                store.deleteContinuityThread(thread)
+            }
+        } message: { thread in
+            Text(
+                "将通过 Codex App Server 永久删除「\(thread.title)」"
+                    + (thread.isArchived ? "（已归档）" : "（活动会话）")
+                    + "。删除后无法撤销；如需保留，请先导出可恢复备份。"
+            )
+        }
+        .alert(
+            "永久删除项目会话？",
+            isPresented: Binding(
+                get: { pendingContinuityProjectDeletion != nil },
+                set: { if !$0 { pendingContinuityProjectDeletion = nil } }
+            ),
+            presenting: pendingContinuityProjectDeletion
+        ) { project in
+            Button("取消", role: .cancel) {
+                pendingContinuityProjectDeletion = nil
+            }
+            Button("仅移除 Codex 项目", role: .destructive) {
+                pendingContinuityProjectDeletion = nil
+                store.deleteContinuityProject(
+                    project,
+                    deleteProjectDirectory: false
+                )
+            }
+            Button("同时移到废纸篓", role: .destructive) {
+                pendingContinuityProjectDeletion = nil
+                store.deleteContinuityProject(
+                    project,
+                    deleteProjectDirectory: true
+                )
+            }
+        } message: { project in
+            Text(projectDeletionMessage(project))
+        }
+        .alert(
+            "删除失败",
+            isPresented: Binding(
+                get: { store.continuityDeletionFailure != nil },
+                set: { if !$0 { store.dismissContinuityDeletionFailure() } }
+            ),
+            presenting: store.continuityDeletionFailure
+        ) { _ in
+            Button("知道了") {
+                store.dismissContinuityDeletionFailure()
+            }
+        } message: { message in
+            Text(message)
+        }
     }
 
     private var continuityAccountCard: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             ZStack {
-                Circle().fill(Color.cyan.opacity(0.12)).frame(width: 42, height: 42)
+                Circle().fill(Color.cyan.opacity(0.12)).frame(width: 36, height: 36)
                 Image(systemName: "person.crop.circle.badge.checkmark")
-                    .font(.system(size: 18, weight: .semibold))
+                    .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(.cyan)
             }
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(store.continuityAccountTitle)
-                    .font(.system(size: 12, weight: .bold))
+                    .font(MonitorTypography.cardTitle)
                 if let subtitle = store.continuityAccountSubtitle, !subtitle.isEmpty {
                     Text(subtitle)
-                        .font(.system(size: 8.5, weight: .medium, design: .rounded))
+                        .font(MonitorTypography.body)
                         .foregroundStyle(.white.opacity(0.42))
                 }
             }
@@ -591,18 +1390,146 @@ struct NotchView: View {
                 .help("重新检查账号与本地会话")
             }
         }
+        .padding(MonitorGeometry.compactPadding)
+        .background(
+            MonitorTheme.cardFill,
+            in: RoundedRectangle(cornerRadius: MonitorTheme.cardCornerRadius, style: .continuous)
+        )
+        .animation(
+            reduceMotion ? nil : .easeOut(duration: 0.18),
+            value: store.activeProjects.count
+        )
+    }
+
+    private func sessionExportProgressCard(_ progress: SessionExportProgress) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 8) {
+                if progress.stage == .completed {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.cyan)
+                } else {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .tint(.cyan)
+                }
+                Text(progress.stage.rawValue)
+                    .font(AstaSans.semiBold(10.5))
+                Spacer()
+                Text(
+                    progress.total > 0
+                        ? "\(Int((progress.fraction * 100).rounded()))% · \(progress.completed) / \(progress.total)"
+                        : "\(Int((progress.fraction * 100).rounded()))% · 已扫描 \(progress.completed) 项"
+                )
+                    .font(AstaSans.semiBold(9.5))
+                    .foregroundStyle(.cyan)
+                    .monospacedDigit()
+            }
+
+            ProgressView(value: progress.fraction)
+                .progressViewStyle(.linear)
+                .tint(.cyan)
+
+            HStack(spacing: 8) {
+                Text(progress.currentItem)
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                if let byteText = sessionExportByteText(progress) {
+                    Text(byteText)
+                        .monospacedDigit()
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+            }
+            .font(AstaSans.regular(9))
+            .foregroundStyle(MonitorTheme.secondaryText)
+        }
         .padding(12)
-        .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background(
+            Color.cyan.opacity(0.07),
+            in: RoundedRectangle(cornerRadius: 13, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .strokeBorder(Color.cyan.opacity(0.22), lineWidth: 0.7)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(progress.stage.rawValue)
+        .accessibilityValue(
+            progress.total > 0
+                ? "进度 \(Int((progress.fraction * 100).rounded()))%，已完成 \(progress.completed) / \(progress.total)，\(progress.currentItem)"
+                : "进度 \(Int((progress.fraction * 100).rounded()))%，已扫描 \(progress.completed) 项，\(progress.currentItem)"
+        )
+    }
+
+    private var sessionExportCompletedCard: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("导出完成")
+                    .font(.system(size: 9.5, weight: .semibold))
+                Text(store.lastSessionExportURL?.lastPathComponent ?? "")
+                    .font(.system(size: 7.8, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.38))
+                    .lineLimit(1)
+            }
+            Spacer()
+            Button("在 Finder 中显示") { store.revealLastSessionExport() }
+                .font(.system(size: 8.5, weight: .semibold))
+                .buttonStyle(.plain)
+                .foregroundStyle(.cyan)
+        }
+        .padding(11)
+        .background(Color.green.opacity(0.055), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+    }
+
+    private var sidebarCleanupPendingCard: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "sidebar.left")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.orange)
+                .frame(width: 24, height: 24)
+                .background(Color.orange.opacity(0.10), in: Circle())
+            VStack(alignment: .leading, spacing: 4) {
+                Text("侧栏残留等待清理")
+                    .font(AstaSans.semiBold(10.5))
+                Text("\(store.pendingSidebarCleanupCount) 条已删除会话仍有 Codex 项目绑定。请使用 Cmd + Q 完全退出 Codex／ChatGPT Desktop，插件会在退出后自动备份并精确清理。")
+                    .font(AstaSans.regular(9))
+                    .foregroundStyle(MonitorTheme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .background(
+            Color.orange.opacity(0.065),
+            in: RoundedRectangle(cornerRadius: 13, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .strokeBorder(Color.orange.opacity(0.20), lineWidth: 0.7)
+        }
+    }
+
+    private func sessionExportByteText(_ progress: SessionExportProgress) -> String? {
+        guard let processed = progress.processedBytes,
+              let total = progress.totalBytes,
+              total > 0
+        else { return nil }
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        formatter.allowedUnits = [.useKB, .useMB, .useGB]
+        return "\(formatter.string(fromByteCount: processed)) / \(formatter.string(fromByteCount: total))"
     }
 
     private var continuitySummaryCard: some View {
         VStack(alignment: .leading, spacing: 11) {
             HStack {
                 Text("本地连续性")
-                    .font(.system(size: 11, weight: .bold))
+                    .font(MonitorTypography.cardTitle)
                 Spacer()
                 Text(continuitySummaryStatus)
-                    .font(.system(size: 8.5, weight: .semibold))
+                    .font(MonitorTypography.control)
                     .foregroundStyle(continuitySummaryStatusColor)
             }
             HStack(spacing: 0) {
@@ -621,7 +1548,7 @@ struct NotchView: View {
                         Spacer()
                         if store.isContinuityRecovering { ProgressView().controlSize(.mini).tint(.cyan) }
                     }
-                    .font(.system(size: 9.5, weight: .semibold))
+                    .font(MonitorTypography.rowTitle)
                     .foregroundStyle(.cyan)
                     .padding(.horizontal, 11)
                     .frame(height: 31)
@@ -630,28 +1557,42 @@ struct NotchView: View {
                 .buttonStyle(.plain)
                 .disabled(store.isContinuityRecovering)
             }
-            Button {
-                store.chooseSessionImportBundle()
-            } label: {
-                HStack {
-                    Image(systemName: "square.and.arrow.down")
-                    Text("导入 .codexmonitorbundle")
-                    Spacer()
-                    if store.isSessionImporting { ProgressView().controlSize(.mini).tint(.cyan) }
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("导入与迁移")
+                        .font(MonitorTypography.rowTitle)
+                    Text("支持会话包和完整项目迁移包")
+                        .font(MonitorTypography.metadata)
+                        .foregroundStyle(MonitorTheme.tertiaryText)
                 }
-                .font(.system(size: 9.5, weight: .semibold))
-                .foregroundStyle(.cyan)
-                .padding(.horizontal, 11)
-                .frame(height: 31)
-                .background(Color.cyan.opacity(0.09), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                .contentShape(Rectangle())
+                Spacer(minLength: 8)
+                Button {
+                    store.chooseSessionImportBundle()
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "square.and.arrow.down")
+                        Text("导入")
+                        if store.isSessionImporting {
+                            ProgressView().controlSize(.mini).tint(.cyan)
+                        }
+                    }
+                    .font(MonitorTypography.control)
+                    .foregroundStyle(.cyan)
+                    .padding(.horizontal, 11)
+                    .frame(height: 30)
+                    .background(Color.cyan.opacity(0.09), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(store.isSessionImporting)
+                .help("选择并校验 .codexmonitorbundle 或 .codexprojectbundle")
             }
-            .buttonStyle(.plain)
-            .disabled(store.isSessionImporting)
-            .help("选择并校验 Codex Notch Monitor 会话备份")
         }
-        .padding(12)
-        .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .padding(MonitorGeometry.cardPadding)
+        .background(
+            MonitorTheme.cardFill,
+            in: RoundedRectangle(cornerRadius: MonitorGeometry.cardRadius, style: .continuous)
+        )
     }
 
     private var continuitySummaryStatus: String {
@@ -667,108 +1608,484 @@ struct NotchView: View {
             HStack {
                 Image(systemName: "checkmark.shield.fill")
                     .foregroundStyle(.green)
-                Text("备份校验通过")
+                Text("文件完整性校验通过")
                     .font(.system(size: 11, weight: .bold))
                 Spacer()
-                Text(SessionPortableManifest.supportedFormat)
-                    .font(.system(size: 7.5, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.32))
             }
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text(preview.manifest.project.displayName)
-                    .font(.system(size: 10, weight: .semibold))
-                Text(preview.bundleURL.lastPathComponent)
-                    .font(.system(size: 8, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.36))
-                    .lineLimit(1)
+            if preview.codexIsRunning {
+                HStack(alignment: .top, spacing: 7) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("导入前必须完全退出 Codex／ChatGPT Desktop")
+                            .font(.system(size: 9, weight: .semibold))
+                        Text("使用 Cmd + Q 退出后，点击重新检查。")
+                            .font(.system(size: 8, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.46))
+                    }
+                    Spacer()
+                    Button("重新检查") { store.recheckSelectedSessionImportBundle() }
+                        .font(.system(size: 8.5, weight: .semibold))
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.orange)
+                }
+                .padding(9)
+                .background(Color.orange.opacity(0.09), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
             }
 
             HStack(spacing: 0) {
                 continuityMetric(preview.sessionCount, "总会话")
                 continuityMetric(preview.activeCount, "活动")
                 continuityMetric(preview.archivedCount, "已归档")
-                continuityMetric(preview.duplicateCount, "重复")
+                continuityMetric(preview.conflictCount, "冲突／残留")
             }
 
-            if preview.requiresPathMapping {
-                Button {
-                    store.chooseSessionImportProjectDirectory()
+            VStack(alignment: .leading, spacing: 5) {
+                importDetailRow("来源账号", value: importSourceAccounts(preview))
+                importDetailRow("当前账号", value: store.continuityAccountTitle)
+                importDetailRow("来源项目", value: preview.manifest.project.displayName)
+                if importHasAccountMismatch(preview) {
+                    Label("备份归属与当前账号不同，导入不会改写原始归属记录。", systemImage: "person.crop.circle.badge.exclamationmark")
+                        .font(.system(size: 7.8, weight: .semibold))
+                        .foregroundStyle(.orange)
+                }
+            }
+            .padding(9)
+            .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text("导入到")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.42))
+                Menu {
+                    ForEach(store.sessionImportProjectOptions) { option in
+                        Button {
+                            store.selectSessionImportProject(option)
+                        } label: {
+                            let suffix = option.isOriginal
+                                ? "备份原项目"
+                                : (option.isRegistered ? "Codex 项目" : "本地项目")
+                            Text("\(option.name) · \(suffix)")
+                        }
+                    }
+                    Divider()
+                    Button("选择其他文件夹…") {
+                        store.chooseSessionImportProjectDirectory()
+                    }
                 } label: {
                     HStack(spacing: 7) {
-                        Image(systemName: "folder.badge.questionmark")
+                        Image(systemName: store.selectedSessionImportProjectOption == nil ? "folder.badge.questionmark" : "folder.fill")
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(store.sessionImportMappedProjectURL == nil ? "原路径不存在，选择新项目目录" : "已映射到新项目")
-                            Text(store.sessionImportMappedProjectURL?.path ?? preview.manifest.project.originalPath)
+                            Text(store.selectedSessionImportProjectOption?.name ?? "请选择目标 Codex 项目")
+                                .font(.system(size: 9, weight: .semibold))
+                            Text(store.selectedSessionImportProjectOption?.path ?? preview.manifest.project.originalPath)
                                 .font(.system(size: 7.5, weight: .medium, design: .monospaced))
-                                .foregroundStyle(.white.opacity(0.35))
+                                .foregroundStyle(.white.opacity(0.36))
                                 .lineLimit(1)
                         }
                         Spacer()
-                        Image(systemName: "chevron.right")
+                        if let selected = store.sessionImportMappedProjectURL {
+                            Text(FileManager.default.isWritableFile(atPath: selected.path) ? "可写" : "不可写")
+                                .font(.system(size: 7.5, weight: .bold))
+                                .foregroundStyle(FileManager.default.isWritableFile(atPath: selected.path) ? .green : .orange)
+                        }
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.system(size: 7, weight: .bold))
                     }
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(store.sessionImportMappedProjectURL == nil ? .orange : .cyan)
+                    .foregroundStyle(store.selectedSessionImportProjectOption == nil ? .orange : .cyan)
                     .padding(.horizontal, 10)
-                    .frame(height: 39)
+                    .frame(height: 43)
                     .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                     .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
-            } else {
-                HStack(spacing: 7) {
-                    Image(systemName: "folder.fill").foregroundStyle(.cyan)
-                    Text(preview.manifest.project.originalPath)
-                        .font(.system(size: 8, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.46))
-                        .lineLimit(1)
+                .menuStyle(.borderlessButton)
+                .accessibilityLabel("选择会话导入目标项目")
+            }
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text("会话身份策略")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.42))
+                ForEach(SessionImportDuplicateStrategy.allCases, id: \.rawValue) { strategy in
+                    Button {
+                        store.sessionImportDuplicateStrategy = strategy
+                    } label: {
+                        HStack(spacing: 7) {
+                            Image(systemName: store.sessionImportDuplicateStrategy == strategy ? "checkmark.circle.fill" : "circle")
+                            Text(strategy.title)
+                            Spacer()
+                        }
+                        .font(.system(size: 8.5, weight: .semibold))
+                        .padding(.horizontal, 9)
+                        .frame(maxWidth: .infinity, minHeight: 31)
+                        .background(
+                            store.sessionImportDuplicateStrategy == strategy
+                                ? Color.cyan.opacity(0.14)
+                                : Color.white.opacity(0.035),
+                            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        )
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(store.sessionImportDuplicateStrategy == strategy ? .cyan : .white.opacity(0.55))
                 }
             }
 
-            if preview.duplicateCount > 0 {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("同 ID 会话处理")
-                        .font(.system(size: 8, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.42))
-                    HStack(spacing: 5) {
-                        ForEach(SessionImportDuplicateStrategy.allCases, id: \.rawValue) { strategy in
-                            Button {
-                                store.sessionImportDuplicateStrategy = strategy
-                            } label: {
-                                Text(strategy == .skip ? "跳过重复" : "作为副本")
-                                    .font(.system(size: 8.5, weight: .semibold))
-                                    .frame(maxWidth: .infinity, minHeight: 27)
-                                    .background(
-                                        store.sessionImportDuplicateStrategy == strategy
-                                            ? Color.cyan.opacity(0.16)
-                                            : Color.white.opacity(0.04),
-                                        in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    )
-                                    .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .foregroundStyle(store.sessionImportDuplicateStrategy == strategy ? .cyan : .white.opacity(0.5))
+            VStack(alignment: .leading, spacing: 6) {
+                Text("会话明细")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.42))
+                ForEach(Array(preview.manifest.sessions.prefix(5).enumerated()), id: \.element.threadID) { _, session in
+                    let conflict = preview.conflicts.first { $0.threadID == session.threadID }
+                    HStack(alignment: .top, spacing: 7) {
+                        Image(systemName: session.archived ? "archivebox.fill" : "bubble.left.and.bubble.right.fill")
+                            .foregroundStyle(.cyan.opacity(0.8))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(session.title).font(.system(size: 8.5, weight: .semibold)).lineLimit(1)
+                            Text(String(session.threadID.prefix(12)) + "… · " + (session.ownershipAlias ?? "归属未知"))
+                                .font(.system(size: 7.2, weight: .medium, design: .monospaced))
+                                .foregroundStyle(.white.opacity(0.34))
+                        }
+                        Spacer()
+                        if let conflict, conflict.hasAnyConflict {
+                            Text(conflict.isExistingSession ? "已存在" : "有残留")
+                                .font(.system(size: 7.5, weight: .bold))
+                                .foregroundStyle(conflict.isExistingSession ? .orange : .yellow)
                         }
                     }
                 }
+                if preview.sessionCount > 5 {
+                    Text("其余 \(preview.sessionCount - 5) 条会话将使用同一策略")
+                        .font(.system(size: 7.5, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.34))
+                }
             }
+            .padding(9)
+            .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+
+            DisclosureGroup("备份详情") {
+                VStack(alignment: .leading, spacing: 4) {
+                    importDetailRow("文件", value: preview.bundleURL.lastPathComponent)
+                    importDetailRow("格式", value: preview.manifest.format)
+                    importDetailRow("条目", value: "\(preview.archiveStatistics.entryCount) 个")
+                    importDetailRow("压缩大小", value: ByteCountFormatter.string(fromByteCount: preview.archiveStatistics.archiveBytes, countStyle: .file))
+                    importDetailRow("解压大小", value: ByteCountFormatter.string(fromByteCount: preview.archiveStatistics.expandedBytes, countStyle: .file))
+                }
+                .padding(.top, 5)
+            }
+            .font(.system(size: 8.5, weight: .semibold))
+            .foregroundStyle(.white.opacity(0.52))
 
             HStack(spacing: 7) {
                 Button("取消") { store.cancelSessionImport() }
-                    .frame(maxWidth: .infinity, minHeight: 30)
+                    .frame(maxWidth: .infinity, minHeight: 37)
                     .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                     .buttonStyle(.plain)
-                Button("备份并导入") { confirmsSessionImport = true }
-                    .frame(maxWidth: .infinity, minHeight: 30)
+                Button("备份并导入") { store.importSelectedSessionBundle() }
+                    .frame(maxWidth: .infinity, minHeight: 37)
                     .background(Color.cyan.opacity(0.13), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                     .buttonStyle(.plain)
                     .foregroundStyle(.cyan)
-                    .disabled(preview.requiresPathMapping && store.sessionImportMappedProjectURL == nil)
+                    .disabled(
+                        preview.codexIsRunning
+                            || !mappedImportDirectoryIsWritable
+                    )
             }
             .font(.system(size: 9, weight: .semibold))
         }
         .padding(12)
         .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private func projectTransferPreviewCard(_ preview: ProjectTransferPreview) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Image(systemName: "shippingbox.and.arrow.backward.fill")
+                    .foregroundStyle(.cyan)
+                Text("完整项目迁移包校验通过")
+                    .font(.system(size: 11, weight: .bold))
+                Spacer()
+                Text("P1")
+                    .font(.system(size: 8, weight: .bold, design: .rounded))
+                    .foregroundStyle(.cyan)
+            }
+
+            if preview.codexIsRunning {
+                HStack(alignment: .top, spacing: 7) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("导入前必须使用 Cmd + Q 完全退出 Codex／ChatGPT Desktop")
+                            .font(.system(size: 9, weight: .semibold))
+                        Text("退出后点击重新检查，项目文件和会话将作为同一事务导入。")
+                            .font(.system(size: 8, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.46))
+                    }
+                    Spacer()
+                    Button("重新检查") { store.recheckSelectedSessionImportBundle() }
+                        .font(.system(size: 8.5, weight: .semibold))
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.orange)
+                }
+                .padding(9)
+                .background(Color.orange.opacity(0.09), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            }
+
+            HStack(spacing: 0) {
+                continuityMetric(preview.fileCount, "项目文件")
+                continuityMetric(preview.sessionCount, "Codex 会话")
+                continuityMetric(preview.excludedCount, "安全排除")
+                continuityMetric(preview.duplicateCount, "重复 ID")
+            }
+
+            VStack(alignment: .leading, spacing: 5) {
+                importDetailRow("项目", value: preview.manifest.project.displayName)
+                importDetailRow("源路径", value: preview.manifest.project.originalPath)
+                importDetailRow(
+                    "来源账号",
+                    value: preview.sourceAccountAliases.isEmpty
+                        ? "未记录"
+                        : preview.sourceAccountAliases.sorted().joined(separator: "、")
+                )
+                importDetailRow("当前账号", value: store.continuityAccountTitle)
+                importDetailRow(
+                    "项目大小",
+                    value: ByteCountFormatter.string(
+                        fromByteCount: preview.totalProjectBytes,
+                        countStyle: .file
+                    )
+                )
+                if let git = preview.manifest.git, git.isRepository {
+                    let head = git.head.map { String($0.prefix(8)) } ?? "无 HEAD"
+                    importDetailRow(
+                        "Git",
+                        value: "\(git.branch ?? "detached") · \(head)"
+                            + (git.isDirty ? " · dirty" : " · clean")
+                    )
+                    if let remote = git.remoteURL {
+                        importDetailRow("远程", value: remote)
+                    }
+                    importDetailRow(
+                        "未跟踪文件",
+                        value: "已包含 \(preview.includedUntrackedFileCount) / \(preview.untrackedFileCount)"
+                    )
+                } else {
+                    importDetailRow("Git", value: "非 Git 项目")
+                }
+                importDetailRow(
+                    "会话附件",
+                    value: "已包含 \(preview.includedAttachmentCount) · 缺失 \(preview.missingAttachmentCount)"
+                )
+            }
+            .padding(9)
+            .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+
+            Button {
+                store.chooseSessionImportProjectDirectory()
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: store.projectImportTargetURL == nil
+                        ? "folder.badge.questionmark"
+                        : "folder.fill")
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(store.projectImportTargetURL == nil
+                            ? "选择新目录或空目录"
+                            : store.projectImportTargetURL?.lastPathComponent ?? "目标项目")
+                            .font(.system(size: 9, weight: .semibold))
+                        Text(store.projectImportTargetURL?.path ?? "P0 不会覆盖或合并现有文件")
+                            .font(.system(size: 7.5, weight: .medium, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.38))
+                            .lineLimit(2)
+                    }
+                    Spacer()
+                    if store.projectImportTargetURL != nil {
+                        Text(projectImportTargetIsValid ? "空目录" : "不可导入")
+                            .font(.system(size: 7.5, weight: .bold))
+                            .foregroundStyle(projectImportTargetIsValid ? .green : .orange)
+                    }
+                    Image(systemName: "chevron.right")
+                }
+                .foregroundStyle(projectImportTargetIsValid ? .cyan : .orange)
+                .padding(.horizontal, 10)
+                .frame(minHeight: 43)
+                .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("选择完整项目导入目录")
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text("会话身份策略")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.42))
+                ForEach(SessionImportDuplicateStrategy.allCases, id: \.rawValue) { strategy in
+                    Button {
+                        store.sessionImportDuplicateStrategy = strategy
+                    } label: {
+                        HStack(spacing: 7) {
+                            Image(systemName: store.sessionImportDuplicateStrategy == strategy
+                                ? "checkmark.circle.fill"
+                                : "circle")
+                            Text(strategy.title)
+                            Spacer()
+                        }
+                        .font(.system(size: 8.5, weight: .semibold))
+                        .padding(.horizontal, 9)
+                        .frame(maxWidth: .infinity, minHeight: 31)
+                        .background(
+                            store.sessionImportDuplicateStrategy == strategy
+                                ? Color.cyan.opacity(0.14)
+                                : Color.white.opacity(0.035),
+                            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(store.sessionImportDuplicateStrategy == strategy
+                        ? .cyan
+                        : .white.opacity(0.55))
+                }
+            }
+
+            DisclosureGroup("安全排除和包详情") {
+                VStack(alignment: .leading, spacing: 4) {
+                    importDetailRow("格式", value: preview.manifest.format)
+                    importDetailRow(
+                        "压缩大小",
+                        value: ByteCountFormatter.string(fromByteCount: preview.archiveBytes, countStyle: .file)
+                    )
+                    importDetailRow(
+                        "解压大小",
+                        value: ByteCountFormatter.string(fromByteCount: preview.expandedBytes, countStyle: .file)
+                    )
+                    ForEach(Array(preview.manifest.excluded.prefix(8).enumerated()), id: \.offset) { _, item in
+                        Text("• \(item.relativePath) — \(item.reason)")
+                            .font(.system(size: 7.5, weight: .medium, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.4))
+                            .lineLimit(1)
+                    }
+                    if preview.excludedCount > 8 {
+                        Text("其余 \(preview.excludedCount - 8) 项已记录在 Manifest 中")
+                            .font(.system(size: 7.5, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.35))
+                    }
+                    if preview.manifest.git?.workingTreePatchPath != nil {
+                        Label("dirty working tree 已生成 binary-safe patch", systemImage: "arrow.triangle.branch")
+                            .font(.system(size: 7.7, weight: .semibold))
+                            .foregroundStyle(.cyan.opacity(0.78))
+                    }
+                    ForEach(Array((preview.manifest.attachments ?? [])
+                        .filter { $0.status == .missing }
+                        .prefix(5).enumerated()), id: \.offset) { _, attachment in
+                        Text("缺失附件：\(attachment.originalPath)")
+                            .font(.system(size: 7.5, weight: .medium, design: .monospaced))
+                            .foregroundStyle(.orange.opacity(0.78))
+                            .lineLimit(1)
+                    }
+                }
+                .padding(.top, 5)
+            }
+            .font(.system(size: 8.5, weight: .semibold))
+            .foregroundStyle(.white.opacity(0.52))
+
+            if let issue = store.projectImportReadinessIssue {
+                HStack(alignment: .top, spacing: 7) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text(issue)
+                        .font(.system(size: 8.3, weight: .semibold))
+                        .foregroundStyle(.orange.opacity(0.92))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 9)
+                .padding(.vertical, 8)
+                .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+
+            HStack(spacing: 7) {
+                Button("取消") { store.cancelSessionImport() }
+                    .frame(maxWidth: .infinity, minHeight: 37)
+                    .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .buttonStyle(.plain)
+                Button("备份并导入完整项目") {
+                    store.importSelectedProjectBundle()
+                }
+                .frame(maxWidth: .infinity, minHeight: 37)
+                .background(Color.cyan.opacity(0.13), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .buttonStyle(.plain)
+                .foregroundStyle(.cyan)
+                .disabled(store.isSessionImporting)
+            }
+            .font(.system(size: 9, weight: .semibold))
+        }
+        .padding(12)
+        .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private var projectImportTargetIsValid: Bool {
+        guard let target = store.projectImportTargetURL,
+              FileManager.default.isWritableFile(atPath: target.path),
+              let contents = try? FileManager.default.contentsOfDirectory(
+                at: target,
+                includingPropertiesForKeys: nil
+              ) else { return false }
+        return contents.allSatisfy { $0.lastPathComponent == ".DS_Store" }
+    }
+
+    private func importDetailRow(_ label: String, value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(label)
+                .foregroundStyle(.white.opacity(0.36))
+            Spacer()
+            Text(value)
+                .foregroundStyle(.white.opacity(0.72))
+                .multilineTextAlignment(.trailing)
+                .lineLimit(2)
+        }
+        .font(.system(size: 8, weight: .medium))
+    }
+
+    private func importSourceAccounts(_ preview: SessionImportPreview) -> String {
+        let values = Set(preview.manifest.sessions.compactMap(\.ownershipAlias))
+        if values.isEmpty { return "未记录" }
+        return values.sorted().joined(separator: "、")
+    }
+
+    private func importHasAccountMismatch(_ preview: SessionImportPreview) -> Bool {
+        let values = Set(preview.manifest.sessions.compactMap(\.ownershipAlias))
+        return !values.isEmpty && !values.contains(store.continuityAccountTitle)
+    }
+
+    private var mappedImportDirectoryIsWritable: Bool {
+        guard let url = store.sessionImportMappedProjectURL else { return false }
+        return FileManager.default.isWritableFile(atPath: url.path)
+    }
+
+    private func sessionImportProgressCard(_ progress: SessionImportProgress) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack {
+                ProgressView().controlSize(.small).tint(.cyan)
+                Text(progress.stage.title).font(.system(size: 10, weight: .bold))
+                Spacer()
+                Text("\(progress.completed) / \(progress.total)")
+                    .font(.system(size: 9, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.cyan)
+            }
+            ProgressView(value: progress.fraction).tint(.cyan)
+            if let item = progress.currentItem {
+                Text(item).font(.system(size: 8, weight: .medium)).foregroundStyle(.white.opacity(0.42)).lineLimit(1)
+            }
+            Button(progress.stage == .cancelling ? "正在回滚…" : "取消导入") {
+                store.cancelSessionImport()
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 8.5, weight: .semibold))
+            .foregroundStyle(.orange)
+            .disabled(progress.stage == .cancelling || progress.stage == .rebuilding || progress.stage == .checkingVisibility)
+        }
+        .padding(12)
+        .background(Color.cyan.opacity(0.065), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
     private var continuitySummaryStatusColor: Color {
@@ -779,13 +2096,64 @@ struct NotchView: View {
     private func continuityMetric(_ value: Int, _ label: String) -> some View {
         VStack(spacing: 2) {
             Text("\(value)")
-                .font(.system(size: 15, weight: .bold, design: .rounded))
+                .font(MonitorTypography.secondaryMetric)
                 .monospacedDigit()
             Text(label)
-                .font(.system(size: 8, weight: .medium))
+                .font(MonitorTypography.metadata)
                 .foregroundStyle(.white.opacity(0.38))
         }
         .frame(maxWidth: .infinity)
+    }
+
+    private var sessionImportInspectionCard: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            let startedAt = store.sessionImportInspectionStartedAt ?? context.date
+            let elapsed = max(0, Int(context.date.timeIntervalSince(startedAt)))
+            let dotCount = elapsed % 3 + 1
+            VStack(alignment: .leading, spacing: 9) {
+                HStack(spacing: 9) {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(.cyan)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text((store.sessionImportInspectionTitle ?? "正在校验备份")
+                            + String(repeating: "·", count: dotCount))
+                            .font(AstaSans.semiBold(10))
+                        Text("已持续 \(elapsed) 秒，正在检查压缩目录、Manifest、校验和与会话记录")
+                            .font(AstaSans.regular(8.4))
+                            .foregroundStyle(MonitorTheme.tertiaryText)
+                    }
+                    Spacer(minLength: 8)
+                    Button("取消") { store.cancelSessionImport() }
+                        .font(AstaSans.semiBold(8.5))
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.cyan)
+                }
+
+                GeometryReader { geometry in
+                    let travel = max(0, geometry.size.width - 76)
+                    Capsule()
+                        .fill(
+                            LinearGradient(
+                                colors: [.cyan.opacity(0.12), .cyan, .cyan.opacity(0.12)],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .frame(width: 76, height: 3)
+                        .offset(x: travel > 0 ? CGFloat(elapsed % 20) / 19 * travel : 0)
+                        .animation(.linear(duration: 1), value: elapsed)
+                }
+                .frame(height: 3)
+                .background(Color.white.opacity(0.055), in: Capsule())
+            }
+            .padding(12)
+            .background(Color.cyan.opacity(0.075), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .strokeBorder(Color.cyan.opacity(0.24), lineWidth: 0.8)
+            }
+        }
     }
 
     private func continuityMessageCard(_ message: String, color: Color) -> some View {
@@ -810,22 +2178,22 @@ struct NotchView: View {
         VStack(alignment: .leading, spacing: 9) {
             HStack {
                 Text("最近项目会话")
-                    .font(.system(size: 11, weight: .bold))
+                    .font(MonitorTypography.cardTitle)
                 Spacer()
                 if store.continuitySnapshot.baselineOwnershipCount > 0 {
-                    Text("\(store.continuitySnapshot.baselineOwnershipCount) 条基线前会话")
-                        .font(.system(size: 8, weight: .medium))
+                    Text("归属未知：\(store.continuitySnapshot.baselineOwnershipCount) 条基线前会话")
+                        .font(MonitorTypography.metadata)
                         .foregroundStyle(.white.opacity(0.35))
                         .help("插件建立账号基线前已存在，无法可靠反推创建账号")
                 } else if store.continuitySnapshot.unknownOwnershipCount > 0 {
                     Text("\(store.continuitySnapshot.unknownOwnershipCount) 条尚未建立归属")
-                        .font(.system(size: 8, weight: .medium))
+                        .font(MonitorTypography.metadata)
                         .foregroundStyle(.white.opacity(0.35))
                 }
             }
             if store.continuitySnapshot.userThreads.isEmpty {
                 Text("暂未发现本地 Codex 会话")
-                    .font(.system(size: 9.5, weight: .medium))
+                    .font(MonitorTypography.rowTitle)
                     .foregroundStyle(.white.opacity(0.4))
                     .frame(maxWidth: .infinity, minHeight: 54)
             } else {
@@ -834,8 +2202,11 @@ struct NotchView: View {
                 }
             }
         }
-        .padding(12)
-        .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .padding(MonitorGeometry.cardPadding)
+        .background(
+            MonitorTheme.cardFill,
+            in: RoundedRectangle(cornerRadius: MonitorGeometry.cardRadius, style: .continuous)
+        )
         .onAppear {
             if expandedContinuityProjectID == nil {
                 expandedContinuityProjectID = store.continuitySnapshot.projectGroups.first?.id
@@ -855,8 +2226,10 @@ struct NotchView: View {
         return VStack(spacing: 7) {
             HStack(spacing: 6) {
                 Button {
-                    withAnimation(.islandContentSwap) {
-                        expandedContinuityProjectID = isExpanded ? nil : project.id
+                    let nextProjectID = isExpanded ? nil : project.id
+                    shouldCenterExpandedContinuityProject = nextProjectID != nil
+                    animate(.islandContentSwap) {
+                        expandedContinuityProjectID = nextProjectID
                     }
                 } label: {
                     HStack(spacing: 8) {
@@ -866,11 +2239,11 @@ struct NotchView: View {
                             .frame(width: 18, height: 18)
                             .background(Color.cyan.opacity(0.09), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
                         Text(project.name)
-                            .font(.system(size: 10, weight: .bold))
+                            .font(MonitorTypography.cardTitle)
                             .lineLimit(1)
                         Spacer(minLength: 6)
-                        Text("\(project.threads.count) 个对话")
-                            .font(.system(size: 8, weight: .medium))
+                        Text(projectConversationCountText(project))
+                            .font(MonitorTypography.metadata)
                             .foregroundStyle(.white.opacity(0.34))
                         Image(systemName: "chevron.right")
                             .font(.system(size: 8, weight: .bold))
@@ -882,18 +2255,42 @@ struct NotchView: View {
                 }
                 .buttonStyle(.plain)
 
-                Button {
-                    store.exportProject(project)
+                Menu {
+                    Button {
+                        store.exportProject(project)
+                    } label: {
+                        Label("导出项目会话", systemImage: "square.and.arrow.up")
+                    }
+                    Divider()
+                    Button(role: .destructive) {
+                        pendingContinuityProjectDeletion = project
+                    } label: {
+                        Label("删除项目会话", systemImage: "trash")
+                    }
                 } label: {
-                    Image(systemName: "square.and.arrow.up")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.cyan)
-                        .frame(width: 27, height: 27)
-                        .background(Color.cyan.opacity(0.08), in: Circle())
-                        .contentShape(Circle())
+                    Group {
+                        if store.deletingContinuityProjectID == project.id {
+                            ProgressView()
+                                .controlSize(.mini)
+                                .tint(.red)
+                        } else {
+                            Image(systemName: "ellipsis.circle")
+                                .font(.system(size: 11, weight: .semibold))
+                        }
+                    }
+                    .foregroundStyle(MonitorTheme.tertiaryText)
+                    .frame(width: 27, height: 27)
+                    .contentShape(Circle())
                 }
-                .buttonStyle(.plain)
-                .help("导出此项目的 \(project.threads.count) 条会话")
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .disabled(
+                    store.deletingContinuityThreadID != nil
+                        || store.deletingContinuityProjectID != nil
+                        || store.isSessionExporting
+                )
+                .help("项目会话操作")
             }
 
             if isExpanded {
@@ -913,7 +2310,15 @@ struct NotchView: View {
         }
         .padding(.horizontal, 9)
         .padding(.vertical, 7)
-        .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .background(
+            MonitorTheme.subtleCardFill,
+            in: RoundedRectangle(cornerRadius: MonitorGeometry.compactRadius, style: .continuous)
+        )
+        .id(continuityProjectScrollID(project.id))
+    }
+
+    private func continuityProjectScrollID(_ projectID: String) -> String {
+        "continuity-project-\(projectID)"
     }
 
     private func continuityThreadRow(_ thread: LocalThreadRecord) -> some View {
@@ -923,7 +2328,7 @@ struct NotchView: View {
                 .frame(width: 5, height: 5)
             VStack(alignment: .leading, spacing: 3) {
                 Text(thread.title)
-                    .font(.system(size: 9.5, weight: .semibold))
+                    .font(MonitorTypography.rowTitle)
                     .lineLimit(1)
                 HStack(spacing: 5) {
                     Text(thread.visibility.title)
@@ -931,37 +2336,46 @@ struct NotchView: View {
                     Text("·")
                     Text(ownershipTitle(thread.ownership))
                 }
-                .font(.system(size: 8, weight: .medium))
+                .font(MonitorTypography.metadata)
                 .foregroundStyle(.white.opacity(0.36))
             }
             Spacer(minLength: 6)
-            if thread.canExportSummary {
+            Menu {
                 Button {
-                    store.copyHandoffSummary(for: thread)
+                    store.exportSession(thread)
                 } label: {
-                    Text("复制摘要")
-                        .font(.system(size: 8.5, weight: .semibold))
-                        .foregroundStyle(.cyan)
-                        .padding(.horizontal, 8)
-                        .frame(height: 23)
-                        .background(Color.cyan.opacity(0.08), in: Capsule())
+                    Label("导出会话", systemImage: "square.and.arrow.up")
                 }
-                .buttonStyle(.plain)
-                .help("复制经脱敏的本地交接摘要，不会创建新会话")
-            }
-            Button {
-                store.exportSession(thread)
+                Divider()
+                Button(role: .destructive) {
+                    pendingContinuityThreadDeletion = thread
+                } label: {
+                    Label("删除会话", systemImage: "trash")
+                }
             } label: {
-                Text("导出")
-                    .font(.system(size: 8.5, weight: .semibold))
-                    .foregroundStyle(.cyan)
-                    .padding(.horizontal, 8)
-                    .frame(height: 23)
-                    .background(Color.cyan.opacity(0.08), in: Capsule())
-                    .contentShape(Capsule())
+                Group {
+                    if store.deletingContinuityThreadID == thread.id {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .tint(.red)
+                    } else {
+                        Image(systemName: "ellipsis.circle")
+                            .font(.system(size: 10, weight: .semibold))
+                    }
+                }
+                .foregroundStyle(MonitorTheme.tertiaryText)
+                .frame(width: 23, height: 23)
+                .contentShape(Circle())
             }
-            .buttonStyle(.plain)
-            .help("导出脱敏的可读副本或原始可恢复备份")
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .disabled(
+                store.deletingContinuityThreadID != nil
+                    || store.deletingContinuityProjectID != nil
+                    || store.isSessionExporting
+            )
+            .help("会话操作")
         }
         .padding(.vertical, 2)
     }
@@ -975,6 +2389,23 @@ struct NotchView: View {
         case .unknown:
             return "尚未建立归属"
         }
+    }
+
+    private func projectDeletionMessage(_ project: ContinuityProjectGroup) -> String {
+        let archivedCount = project.threads.filter(\.isArchived).count
+        let activeCount = project.threads.count - archivedCount
+        return "将通过 Codex App Server 永久删除「\(project.name)」下的 \(project.threads.count) 条会话"
+            + "（活动 \(activeCount) 条，已归档 \(archivedCount) 条），并清理 Codex 项目登记。\n\n"
+            + "“仅移除 Codex 项目”会保留磁盘目录：\(project.id)\n\n"
+            + "“同时移到废纸篓”会把该目录及其中全部文件移入 macOS 废纸篓，可在清空废纸篓前恢复。"
+            + "会话删除本身无法撤销；如需保留，请先导出完整项目迁移包。"
+    }
+
+    private func projectConversationCountText(_ project: ContinuityProjectGroup) -> String {
+        let archivedCount = project.threads.filter(\.isArchived).count
+        let activeCount = project.threads.count - archivedCount
+        guard archivedCount > 0 else { return "\(activeCount) 个对话" }
+        return "\(activeCount) 当前 · \(archivedCount) 归档"
     }
 
     private var continuityBackupCard: some View {
@@ -1020,36 +2451,971 @@ struct NotchView: View {
         .background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
     }
 
+    private var projectImportBackupCard: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "shippingbox.and.arrow.backward")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("已保留完整项目导入前事务")
+                    .font(.system(size: 9.5, weight: .semibold))
+                Text(store.lastProjectImportBackupURL?.lastPathComponent ?? "")
+                    .font(.system(size: 7.5, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.32))
+            }
+            Spacer()
+            Button("撤销项目导入") { store.rollbackLastProjectImport() }
+                .font(.system(size: 8.5, weight: .semibold))
+                .buttonStyle(.plain)
+                .foregroundStyle(.orange)
+                .disabled(store.isSessionImporting)
+        }
+        .padding(11)
+        .background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+    }
+
+    private func sessionImportOutcomeCard(_ outcome: SessionImportOutcome) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Image(systemName: outcome.requiresRetry ? "exclamationmark.arrow.triangle.2.circlepath" : "checkmark.circle.fill")
+                    .foregroundStyle(outcome.requiresRetry ? .orange : .green)
+                Text("导入结果")
+                    .font(.system(size: 9.5, weight: .bold))
+                Spacer()
+                Text(outcome.requiresRetry ? "需要确认" : "全部完成")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(outcome.requiresRetry ? .orange : .green)
+            }
+            importOutcomeRow(
+                "会话文件",
+                value: "已写入 \(outcome.result.importedCount) 条，跳过 \(outcome.result.skippedDuplicateCount) 条",
+                color: .green
+            )
+            importOutcomeRow(
+                "项目绑定",
+                value: "新增 \(outcome.result.projectBindingsAdded) 条精确绑定",
+                color: .green
+            )
+            switch outcome.visibility {
+            case .notChecked:
+                importOutcomeRow("App Server", value: "尚未确认", color: .orange)
+            case let .visible(count, expected):
+                importOutcomeRow(
+                    "App Server",
+                    value: "可见 \(count) / \(expected) 条",
+                    color: count == expected ? .green : .orange
+                )
+            case let .rebuildFailed(message):
+                importOutcomeRow("App Server", value: "索引重建失败：\(message)", color: .orange)
+            }
+            if outcome.requiresRetry {
+                Button("重试索引确认") { store.retryLastSessionImportVisibilityCheck() }
+                    .font(.system(size: 8.5, weight: .semibold))
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.orange)
+                    .disabled(store.isSessionImporting)
+            }
+        }
+        .padding(11)
+        .background(
+            (outcome.requiresRetry ? Color.orange : Color.green).opacity(0.055),
+            in: RoundedRectangle(cornerRadius: 13, style: .continuous)
+        )
+    }
+
+    private func importOutcomeRow(_ label: String, value: String, color: Color) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(label).foregroundStyle(.white.opacity(0.4))
+            Spacer()
+            Circle().fill(color).frame(width: 4, height: 4)
+            Text(value).foregroundStyle(.white.opacity(0.7)).multilineTextAlignment(.trailing)
+        }
+        .font(.system(size: 8, weight: .medium))
+    }
+
     private var tiboPage: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(spacing: 10) {
-                quotaResetHistoryCard
-                tiboSourceCard
-                if let feed = store.tiboFeed, !feed.displayEvents().isEmpty {
-                    ForEach(feed.displayEvents().prefix(12)) { item in
-                        tiboEventCard(item)
+        VStack(spacing: 8) {
+            tiboTrustConsole
+            tiboRadarControls
+            Group {
+                if let radar = store.tiboRadar {
+                    ScrollView(.vertical, showsIndicators: false) {
+                    if tiboRadarMode == .live {
+                        tiboLiveFeed(radar)
+                    } else {
+                        tiboTimeline(radar)
+                    }
                     }
                 } else if store.isTiboFeedLoading {
                     VStack(spacing: 9) {
                         ProgressView().controlSize(.small).tint(.cyan)
-                        Text("正在获取 Tibo 的 Codex 额度动态…")
-                            .font(.system(size: 9, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.42))
+                        Text("正在同步蒂博雷达…")
+                            .font(AstaSans.medium(9))
+                            .foregroundStyle(MonitorTheme.tertiaryText)
                     }
                     .frame(maxWidth: .infinity, minHeight: 130)
-                    .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .background(MonitorTheme.controlFill, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
                 } else {
-                    Text("暂时没有可显示的额度动态")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.42))
+                    Text("暂时没有可显示的雷达数据")
+                        .font(AstaSans.medium(10))
+                        .foregroundStyle(MonitorTheme.tertiaryText)
                         .frame(maxWidth: .infinity, minHeight: 100)
-                        .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .background(MonitorTheme.controlFill, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                }
+            }
+            .frame(maxHeight: .infinity, alignment: .top)
+        }
+        .onAppear {
+            store.refreshTiboFeed(ifOlderThan: 60)
+            store.refreshNotificationStatus()
+        }
+        .alert("确认手动重置", isPresented: $confirmsUserQuotaReset) {
+            Button("取消", role: .cancel) {
+                quotaResetCandidateToConfirm = nil
+            }
+            Button("记录并通知") {
+                if let candidate = quotaResetCandidateToConfirm {
+                    store.confirmUserQuotaReset(candidate)
+                }
+                quotaResetCandidateToConfirm = nil
+            }
+        } message: {
+            if let candidate = quotaResetCandidateToConfirm {
+                Text("这会把 \(quotaResetSummary(candidate)) 记录为“手动重置”，并立即发送一次系统通知。")
+            }
+        }
+    }
+
+    private var tiboTrustConsole: some View {
+        HStack(spacing: 10) {
+            HStack(spacing: 7) {
+                Image(systemName: "checkmark.shield.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(tiboOfficialStatusColor)
+                Text("官方额度")
+                    .font(AstaSans.semiBold(9.5))
+                Circle()
+                    .fill(tiboOfficialStatusColor)
+                    .frame(width: 5, height: 5)
+                Text(tiboOfficialStatusText)
+                    .font(AstaSans.semiBold(8.5))
+                    .foregroundStyle(tiboOfficialStatusColor)
+            }
+
+            HStack(spacing: 10) {
+                tiboForecastMetric("24h", store.tiboRadar?.forecast.probabilities.rounded24H)
+                tiboForecastMetric("48h", store.tiboRadar?.forecast.probabilities.rounded48H)
+            }
+
+            Text("社区预测 · \(tiboForecastConfidenceText)")
+                .font(AstaSans.semiBold(8))
+                .foregroundStyle(.orange)
+                .padding(.horizontal, 8)
+                .frame(height: 22)
+                .background(Color.orange.opacity(0.07), in: Capsule())
+
+            Spacer(minLength: 6)
+
+            if tiboQuotaHistoryCount > 0 {
+                Button {
+                    animate(.islandContentSwap) { showsTiboQuotaHistory.toggle() }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "clock.arrow.circlepath")
+                        Text("恢复记录")
+                        Text("\(tiboQuotaHistoryCount)")
+                            .monospacedDigit()
+                    }
+                    .font(AstaSans.semiBold(8))
+                    .foregroundStyle(
+                        showsTiboQuotaHistory
+                            ? MonitorTheme.cyanAccent
+                            : MonitorTheme.tertiaryText
+                    )
+                    .padding(.horizontal, 8)
+                    .frame(height: 24)
+                    .background(MonitorTheme.controlFill, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .popover(isPresented: $showsTiboQuotaHistory, arrowEdge: .bottom) {
+                    tiboQuotaHistoryPanel
+                        .frame(width: 460)
+                        .background(MonitorTheme.windowBackground)
+                        .preferredColorScheme(.dark)
+                }
+            }
+
+            Text(tiboSourceFreshnessText)
+                .font(AstaSans.medium(8))
+                .foregroundStyle(tiboSourceIsStale ? .orange : MonitorTheme.tertiaryText)
+                .lineLimit(1)
+
+            if store.isTiboFeedLoading {
+                ProgressView().controlSize(.mini).tint(.cyan)
+            } else {
+                Button { store.refreshTiboFeed() } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 9, weight: .semibold))
+                        .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(MonitorTheme.tertiaryText)
+                .help("刷新雷达数据")
+            }
+        }
+        .padding(.horizontal, 12)
+        .frame(minHeight: 52)
+        .background(MonitorTheme.subtleCardFill, in: RoundedRectangle(cornerRadius: MonitorGeometry.cardRadius, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: MonitorGeometry.cardRadius, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.07), lineWidth: 0.7)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("官方额度\(tiboOfficialStatusText)，24 小时预测\(store.tiboRadar?.forecast.probabilities.rounded24H ?? 0)%，48 小时预测\(store.tiboRadar?.forecast.probabilities.rounded48H ?? 0)%")
+    }
+
+    private var tiboQuotaHistoryPanel: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 5) {
+                ForEach(QuotaHistoryFilter.allCases) { filter in
+                    Button {
+                        animate(.islandContentSwap) { quotaHistoryFilter = filter }
+                    } label: {
+                        Text(filter.rawValue)
+                            .font(AstaSans.semiBold(7.7))
+                            .foregroundStyle(
+                                quotaHistoryFilter == filter
+                                    ? MonitorTheme.primaryText
+                                    : MonitorTheme.tertiaryText
+                            )
+                            .padding(.horizontal, 8)
+                            .frame(height: 22)
+                            .background(
+                                quotaHistoryFilter == filter
+                                    ? MonitorTheme.selection
+                                    : Color.clear,
+                                in: Capsule()
+                            )
+                    }
+                    .buttonStyle(.plain)
+                }
+                Spacer(minLength: 8)
+                Text(quotaNotificationStatusText)
+                    .font(AstaSans.regular(7.5))
+                    .foregroundStyle(MonitorTheme.faintText)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+
+            Rectangle().fill(MonitorTheme.separator).frame(height: 1)
+
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(spacing: 0) {
+                    ForEach(Array(store.confirmableQuotaRecoveries.prefix(2).enumerated()), id: \.element.id) { index, candidate in
+                        tiboQuotaCandidateRow(candidate)
+                        if index < min(store.confirmableQuotaRecoveries.count, 2) - 1
+                            || !store.quotaResetEvents.isEmpty {
+                            Rectangle().fill(MonitorTheme.separator).frame(height: 1)
+                        }
+                    }
+                    ForEach(Array(filteredQuotaHistory.prefix(8).enumerated()), id: \.element.id) { index, event in
+                        tiboQuotaHistoryRow(event)
+                        if index < min(filteredQuotaHistory.count, 8) - 1 {
+                            Rectangle().fill(MonitorTheme.separator).frame(height: 1)
+                        }
+                    }
+                    if filteredQuotaHistory.isEmpty {
+                        Text("该类型暂无恢复记录")
+                            .font(AstaSans.regular(8.2))
+                            .foregroundStyle(MonitorTheme.faintText)
+                            .frame(maxWidth: .infinity, minHeight: 42)
+                    }
+                }
+            }
+            .frame(maxHeight: 300)
+            .transition(.opacity.combined(with: .move(edge: .top)))
+        }
+        .background(MonitorTheme.subtleCardFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.065), lineWidth: 0.7)
+        }
+    }
+
+    private var tiboQuotaHistoryCount: Int {
+        store.quotaResetEvents.count + store.confirmableQuotaRecoveries.count
+    }
+
+    private var filteredQuotaHistory: [QuotaResetEvent] {
+        store.quotaResetEvents.filter { event in
+            switch quotaHistoryFilter {
+            case .all:
+                return true
+            case .tibo:
+                return event.displayReason == .officialCompleted
+                    || event.displayReason == .officialScheduled
+                    || event.displayReason == .mixed
+            case .natural:
+                return event.displayReason == .natural
+            case .manual:
+                return event.displayReason == .manualCredit
+                    || event.displayReason == .userConfirmed
+            }
+        }
+    }
+
+    private func tiboQuotaCandidateRow(_ candidate: QuotaResetConfirmationCandidate) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "questionmark.circle.fill")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.orange)
+                .frame(width: 14, height: 15)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("检测到额度恢复，等待确认")
+                    .font(AstaSans.semiBold(8.8))
+                Text(quotaResetSummary(candidate))
+                    .font(AstaSans.regular(8))
+                    .foregroundStyle(MonitorTheme.tertiaryText)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 6)
+            Button("确认") {
+                quotaResetCandidateToConfirm = candidate
+                confirmsUserQuotaReset = true
+            }
+            .buttonStyle(.plain)
+            .font(AstaSans.semiBold(8))
+            .foregroundStyle(.orange)
+            .padding(.horizontal, 8)
+            .frame(height: 22)
+            .background(Color.orange.opacity(0.09), in: Capsule())
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+    }
+
+    private func tiboQuotaHistoryRow(_ event: QuotaResetEvent) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: quotaResetSymbol(event.displayReason))
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(quotaResetColor(event.displayReason))
+                .frame(width: 14, height: 15)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(event.displayReason.title)
+                    .font(AstaSans.semiBold(8.8))
+                    .foregroundStyle(MonitorTheme.primaryText)
+                Text(quotaResetSummary(event))
+                    .font(AstaSans.regular(8))
+                    .foregroundStyle(MonitorTheme.tertiaryText)
+                    .lineLimit(1)
+                if event.userDisplayType != nil {
+                    Text("原始判断：\(event.reason.title)")
+                        .font(AstaSans.regular(7.3))
+                        .foregroundStyle(MonitorTheme.faintText)
+                }
+            }
+            Spacer(minLength: 6)
+            VStack(alignment: .trailing, spacing: 4) {
+                Text(tiboRelativeTime(event.detectedAt))
+                    .font(AstaSans.regular(7.5))
+                    .foregroundStyle(MonitorTheme.faintText)
+                HStack(spacing: 2) {
+                    Menu {
+                        Button {
+                            store.setQuotaResetDisplayType(
+                                eventID: event.id,
+                                displayType: nil
+                            )
+                        } label: {
+                            if event.userDisplayType == nil {
+                                Label("自动判断 · \(event.reason.title)", systemImage: "checkmark")
+                            } else {
+                                Text("自动判断 · \(event.reason.title)")
+                            }
+                        }
+                        Divider()
+                        ForEach(QuotaResetDisplayType.allCases) { type in
+                            Button {
+                                store.setQuotaResetDisplayType(
+                                    eventID: event.id,
+                                    displayType: type
+                                )
+                            } label: {
+                                if event.userDisplayType == type
+                                    || (event.userDisplayType == nil
+                                        && event.reason.defaultDisplayType == type) {
+                                    Label(type.title, systemImage: "checkmark")
+                                } else {
+                                    Text(type.title)
+                                }
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                            .font(.system(size: 10, weight: .semibold))
+                            .frame(width: 20, height: 20)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .foregroundStyle(MonitorTheme.tertiaryText)
+                    .help("更改显示类型；原始检测证据会保留")
+                    if let value = event.sourceURL, let url = URL(string: value) {
+                        Button {
+                            NSWorkspace.shared.open(url)
+                        } label: {
+                            Image(systemName: "arrow.up.right")
+                                .font(.system(size: 7.5, weight: .semibold))
+                                .frame(width: 20, height: 20)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(MonitorTheme.cyanAccent)
+                        .help("打开重置证据")
+                    }
                 }
             }
         }
-        .onAppear {
-            store.refreshTiboFeed(ifOlderThan: 5 * 60)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+    }
+
+    private func tiboForecastMetric(_ label: String, _ value: Int?) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            Text(label)
+                .font(AstaSans.regular(7.5))
+                .foregroundStyle(MonitorTheme.faintText)
+            Text(value.map { "\($0)%" } ?? "--")
+                .font(AstaSans.semiBold(11))
+                .monospacedDigit()
         }
+    }
+
+    private var tiboOfficialStatusText: String {
+        switch store.quotaState {
+        case .loaded: return "正常"
+        case .loading: return "读取中"
+        case .failed: return "连接异常"
+        }
+    }
+
+    private var tiboOfficialStatusColor: Color {
+        switch store.quotaState {
+        case .loaded: return .green
+        case .loading: return .cyan
+        case .failed: return .orange
+        }
+    }
+
+    private var tiboForecastConfidenceText: String {
+        switch store.tiboRadar?.forecast.confidence {
+        case "high": return "高置信度"
+        case "medium": return "中置信度"
+        default: return "低置信度"
+        }
+    }
+
+    private var tiboSourceFreshnessText: String {
+        if let error = store.tiboFeedError { return "显示缓存 · \(error)" }
+        guard let date = store.tiboRadar?.fetchedDate ?? store.tiboFeedFetchedAt else {
+            return "等待数据"
+        }
+        return "数据 \(tiboRelativeTime(date))"
+    }
+
+    private func tiboPinnedSignalRow(_ signal: CodexResetRadarSignal) -> some View {
+        let event = store.tiboRadar?.timelineEvents.first { $0.id == signal.tweetId }
+        let isLocallyConfirmed = store.quotaResetEvents.contains { reset in
+            reset.sourcePostID == signal.tweetId
+                && (reset.reason == .officialCompleted || reset.reason == .mixed)
+        }
+        let isVerified = isLocallyConfirmed
+            || (event?.source == "archive" && event?.confidence == "high")
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: "pin.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(MonitorTheme.cyanAccent)
+                Text(isVerified ? "已确认重置" : "待验证重置信号")
+                    .font(AstaSans.semiBold(8.5))
+                    .foregroundStyle(isVerified ? .green : .cyan)
+                    .padding(.horizontal, 7)
+                    .frame(height: 21)
+                    .background((isVerified ? Color.green : Color.cyan).opacity(0.09), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                Text(tiboHeadline(signal.displayText))
+                    .font(AstaSans.semiBold(11.5))
+                    .lineLimit(1)
+                Spacer(minLength: 6)
+                Text(tiboRelativeTime(signal.date))
+                    .font(AstaSans.medium(8))
+                    .foregroundStyle(MonitorTheme.faintText)
+            }
+            Text(signal.displayText)
+                .font(AstaSans.regular(9))
+                .foregroundStyle(MonitorTheme.secondaryText)
+                .lineSpacing(2)
+                .lineLimit(3)
+            HStack(spacing: 7) {
+                Text("来源：codex-reset.com")
+                if isLocallyConfirmed {
+                    Text("·")
+                    Text("官方额度已验证")
+                    Text("·")
+                    Text("实时雷达")
+                } else if let event {
+                    Text("·")
+                    Text(tiboTimelineConfidenceLabel(event))
+                    Text("·")
+                    Text(tiboTimelineSourceLabel(event))
+                }
+                Spacer()
+                Button {
+                    guard let url = URL(string: signal.url) else { return }
+                    NSWorkspace.shared.open(url)
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("在 X 查看")
+                        Image(systemName: "arrow.up.right")
+                    }
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(MonitorTheme.cyanAccent)
+            }
+            .font(AstaSans.medium(8))
+            .foregroundStyle(MonitorTheme.faintText)
+        }
+        .padding(12)
+        .background(Color.green.opacity(0.025))
+    }
+
+    private var tiboRadarControls: some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 3) {
+                ForEach(TiboRadarMode.allCases) { mode in
+                    Button {
+                        animate(.islandContentSwap) {
+                            tiboRadarMode = mode
+                            tiboRadarFilter = .all
+                        }
+                    } label: {
+                        Text(mode == .live ? "动态" : "时间轴")
+                            .font(AstaSans.semiBold(8.5))
+                            .foregroundStyle(tiboRadarMode == mode ? MonitorTheme.primaryText : MonitorTheme.tertiaryText)
+                            .frame(width: 70, height: 26)
+                            .background(tiboRadarMode == mode ? Color.white.opacity(0.09) : Color.clear, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(2)
+            .background(MonitorTheme.subtleCardFill, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+
+            Spacer()
+
+            ForEach(TiboRadarFilter.allCases) { filter in
+                Button {
+                    animate(.islandContentSwap) { tiboRadarFilter = filter }
+                } label: {
+                    Text(tiboFilterTitle(filter))
+                        .font(AstaSans.semiBold(8))
+                        .foregroundStyle(tiboRadarFilter == filter ? MonitorTheme.cyanAccent : MonitorTheme.tertiaryText)
+                        .padding(.horizontal, 8)
+                        .frame(height: 24)
+                        .background(
+                            tiboRadarFilter == filter
+                                ? MonitorTheme.cyanAccent.opacity(0.08)
+                                : Color.clear,
+                            in: Capsule()
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private func tiboFilterTitle(_ filter: TiboRadarFilter) -> String {
+        switch (tiboRadarMode, filter) {
+        case (_, .all): return "全部"
+        case (.live, .reset): return "重置信号"
+        case (.live, .secondary): return "额度动态"
+        case (.timeline, .reset): return "硬重置"
+        case (.timeline, .secondary): return "储备重置"
+        }
+    }
+
+    private func tiboLiveFeed(_ radar: CodexResetRadarSnapshot) -> some View {
+        let tweets = radar.tweets.filter { tweet in
+            guard tweet.id != radar.signal?.tweetId else { return false }
+            switch tiboRadarFilter {
+            case .all: return true
+            case .reset:
+                return tweet.explicitResetClaim == true
+                    || tweet.tiboLane == "reset_announcement"
+                    || tweet.kind == "signal"
+                    || tweet.kind == "candidate"
+            case .secondary:
+                return tweet.kind == "limits"
+                    || (tweet.tiboLane == "reset_related" && tweet.explicitResetClaim != true)
+            }
+        }
+        return LazyVStack(spacing: 0) {
+            if let signal = radar.signal, tiboRadarFilter != .secondary {
+                tiboPinnedSignalRow(signal)
+                if !tweets.isEmpty {
+                    Rectangle().fill(MonitorTheme.separator).frame(height: 1)
+                }
+            }
+            ForEach(Array(tweets.prefix(20).enumerated()), id: \.element.id) { index, tweet in
+                if index == 0 || !Calendar.current.isDate(
+                    tweets[index - 1].date ?? .distantPast,
+                    inSameDayAs: tweet.date ?? .distantFuture
+                ) {
+                    tiboDaySectionHeader(tweet.date)
+                }
+                tiboTweetRow(tweet, radar: radar)
+                if index < min(tweets.count, 20) - 1 {
+                    Rectangle().fill(MonitorTheme.separator).frame(height: 1)
+                }
+            }
+        }
+        .background(MonitorTheme.subtleCardFill, in: RoundedRectangle(cornerRadius: MonitorGeometry.cardRadius, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: MonitorGeometry.cardRadius, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.07), lineWidth: 0.7)
+        }
+    }
+
+    private func tiboTweetRow(
+        _ tweet: CodexResetRadarTweet,
+        radar: CodexResetRadarSnapshot
+    ) -> some View {
+        let event = radar.timelineEvents.first { $0.id == tweet.id }
+        let title = tiboHeadline(tweet.displayText)
+        let body = tiboBodyText(tweet.displayText)
+        return VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 7) {
+                Text(tiboTweetTag(tweet, event: event))
+                    .font(AstaSans.semiBold(8))
+                    .foregroundStyle(tiboTweetColor(tweet, event: event))
+                    .padding(.horizontal, 7)
+                    .frame(height: 21)
+                    .background(tiboTweetColor(tweet, event: event).opacity(0.08), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .strokeBorder(tiboTweetColor(tweet, event: event).opacity(0.35), lineWidth: 0.7)
+                    }
+                Text(title)
+                    .font(AstaSans.semiBold(10.8))
+                    .lineLimit(1)
+                Spacer()
+                Text(tiboRelativeTime(tweet.date))
+                    .font(AstaSans.medium(8))
+                    .foregroundStyle(MonitorTheme.faintText)
+            }
+            if let body {
+                Text(body)
+                    .font(AstaSans.regular(9))
+                    .foregroundStyle(MonitorTheme.secondaryText)
+                    .lineSpacing(2)
+                    .lineLimit(2)
+            }
+            HStack(spacing: 11) {
+                Text("@thsottiaux")
+                Text("·")
+                Text(event.map(tiboTimelineSourceLabel) ?? "实时雷达")
+                Button {
+                    guard let url = URL(string: tweet.url) else { return }
+                    NSWorkspace.shared.open(url)
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("X 原文")
+                        Image(systemName: "arrow.up.right")
+                    }
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(MonitorTheme.cyanAccent)
+                Spacer(minLength: 0)
+                tiboEngagement("arrowshape.turn.up.left", tweet.replies)
+                tiboEngagement("arrow.2.squarepath", tweet.reposts)
+                tiboEngagement("heart", tweet.likes)
+            }
+            .font(AstaSans.medium(8))
+            .foregroundStyle(MonitorTheme.faintText)
+        }
+        .padding(12)
+    }
+
+    private func tiboDaySectionHeader(_ date: Date?) -> some View {
+        HStack(spacing: 8) {
+            Text(tiboDaySectionTitle(date))
+                .font(AstaSans.semiBold(8.5))
+                .foregroundStyle(MonitorTheme.tertiaryText)
+            Rectangle()
+                .fill(MonitorTheme.separator)
+                .frame(height: 1)
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 22)
+    }
+
+    private func tiboDaySectionTitle(_ date: Date?) -> String {
+        guard let date else { return "时间未知" }
+        if Calendar.current.isDateInToday(date) { return "今天" }
+        if Calendar.current.isDateInYesterday(date) { return "昨天" }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "M月d日"
+        return formatter.string(from: date)
+    }
+
+    private func tiboBodyText(_ text: String) -> String? {
+        let compact = text.replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "  ", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let remainder: Substring
+        if let stop = compact.firstIndex(of: "。") {
+            remainder = compact[compact.index(after: stop)...]
+        } else if let range = compact.range(of: ". ") {
+            remainder = compact[range.upperBound...]
+        } else {
+            return nil
+        }
+        let body = remainder.trimmingCharacters(in: .whitespacesAndNewlines)
+        return body.isEmpty ? nil : body
+    }
+
+    private func tiboEngagement(_ symbol: String, _ value: Int?) -> some View {
+        HStack(spacing: 3) {
+            Image(systemName: symbol)
+            Text(tiboCompactCount(value ?? 0))
+                .monospacedDigit()
+        }
+    }
+
+    private func tiboTimeline(_ radar: CodexResetRadarSnapshot) -> some View {
+        let events = radar.timelineEvents.filter { event in
+            switch tiboRadarFilter {
+            case .all: return true
+            case .reset: return event.type == "reset" && event.preview == false
+            case .secondary: return event.type == "credits"
+            }
+        }
+        let visibleEvents = Array(events.prefix(30))
+        return LazyVStack(spacing: 0) {
+            ForEach(Array(visibleEvents.enumerated()), id: \.element.id) { index, event in
+                tiboTimelineRow(
+                    event,
+                    isFirst: index == 0,
+                    isLast: index == visibleEvents.count - 1,
+                    showsDate: index == 0 || visibleEvents[index - 1].date != event.date
+                )
+            }
+        }
+        .padding(.vertical, 7)
+        .background(MonitorTheme.subtleCardFill, in: RoundedRectangle(cornerRadius: MonitorGeometry.cardRadius, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: MonitorGeometry.cardRadius, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.07), lineWidth: 0.7)
+        }
+    }
+
+    private func tiboTimelineRow(
+        _ event: CodexResetTimelineEvent,
+        isFirst: Bool,
+        isLast: Bool,
+        showsDate: Bool
+    ) -> some View {
+        HStack(alignment: .top, spacing: 0) {
+            VStack(alignment: .trailing, spacing: 2) {
+                if showsDate {
+                    Text(tiboTimelineDateLabel(event.announcedDate))
+                        .font(AstaSans.semiBold(8.5))
+                        .foregroundStyle(tiboTimelineColor(event))
+                }
+                Text(tiboTimelineTimeLabel(event.announcedDate))
+                    .font(AstaSans.regular(7.5))
+                    .foregroundStyle(MonitorTheme.faintText)
+            }
+            .frame(width: 58, alignment: .trailing)
+            .padding(.top, 10)
+
+            ZStack(alignment: .top) {
+                GeometryReader { proxy in
+                    let centerY: CGFloat = 22
+                    if !isFirst {
+                        Rectangle()
+                            .fill(MonitorTheme.cyanAccent.opacity(0.24))
+                            .frame(width: 1, height: centerY)
+                            .position(x: proxy.size.width / 2, y: centerY / 2)
+                    }
+                    if !isLast {
+                        Rectangle()
+                            .fill(MonitorTheme.cyanAccent.opacity(0.24))
+                            .frame(width: 1, height: max(0, proxy.size.height - centerY))
+                            .position(
+                                x: proxy.size.width / 2,
+                                y: centerY + max(0, proxy.size.height - centerY) / 2
+                            )
+                    }
+                }
+                ZStack {
+                    Circle()
+                        .fill(Color(red: 0.075, green: 0.085, blue: 0.095))
+                    Circle()
+                        .strokeBorder(tiboTimelineColor(event).opacity(0.85), lineWidth: 1.2)
+                    Image(systemName: tiboTimelineSymbol(event))
+                        .font(.system(size: 7.5, weight: .bold))
+                        .foregroundStyle(tiboTimelineColor(event))
+                }
+                .frame(width: 22, height: 22)
+                .padding(.top, 11)
+            }
+            .frame(width: 38)
+
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 6) {
+                    Text(tiboTimelineTitle(event))
+                        .font(AstaSans.semiBold(10.5))
+                    Text(tiboTimelineConfidenceLabel(event))
+                        .font(AstaSans.semiBold(7.5))
+                        .foregroundStyle(tiboTimelineColor(event))
+                    Spacer()
+                    Text(tiboRelativeTime(event.announcedDate))
+                        .font(AstaSans.medium(8))
+                        .foregroundStyle(MonitorTheme.faintText)
+                }
+                Text(event.displayText)
+                    .font(AstaSans.regular(9))
+                    .foregroundStyle(MonitorTheme.secondaryText)
+                    .lineSpacing(2)
+                    .lineLimit(4)
+                HStack(spacing: 7) {
+                    Text(tiboTimelineSourceLabel(event))
+                    if let status = event.resetVerificationStatus {
+                        Text("·")
+                        Text(tiboVerificationLabel(status))
+                    }
+                    Spacer()
+                    Button {
+                        guard let url = URL(string: event.url) else { return }
+                        NSWorkspace.shared.open(url)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text("查看 X 证据")
+                            Image(systemName: "arrow.up.right")
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(MonitorTheme.cyanAccent)
+                }
+                .font(AstaSans.medium(8))
+                .foregroundStyle(MonitorTheme.faintText)
+            }
+            .padding(.leading, 5)
+            .padding(.trailing, 12)
+            .padding(.vertical, 10)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func tiboTimelineDateLabel(_ date: Date?) -> String {
+        guard let date else { return "--" }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "M月d日"
+        return formatter.string(from: date)
+    }
+
+    private func tiboTimelineTimeLabel(_ date: Date?) -> String {
+        guard let date else { return "" }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "HH:mm"
+        return formatter.string(from: date)
+    }
+
+    private func tiboTweetTag(
+        _ tweet: CodexResetRadarTweet,
+        event: CodexResetTimelineEvent?
+    ) -> String {
+        if tweet.kind == "limits" { return "限额" }
+        if event?.type == "credits" { return "储备" }
+        if tweet.explicitResetClaim == true { return "重置" }
+        if tweet.kind == "signal" || event?.preview == true { return "预告" }
+        return "动态"
+    }
+
+    private func tiboTweetColor(
+        _ tweet: CodexResetRadarTweet,
+        event: CodexResetTimelineEvent?
+    ) -> Color {
+        if tweet.kind == "limits" { return .orange }
+        if event?.type == "credits" { return .orange }
+        if event?.source == "archive", event?.confidence == "high" { return .green }
+        if tweet.explicitResetClaim == true || event?.preview == true { return .cyan }
+        return MonitorTheme.secondaryText
+    }
+
+    private func tiboTimelineTitle(_ event: CodexResetTimelineEvent) -> String {
+        if event.resetVerificationStatus == "rejected" { return "候选信号已驳回" }
+        if event.type == "credits" { return "储备重置" }
+        if event.preview { return "重置预告" }
+        if event.type == "reset" { return "额度重置" }
+        if event.type == "promo" || event.type == "boost" { return "额度促销动态" }
+        return "相关动态"
+    }
+
+    private func tiboTimelineSymbol(_ event: CodexResetTimelineEvent) -> String {
+        if event.resetVerificationStatus == "rejected" { return "xmark" }
+        if event.type == "credits" { return "tray.full.fill" }
+        if event.preview { return "clock.fill" }
+        if event.type == "reset" { return "checkmark" }
+        return "bolt.fill"
+    }
+
+    private func tiboTimelineColor(_ event: CodexResetTimelineEvent) -> Color {
+        if event.resetVerificationStatus == "rejected" { return .red }
+        if event.type == "credits" { return .orange }
+        if event.preview || event.confidence == "medium" { return .cyan }
+        if event.type == "reset", event.confidence == "high" { return .green }
+        return MonitorTheme.secondaryText
+    }
+
+    private func tiboTimelineConfidenceLabel(_ event: CodexResetTimelineEvent) -> String {
+        switch event.confidence {
+        case "high": return "高置信度"
+        case "medium": return "中置信度"
+        default: return "低置信度"
+        }
+    }
+
+    private func tiboTimelineSourceLabel(_ event: CodexResetTimelineEvent) -> String {
+        event.source == "archive" ? "已归档证据" : "实时雷达"
+    }
+
+    private func tiboVerificationLabel(_ value: String) -> String {
+        switch value {
+        case "pending": return "待验证"
+        case "rejected": return "已驳回"
+        case "expired": return "验证窗口已结束"
+        default: return value
+        }
+    }
+
+    private func tiboHeadline(_ text: String) -> String {
+        let compact = text.replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "  ", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let stop = compact.firstIndex(of: "。") {
+            let sentence = String(compact[...stop])
+            if sentence.count <= 58 { return sentence }
+        }
+        return compact.count <= 58 ? compact : String(compact.prefix(58)) + "…"
+    }
+
+    private func tiboCompactCount(_ value: Int) -> String {
+        if value >= 10_000 { return String(format: "%.1f万", Double(value) / 10_000) }
+        if value >= 1_000 { return String(format: "%.1fK", Double(value) / 1_000) }
+        return "\(value)"
     }
 
     private var quotaResetHistoryCard: some View {
@@ -1064,19 +3430,47 @@ struct NotchView: View {
                 quotaNotificationStatusControl
             }
 
-            if store.quotaResetEvents.isEmpty {
-                Text("正在监控官方临时重置与窗口到期重置")
+            ForEach(store.confirmableQuotaRecoveries.prefix(2)) { candidate in
+                HStack(alignment: .top, spacing: 7) {
+                    Image(systemName: "questionmark.circle.fill")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.orange)
+                        .frame(width: 13, height: 14)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("检测到额度恢复，等待确认")
+                            .font(.system(size: 9.5, weight: .semibold))
+                        Text(quotaResetSummary(candidate))
+                            .font(.system(size: 8.5, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.46))
+                            .lineLimit(2)
+                    }
+                    Spacer(minLength: 4)
+                    Button("确认手动重置") {
+                        quotaResetCandidateToConfirm = candidate
+                        confirmsUserQuotaReset = true
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(.orange.opacity(0.92))
+                    .padding(.horizontal, 7)
+                    .frame(minHeight: 22)
+                    .background(.orange.opacity(0.10), in: Capsule())
+                }
+            }
+
+            if store.quotaResetEvents.isEmpty && store.confirmableQuotaRecoveries.isEmpty {
+                Text("正在监控 Tibo 重置与窗口到期重置")
                     .font(.system(size: 9, weight: .medium))
                     .foregroundStyle(.white.opacity(0.42))
             } else {
                 ForEach(store.quotaResetEvents.prefix(3)) { event in
                     HStack(alignment: .top, spacing: 7) {
-                        Image(systemName: quotaResetSymbol(event.reason))
+                        Image(systemName: quotaResetSymbol(event.displayReason))
                             .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(quotaResetColor(event.reason))
+                            .foregroundStyle(quotaResetColor(event.displayReason))
                             .frame(width: 13, height: 14)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(event.reason.title)
+                            Text(event.displayReason.title)
                                 .font(.system(size: 9.5, weight: .semibold))
                             Text(quotaResetSummary(event))
                                 .font(.system(size: 8.5, weight: .medium))
@@ -1152,12 +3546,20 @@ struct NotchView: View {
         }.joined(separator: " · ")
     }
 
+    private func quotaResetSummary(_ candidate: QuotaResetConfirmationCandidate) -> String {
+        candidate.changes.map { change in
+            "\(change.bucketName) \(change.windowLabel) \(change.previousRemainingPercent)% → \(change.currentRemainingPercent)%"
+        }.joined(separator: " · ")
+    }
+
     private func quotaResetSymbol(_ reason: QuotaResetReason) -> String {
         switch reason {
         case .officialCompleted: return "bolt.fill"
         case .officialScheduled: return "calendar.badge.checkmark"
         case .natural: return "clock.arrow.circlepath"
         case .mixed: return "checkmark.seal.fill"
+        case .manualCredit: return "creditcard.and.123"
+        case .userConfirmed: return "person.crop.circle.badge.checkmark"
         case .unverified: return "questionmark.circle.fill"
         }
     }
@@ -1168,6 +3570,8 @@ struct NotchView: View {
         case .officialScheduled: return .cyan
         case .natural: return .blue
         case .mixed: return .mint
+        case .manualCredit: return .orange
+        case .userConfirmed: return .orange
         case .unverified: return .gray
         }
     }
@@ -1308,9 +3712,10 @@ struct NotchView: View {
     }
 
     private var tiboSourceIsStale: Bool {
-        guard let date = store.tiboFeed?.lastSuccessfulCheckDate
-                ?? store.tiboFeed?.generatedDate else { return store.tiboFeedError != nil }
-        return Date().timeIntervalSince(date) > TiboFeedService.staleInterval
+        guard let date = store.tiboRadar?.fetchedDate
+                ?? store.tiboFeedFetchedAt else { return store.tiboFeedError != nil }
+        return store.tiboRadar?.stale == true
+            || Date().timeIntervalSince(date) > CodexResetRadarService.staleInterval
     }
 
     private var tiboSourceSubtitle: String {
@@ -1371,9 +3776,8 @@ struct NotchView: View {
 
     private var costPage: some View {
         ScrollView(.vertical, showsIndicators: false) {
-            VStack(spacing: 10) {
+            VStack(spacing: MonitorGeometry.pageGap) {
                 costOverviewCard
-                costTrendCard
                 providerCostCard
                 coverAIPromoCard
             }
@@ -1382,14 +3786,14 @@ struct NotchView: View {
 
     private var costOverviewCard: some View {
         let totals = selectedCost
-        return VStack(alignment: .leading, spacing: 9) {
+        return VStack(alignment: .leading, spacing: MonitorGeometry.overviewItemGap) {
             HStack(spacing: 3) {
                 ForEach(UsagePeriod.allCases) { period in
                     Button {
-                        withAnimation(.islandContentSwap) { costPeriod = period }
+                        animate(.islandContentSwap) { costPeriod = period }
                     } label: {
                         Text(period.rawValue)
-                            .font(.system(size: 9, weight: .semibold))
+                            .font(MonitorTypography.controlLarge)
                             .frame(maxWidth: .infinity, minHeight: 22)
                             .foregroundStyle(costPeriod == period ? .white : .white.opacity(0.4))
                             .background(
@@ -1402,28 +3806,34 @@ struct NotchView: View {
                 }
             }
             .padding(3)
-            .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .background(
+                MonitorTheme.subtleCardFill,
+                in: RoundedRectangle(cornerRadius: MonitorTheme.controlCornerRadius, style: .continuous)
+            )
 
             accountScopeControl
 
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(costPeriodTitle)
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.46))
+                        .font(AstaSans.regular(10.5))
+                        .foregroundStyle(MonitorTheme.secondaryText)
                     Text(formatDollars(totals.dollars))
-                        .font(.system(size: 21, weight: .bold, design: .rounded))
-                        .foregroundStyle(.cyan.opacity(0.9))
+                        .font(MonitorTypography.primaryMetric)
+                        .tracking(-0.21)
+                        .foregroundStyle(MonitorTheme.cyanAccent)
                         .monospacedDigit()
+                        .contentTransition(.numericText())
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 2) {
                     Text("Token 吞吐量")
-                        .font(.system(size: 8, weight: .medium))
+                        .font(MonitorTypography.metadata)
                         .foregroundStyle(.white.opacity(0.36))
                     Text(formatTokens(totals.tokens))
-                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                        .font(MonitorTypography.secondaryMetric)
                         .monospacedDigit()
+                        .contentTransition(.numericText())
                 }
             }
 
@@ -1434,12 +3844,47 @@ struct NotchView: View {
                 Spacer(minLength: 0)
                 if store.isCostLoading { ProgressView().controlSize(.mini).tint(.cyan) }
             }
-            .font(.system(size: 8, weight: .medium, design: .rounded))
-            .foregroundStyle(.white.opacity(0.38))
+            .font(AstaSans.regular(10.5))
+            .foregroundStyle(MonitorTheme.tertiaryText)
             .lineLimit(1)
+
+            costVisualizationSelector
+
+            if costVisualizationMode == .trend {
+                CostTrendChart(
+                    values: Array(selectedCost.series.prefix(costVisiblePointCount)),
+                    period: costPeriod
+                )
+                .frame(height: MonitorGeometry.chartHeight)
+
+                HStack {
+                    Text(costTrendStartLabel)
+                    Spacer()
+                    Text(costTrendEndLabel)
+                }
+                .font(MonitorTypography.body)
+                .foregroundStyle(MonitorTheme.faintText)
+            } else {
+                if !selectedCostScope.usage.activityIsReady {
+                    Text("正在整理成本活动…")
+                        .font(AstaSans.regular(10.5))
+                        .foregroundStyle(MonitorTheme.tertiaryText)
+                        .frame(maxWidth: .infinity, minHeight: 48)
+                } else {
+                    CostActivityHeatmap(
+                        activity: selectedCostActivity,
+                        reduceMotion: reduceMotion
+                    )
+                }
+            }
         }
-        .padding(12)
-        .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .padding(MonitorGeometry.cardPadding)
+        .background(
+            MonitorTheme.cardFill,
+            in: RoundedRectangle(cornerRadius: MonitorGeometry.cardRadius, style: .continuous)
+        )
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: totals.dollars)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: totals.tokens)
     }
 
     private var coverAIPromoCard: some View {
@@ -1464,9 +3909,9 @@ struct NotchView: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text("CoverAI")
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(MonitorTypography.cardTitle)
                     Text("发现实用的 AI 工具、订阅与使用指南")
-                        .font(.system(size: 8.5, weight: .medium))
+                        .font(MonitorTypography.body)
                         .foregroundStyle(.white.opacity(0.44))
                         .lineLimit(1)
                 }
@@ -1477,7 +3922,7 @@ struct NotchView: View {
                     Text("访问官网")
                     Image(systemName: "arrow.up.right")
                 }
-                .font(.system(size: 8.5, weight: .semibold))
+                .font(MonitorTypography.control)
                 .foregroundStyle(.cyan.opacity(0.78))
             }
             .padding(.horizontal, 11)
@@ -1488,10 +3933,10 @@ struct NotchView: View {
                     startPoint: .leading,
                     endPoint: .trailing
                 ),
-                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+                in: RoundedRectangle(cornerRadius: MonitorGeometry.cardRadius, style: .continuous)
             )
             .overlay {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                RoundedRectangle(cornerRadius: MonitorGeometry.cardRadius, style: .continuous)
                     .strokeBorder(.cyan.opacity(0.10), lineWidth: 0.6)
             }
             .contentShape(Rectangle())
@@ -1503,38 +3948,48 @@ struct NotchView: View {
 
     private var costTrendCard: some View {
         VStack(alignment: .leading, spacing: 7) {
-            HStack {
-                Text("美元成本趋势")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.55))
-                Spacer()
-                Text(costTrendContext)
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.34))
-            }
-            CostTrendChart(
-                values: Array(selectedCost.series.prefix(costVisiblePointCount)),
-                period: costPeriod
-            )
-            .frame(height: 58)
+            costVisualizationSelector
 
-            HStack {
-                Text(costTrendStartLabel)
-                Spacer()
-                Text(costTrendEndLabel)
+            if costVisualizationMode == .trend {
+                CostTrendChart(
+                    values: Array(selectedCost.series.prefix(costVisiblePointCount)),
+                    period: costPeriod
+                )
+                .frame(height: MonitorGeometry.chartHeight)
+
+                HStack {
+                    Text(costTrendStartLabel)
+                    Spacer()
+                    Text(costTrendEndLabel)
+                }
+                .font(.system(size: 7.5, weight: .medium, design: .rounded))
+                .foregroundStyle(.white.opacity(0.28))
+            } else {
+                if !selectedCostScope.usage.activityIsReady {
+                    Text("正在整理成本活动…")
+                        .font(AstaSans.regular(10.5))
+                        .foregroundStyle(MonitorTheme.tertiaryText)
+                        .frame(maxWidth: .infinity, minHeight: 48)
+                } else {
+                    CostActivityHeatmap(
+                        activity: selectedCostActivity,
+                        reduceMotion: reduceMotion
+                    )
+                }
             }
-            .font(.system(size: 7.5, weight: .medium, design: .rounded))
-            .foregroundStyle(.white.opacity(0.28))
         }
         .padding(11)
-        .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(
+            MonitorTheme.cardFill,
+            in: RoundedRectangle(cornerRadius: MonitorTheme.compactCardCornerRadius, style: .continuous)
+        )
     }
 
     private var providerCostCard: some View {
         VStack(spacing: 7) {
             HStack {
                 Text("本地日志来源")
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(MonitorTypography.cardTitle)
                     .foregroundStyle(.white.opacity(0.55))
                 Spacer()
                 if store.isCostLoading { ProgressView().controlSize(.mini).tint(.cyan) }
@@ -1553,10 +4008,10 @@ struct NotchView: View {
                             .fill(Color.cyan)
                             .frame(width: 6, height: 6)
                         Text(provider.provider.rawValue)
-                            .font(.system(size: 10, weight: .semibold))
+                            .font(MonitorTypography.cardTitle)
                         Spacer()
                         Text(costPeriod.rawValue + "统计")
-                            .font(.system(size: 8, weight: .medium))
+                            .font(MonitorTypography.metadata)
                             .foregroundStyle(.white.opacity(0.34))
                     }
                     HStack {
@@ -1569,15 +4024,17 @@ struct NotchView: View {
                             Text(formatTokens(totals.tokens))
                                 .foregroundStyle(.cyan.opacity(0.78))
                                 .monospacedDigit()
+                                .contentTransition(.numericText())
                             Spacer()
                             Text("等价成本")
                                 .foregroundStyle(.white.opacity(0.42))
                             Text(formatDollars(totals.dollars))
                                 .fontWeight(.bold)
                                 .monospacedDigit()
+                                .contentTransition(.numericText())
                         }
                     }
-                    .font(.system(size: 9, weight: .medium, design: .rounded))
+                    .font(MonitorTypography.body)
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
                 }
@@ -1616,8 +4073,11 @@ struct NotchView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .padding(11)
-        .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .padding(MonitorGeometry.cardPadding)
+        .background(
+            MonitorTheme.cardFill,
+            in: RoundedRectangle(cornerRadius: MonitorGeometry.cardRadius, style: .continuous)
+        )
     }
 
     private var accountScopeControl: some View {
@@ -1638,13 +4098,13 @@ struct NotchView: View {
                     Image(systemName: "person.2.fill")
                         .font(.system(size: 8, weight: .semibold))
                         .foregroundStyle(.cyan.opacity(0.72))
-                    Text("账号")
-                        .font(.system(size: 8.5, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.42))
+                    Text("统计范围")
+                        .font(AstaSans.semiBold(10.5))
+                        .foregroundStyle(MonitorTheme.secondaryText)
                     Spacer(minLength: 6)
                     Text(selectedAccountScopeTitle)
-                        .font(.system(size: 8.5, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.78))
+                        .font(AstaSans.semiBold(10.5))
+                        .foregroundStyle(MonitorTheme.primaryText)
                         .lineLimit(1)
                     Image(systemName: "chevron.down")
                         .font(.system(size: 6.5, weight: .bold))
@@ -1652,23 +4112,46 @@ struct NotchView: View {
                 }
                 .padding(.horizontal, 9)
                 .frame(maxWidth: .infinity, minHeight: 24)
-                .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .background(
+                    MonitorTheme.controlFill,
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                )
                 .contentShape(Rectangle())
             }
             .menuStyle(.borderlessButton)
             .fixedSize(horizontal: false, vertical: true)
+            .help("筛选 Usage 和 Cost 的本地历史统计范围")
 
-            Text(accountScopeEvidenceText)
-                .font(.system(size: 7.2, weight: .medium))
-                .foregroundStyle(.white.opacity(0.28))
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .lineLimit(1)
+            HStack(spacing: 8) {
+                Text(accountScopeEvidenceText)
+                    .font(AstaSans.regular(9))
+                    .foregroundStyle(MonitorTheme.faintText)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                if shouldOfferMonthlyHistoryShortcut {
+                    Button("查看近 30 日") {
+                        animate(.islandContentSwap) {
+                            usagePeriod = .month
+                            costPeriod = .month
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .font(AstaSans.semiBold(9))
+                    .foregroundStyle(MonitorTheme.cyanAccent)
+                }
+            }
+            .frame(
+                maxWidth: .infinity,
+                minHeight: MonitorGeometry.accountEvidenceHeight,
+                maxHeight: MonitorGeometry.accountEvidenceHeight,
+                alignment: .leading
+            )
         }
     }
 
     private func accountScopeButton(id: String, title: String) -> some View {
         Button {
-            withAnimation(.islandContentSwap) { usageAccountScopeID = id }
+            animate(.islandContentSwap) { usageAccountScopeID = id }
         } label: {
             if usageAccountScopeID == id {
                 Label(title, systemImage: "checkmark")
@@ -1698,7 +4181,27 @@ struct NotchView: View {
         if usageAccountScopeID == UsageAccountScope.unknown {
             return "仅显示基线前或尚无可靠账号归属的记录"
         }
+        if shouldOfferMonthlyHistoryShortcut {
+            return "(selectedPagePeriod.emptyActivityTitle) · 近 30 日 (formatCompactTokens(selectedCostScope.usage.month.tokens))"
+        }
+        if selectedCostScope.usage.month.tokens == 0,
+           store.costSnapshot.unknownAccount.usage.month.tokens > 0 {
+            return "暂无可靠归属记录 · 未归属历史 (formatCompactTokens(store.costSnapshot.unknownAccount.usage.month.tokens))"
+        }
         return "仅显示插件可靠观察到归属该账号的会话"
+    }
+
+    private var selectedPagePeriod: UsagePeriod {
+        expandedPage == .cost ? costPeriod : usagePeriod
+    }
+
+    private var shouldOfferMonthlyHistoryShortcut: Bool {
+        guard usageAccountScopeID != UsageAccountScope.all,
+              usageAccountScopeID != UsageAccountScope.unknown,
+              selectedPagePeriod != .month
+        else { return false }
+        return selectedCostScope.usage.totals(for: selectedPagePeriod).tokens == 0
+            && selectedCostScope.usage.month.tokens > 0
     }
 
     private func formatTokens(_ value: Int) -> String {
@@ -1720,6 +4223,10 @@ struct NotchView: View {
         store.costSnapshot.scope(for: usageAccountScopeID)
     }
 
+    private var selectedCostActivity: [DailyCostActivity] {
+        Array(selectedCostScope.costActivity.suffix(costPeriod.activityDayCount))
+    }
+
     private var costPeriodTitle: String {
         switch costPeriod {
         case .day: return "今日 API 等价成本"
@@ -1733,6 +4240,41 @@ struct NotchView: View {
         case .day: return "今日 · 每小时成本"
         case .week: return "近 7 日 · 每日成本"
         case .month: return "近 30 日 · 每日成本"
+        }
+    }
+
+    private var costVisualizationSelector: some View {
+        HStack(spacing: 4) {
+            ForEach(UsageVisualizationMode.allCases) { mode in
+                Button {
+                    animate(.islandContentSwap) { costVisualizationMode = mode }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: mode == .trend ? "chart.xyaxis.line" : "square.grid.3x3.fill")
+                            .font(.system(size: 7.5, weight: .semibold))
+                        Text(mode.rawValue)
+                    }
+                    .font(AstaSans.semiBold(9))
+                    .foregroundStyle(
+                        costVisualizationMode == mode
+                            ? MonitorTheme.primaryText
+                            : MonitorTheme.tertiaryText
+                    )
+                    .padding(.horizontal, 8)
+                    .frame(minHeight: 22)
+                    .background(
+                        costVisualizationMode == mode
+                            ? Color.white.opacity(0.10)
+                            : Color.clear,
+                        in: Capsule()
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+            Spacer(minLength: 0)
+            Text(costVisualizationMode == .trend ? costTrendContext : "按当前周期 · 每日成本密度")
+                .font(AstaSans.regular(9))
+                .foregroundStyle(MonitorTheme.faintText)
         }
     }
 
@@ -1767,16 +4309,55 @@ struct NotchView: View {
         selectedCostScope.usage.totals(for: usagePeriod)
     }
 
+    private var selectedTokenActivity: [DailyTokenActivity] {
+        Array(selectedCostScope.usage.activity.suffix(usagePeriod.activityDayCount))
+    }
+
+    private var usageVisualizationSelector: some View {
+        HStack(spacing: 4) {
+            ForEach(UsageVisualizationMode.allCases) { mode in
+                Button {
+                    animate(.islandContentSwap) { usageVisualizationMode = mode }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: mode == .trend ? "chart.xyaxis.line" : "square.grid.3x3.fill")
+                            .font(.system(size: 7.5, weight: .semibold))
+                        Text(mode.rawValue)
+                    }
+                    .font(AstaSans.semiBold(9))
+                    .foregroundStyle(
+                        usageVisualizationMode == mode
+                            ? MonitorTheme.primaryText
+                            : MonitorTheme.tertiaryText
+                    )
+                    .padding(.horizontal, 8)
+                    .frame(minHeight: 22)
+                    .background(
+                        usageVisualizationMode == mode
+                            ? Color.white.opacity(0.10)
+                            : Color.clear,
+                        in: Capsule()
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+            Spacer(minLength: 0)
+            Text(usageVisualizationMode == .trend ? "按当前周期" : "按当前周期 · 每日 Token 密度")
+                .font(AstaSans.regular(9))
+                .foregroundStyle(MonitorTheme.faintText)
+        }
+    }
+
     private var usageOverviewCard: some View {
         let usage = selectedUsage
-        return VStack(alignment: .leading, spacing: 9) {
+        return VStack(alignment: .leading, spacing: MonitorGeometry.overviewItemGap) {
             HStack(spacing: 3) {
                 ForEach(UsagePeriod.allCases) { period in
                     Button {
-                        withAnimation(.islandContentSwap) { usagePeriod = period }
+                        animate(.islandContentSwap) { usagePeriod = period }
                     } label: {
                         Text(period.rawValue)
-                            .font(.system(size: 9, weight: .semibold))
+                            .font(AstaSans.semiBold(10.5))
                             .frame(maxWidth: .infinity, minHeight: 22)
                             .foregroundStyle(usagePeriod == period ? .white : .white.opacity(0.4))
                             .background(
@@ -1789,19 +4370,24 @@ struct NotchView: View {
                 }
             }
             .padding(3)
-            .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .background(
+                MonitorTheme.subtleCardFill,
+                in: RoundedRectangle(cornerRadius: MonitorTheme.controlCornerRadius, style: .continuous)
+            )
 
             accountScopeControl
 
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(usagePeriodTitle)
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.46))
+                        .font(AstaSans.regular(10.5))
+                        .foregroundStyle(MonitorTheme.secondaryText)
                     Text(formatTokens(usage.tokens))
-                        .font(.system(size: 19, weight: .bold, design: .rounded))
-                        .foregroundStyle(.cyan.opacity(0.9))
+                        .font(AstaSans.semiBold(21))
+                        .tracking(-0.21)
+                        .foregroundStyle(MonitorTheme.cyanAccent)
                         .monospacedDigit()
+                        .contentTransition(.numericText())
                 }
                 Spacer()
                 UsageCountMetric(value: usage.sessionCount, label: "会话")
@@ -1815,26 +4401,48 @@ struct NotchView: View {
                 Spacer(minLength: 0)
                 if store.isCostLoading { ProgressView().controlSize(.mini).tint(.cyan) }
             }
-            .font(.system(size: 8, weight: .medium, design: .rounded))
-            .foregroundStyle(.white.opacity(0.38))
+            .font(AstaSans.regular(10.5))
+            .foregroundStyle(MonitorTheme.tertiaryText)
             .lineLimit(1)
 
-            UsageTrendChart(
-                values: Array(usage.series.prefix(usageVisiblePointCount)),
-                period: usagePeriod
-            )
+            usageVisualizationSelector
+
+            if usageVisualizationMode == .trend {
+                UsageTrendChart(
+                    values: Array(usage.series.prefix(usageVisiblePointCount)),
+                    period: usagePeriod
+                )
                 .frame(height: 58)
 
-            HStack {
-                Text(usageTrendStartLabel)
-                Spacer()
-                Text(usageTrendEndLabel)
+                HStack {
+                    Text(usageTrendStartLabel)
+                    Spacer()
+                    Text(usageTrendEndLabel)
+                }
+                .font(AstaSans.regular(9))
+                .foregroundStyle(MonitorTheme.faintText)
+            } else {
+                if !selectedCostScope.usage.activityIsReady {
+                    Text("正在整理 Token 活动…")
+                        .font(AstaSans.regular(10.5))
+                        .foregroundStyle(MonitorTheme.tertiaryText)
+                        .frame(maxWidth: .infinity, minHeight: 48)
+                } else {
+                    TokenActivityHeatmap(
+                        activity: selectedTokenActivity,
+                        reduceMotion: reduceMotion
+                    )
+                }
             }
-            .font(.system(size: 7.5, weight: .medium, design: .rounded))
-            .foregroundStyle(.white.opacity(0.28))
         }
-        .padding(12)
-        .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .padding(MonitorGeometry.cardPadding)
+        .background(
+            MonitorTheme.cardFill,
+            in: RoundedRectangle(cornerRadius: MonitorGeometry.cardRadius, style: .continuous)
+        )
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: usage.tokens)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: usage.sessionCount)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: usage.projectCount)
     }
 
     private var usageProjectCard: some View {
@@ -1843,44 +4451,48 @@ struct NotchView: View {
         return VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("项目用量排行")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(AstaSans.semiBold(10.5))
                     .foregroundStyle(.white.opacity(0.55))
                 Spacer()
                 Text(usagePeriod.rawValue + "统计")
-                    .font(.system(size: 8, weight: .medium))
+                    .font(AstaSans.regular(9))
                     .foregroundStyle(.white.opacity(0.32))
             }
             if topProjects.isEmpty {
                 Text("当前周期暂无本地 Token 记录")
-                    .font(.system(size: 9, weight: .medium))
+                    .font(AstaSans.regular(10.5))
                     .foregroundStyle(.white.opacity(0.4))
                     .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
             } else {
                 ForEach(Array(topProjects.enumerated()), id: \.element.id) { index, project in
                     HStack(spacing: 7) {
                         Text("\(index + 1)")
-                            .font(.system(size: 8, weight: .bold, design: .rounded))
+                            .font(AstaSans.semiBold(9))
                             .foregroundStyle(index == 0 ? .cyan.opacity(0.85) : .white.opacity(0.3))
                             .frame(width: 10)
                         VStack(alignment: .leading, spacing: 1) {
                             Text(project.name)
-                                .font(.system(size: 9.5, weight: .semibold))
+                                .font(AstaSans.semiBold(10.5))
                                 .lineLimit(1)
                             Text("\(project.sessionCount) 个会话")
-                                .font(.system(size: 7.5, weight: .medium))
+                                .font(AstaSans.regular(9))
                                 .foregroundStyle(.white.opacity(0.32))
                         }
                         Spacer(minLength: 5)
                         Text(formatCompactTokens(project.tokens))
-                            .font(.system(size: 9, weight: .bold, design: .rounded))
+                            .font(AstaSans.regular(10.5))
                             .foregroundStyle(.cyan.opacity(0.75))
                             .monospacedDigit()
+                            .contentTransition(.numericText())
                     }
                 }
             }
         }
-        .padding(12)
-        .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .padding(MonitorGeometry.cardPadding)
+        .background(
+            MonitorTheme.cardFill,
+            in: RoundedRectangle(cornerRadius: MonitorGeometry.cardRadius, style: .continuous)
+        )
     }
 
     private var usagePeriodTitle: String {
@@ -1932,69 +4544,16 @@ struct NotchView: View {
         return "\(value)"
     }
 
-    private var taskCard: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack {
-                Text("活跃项目")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.55))
-                Spacer()
-                Text("\(store.activeProjects.count)")
-                    .font(.system(size: 10, weight: .bold, design: .rounded))
-                    .foregroundStyle(.cyan.opacity(0.8))
-            }
-
-            if store.activeProjects.isEmpty {
-                Text("当前没有运行中的项目")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.42))
-                    .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
-            } else {
-                ForEach(store.activeProjects) { project in
-                    Button { store.selectProject(project.id) } label: {
-                        HStack(spacing: 8) {
-                            Circle()
-                                .fill(project.task.phase.color)
-                                .frame(width: 7, height: 7)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(project.name)
-                                    .font(.system(size: 10, weight: .semibold))
-                                    .lineLimit(1)
-                                Text("\(project.sessionCount) 个运行会话")
-                                    .font(.system(size: 9, weight: .medium))
-                                    .foregroundStyle(.white.opacity(0.42))
-                                    .lineLimit(1)
-                            }
-                            Spacer(minLength: 6)
-                            Text(project.task.phase.title)
-                                .font(.system(size: 8, weight: .semibold))
-                                .foregroundStyle(project.task.phase.color.opacity(0.85))
-                        }
-                        .padding(.horizontal, 8)
-                        .frame(height: 34)
-                        .background(
-                            store.selectedProject?.id == project.id
-                                ? Color.white.opacity(0.075) : Color.clear,
-                            in: RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        )
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-        }
-        .padding(12)
-        .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-    }
-
     private var quotaCard: some View {
         VStack(alignment: .leading, spacing: 11) {
             HStack {
                 Text("剩余额度")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.55))
-                if let planType = store.quotaState.primaryBucket?.planType,
-                   !planType.isEmpty {
-                    Text(planType.uppercased())
+                if let planType = OpenAIPlanDisplayName.resolve(
+                    store.quotaState.primaryBucket?.planType
+                ) {
+                    Text(planType)
                         .font(.system(size: 7, weight: .bold, design: .rounded))
                         .tracking(0.35)
                         .foregroundStyle(.cyan.opacity(0.72))
@@ -2027,50 +4586,6 @@ struct NotchView: View {
             }
         }
         .padding(13)
-        .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-    }
-
-    private var activityCard: some View {
-        let project = store.selectedProject
-        let activities = project?.activities ?? []
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text(project == nil ? "实时运行内容" : "实时动作")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.55))
-                Spacer()
-                if !activities.isEmpty {
-                    Text("最近 \(min(activities.count, 3)) 条")
-                        .font(.system(size: 8, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.34))
-                }
-                if project?.latestDisplayActivity?.isRunning == true {
-                    ProgressView().controlSize(.mini).tint(.cyan)
-                }
-            }
-
-            if activities.isEmpty {
-                Text(currentTask == nil ? "当前没有运行中的任务" : currentTask?.phase.title ?? "正在同步活动")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.42))
-                    .frame(maxWidth: .infinity, minHeight: 42, alignment: .leading)
-            } else {
-                ForEach(activities.prefix(3)) { activity in
-                    HStack(spacing: 8) {
-                        Image(systemName: activity.kind.symbol)
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(activity.isRunning ? .cyan : .white.opacity(0.4))
-                            .frame(width: 13)
-                        Text(activityDisplayTitle(activity))
-                            .font(.system(size: 10, weight: activity.isRunning ? .semibold : .regular))
-                            .foregroundStyle(.white.opacity(activity.isRunning ? 0.86 : 0.48))
-                            .lineLimit(1)
-                        Spacer(minLength: 4)
-                    }
-                }
-            }
-        }
-        .padding(12)
         .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
@@ -2163,6 +4678,7 @@ private struct CompactProjectCell: View {
     let singleLine: Bool
     let isFocused: Bool
     let action: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
 
     var body: some View {
@@ -2222,7 +4738,11 @@ private struct CompactProjectCell: View {
         }
         .buttonStyle(CompactPressButtonStyle())
         .onHover { hovered in
-            withAnimation(.islandHover) { isHovered = hovered }
+            if reduceMotion {
+                isHovered = hovered
+            } else {
+                withAnimation(.islandHover) { isHovered = hovered }
+            }
         }
     }
 
@@ -2261,11 +4781,14 @@ private struct CompactProjectCell: View {
 /// jagged outer pixels at the NSPanel edge.
 private struct CompactOrbitGlow: View {
     let color: Color
+    let animated: Bool
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
-            let rotation = (context.date.timeIntervalSinceReferenceDate * 100)
-                .truncatingRemainder(dividingBy: 360)
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !animated)) { context in
+            let rotation = animated
+                ? (context.date.timeIntervalSinceReferenceDate * 100)
+                    .truncatingRemainder(dividingBy: 360)
+                : 315
             let gradient = AngularGradient(
                 gradient: Gradient(stops: [
                     .init(color: .clear, location: 0.00),
@@ -2316,13 +4839,14 @@ private struct GPTStatusMark: View {
     let active: Bool
     let color: Color
     let refreshToken: String
+    let animated: Bool
     @State private var syncScale: CGFloat = 1
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 20.0)) { context in
+        TimelineView(.animation(minimumInterval: 1.0 / 20.0, paused: !animated)) { context in
             let phase = context.date.timeIntervalSinceReferenceDate
             let speed = active ? 2.6 : 1.75
-            let wave = sin(phase * speed) * 0.5 + 0.5
+            let wave = animated ? sin(phase * speed) * 0.5 + 0.5 : 0.35
             let brightness = active ? 0.68 + wave * 0.32 : 0.42 + wave * 0.24
             let haloOpacity = active ? 0.18 + wave * 0.28 : 0.06 + wave * 0.12
 
@@ -2355,7 +4879,7 @@ private struct GPTStatusMark: View {
         .frame(width: 14, height: 14)
         .scaleEffect(syncScale)
         .onChange(of: refreshToken) { _ in
-            guard active else { return }
+            guard active, animated else { return }
             withAnimation(.islandContentSwap) { syncScale = 1.18 }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.14) {
                 withAnimation(.islandContentSwap) { syncScale = 1 }
@@ -2398,10 +4922,19 @@ private struct QuotaMiniGauge: View {
 
 private struct CompactPressButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
+        CompactPressButtonBody(configuration: configuration)
+    }
+}
+
+private struct CompactPressButtonBody: View {
+    let configuration: ButtonStyleConfiguration
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
         configuration.label
             .scaleEffect(configuration.isPressed ? 0.985 : 1)
             .opacity(configuration.isPressed ? 0.84 : 1)
-            .animation(.islandPress, value: configuration.isPressed)
+            .animation(reduceMotion ? nil : .islandPress, value: configuration.isPressed)
     }
 }
 
@@ -2433,35 +4966,64 @@ private struct CompactMoreProjectsCell: View {
     }
 }
 
-private struct CodexMark: View {
+struct CodexMark: View {
     var size: CGFloat = 18
+
     var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
-                .fill(.white)
-            Text("C")
-                .font(.system(size: size * 0.58, weight: .black, design: .rounded))
-                .foregroundStyle(.black)
+        Group {
+            if let image = Self.coverAILogo {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.high)
+                    .scaledToFit()
+            } else {
+                ZStack {
+                    RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
+                        .fill(.white)
+                    Text("C")
+                        .font(.system(size: size * 0.58, weight: .black, design: .rounded))
+                        .foregroundStyle(.black)
+                }
+            }
         }
         .frame(width: size, height: size)
+        .accessibilityLabel("CoverAI")
     }
+
+    private static let coverAILogo: NSImage? = {
+        guard let url = Bundle.main.url(
+            forResource: "CoverAI-Logo",
+            withExtension: "png"
+        ) else { return nil }
+        return NSImage(contentsOf: url)
+    }()
 }
 
 private struct IslandButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
+        IslandButtonBody(configuration: configuration)
+    }
+}
+
+private struct IslandButtonBody: View {
+    let configuration: ButtonStyleConfiguration
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
         configuration.label
             .font(.system(size: 11, weight: .semibold))
             .foregroundStyle(.white.opacity(configuration.isPressed ? 0.45 : 0.72))
             .frame(width: 26, height: 26)
             .background(.white.opacity(configuration.isPressed ? 0.12 : 0.07), in: Circle())
             .scaleEffect(configuration.isPressed ? 0.94 : 1)
-            .animation(.islandPress, value: configuration.isPressed)
+            .animation(reduceMotion ? nil : .islandPress, value: configuration.isPressed)
     }
 }
 
 private struct QuotaRow: View {
     let bucket: RateLimitBucket
     let window: RateLimitWindow
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(spacing: 6) {
@@ -2485,12 +5047,14 @@ private struct QuotaRow: View {
                         Text(resetText(relativeTo: context.date))
                             .font(.system(size: 9, weight: .medium))
                             .foregroundStyle(.white.opacity(0.42))
+                            .contentTransition(.numericText())
                     }
                 }
                 Spacer()
                 Text("\(window.remainingPercent)%")
                     .font(.system(size: 16, weight: .bold, design: .rounded))
                     .monospacedDigit()
+                    .contentTransition(.numericText())
                 Text("剩余")
                     .font(.system(size: 9, weight: .medium))
                     .foregroundStyle(.white.opacity(0.42))
@@ -2506,6 +5070,10 @@ private struct QuotaRow: View {
             }
             .frame(height: 5)
         }
+        .animation(
+            reduceMotion ? nil : .easeOut(duration: 0.18),
+            value: window.remainingPercent
+        )
     }
 
     private var progressColor: Color {
@@ -2534,6 +5102,7 @@ private struct TiboChineseTranslationView: View {
     @State private var isTranslating = false
     @State private var errorText: String?
     @State private var configuration: TranslationSession.Configuration?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -2624,7 +5193,7 @@ private struct TiboChineseTranslationView: View {
 
     private func toggleTranslation() {
         if translatedText != nil {
-            withAnimation(.easeOut(duration: 0.16)) {
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.16)) {
                 isShowingTranslation.toggle()
             }
             return
@@ -2789,17 +5358,333 @@ private struct CostTrendChart: View {
 private struct UsageCountMetric: View {
     let value: Int
     let label: String
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 1) {
             Text("\(value)")
-                .font(.system(size: 13, weight: .bold, design: .rounded))
+                .font(AstaSans.semiBold(15))
                 .monospacedDigit()
+                .contentTransition(.numericText())
             Text(label)
-                .font(.system(size: 7.5, weight: .medium))
+                .font(AstaSans.regular(9))
                 .foregroundStyle(.white.opacity(0.34))
         }
         .frame(minWidth: 34, alignment: .trailing)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: value)
+    }
+}
+
+private struct TokenActivityHeatmap: View {
+    private static let cellSize: CGFloat = 14
+    private static let spacing: CGFloat = 4
+
+    let activity: [DailyTokenActivity]
+    let reduceMotion: Bool
+
+    @State private var hoveredDate: Date?
+    @State private var hoverWorkItem: DispatchWorkItem?
+
+    var body: some View {
+        VStack(spacing: 6) {
+            ZStack(alignment: .topTrailing) {
+                LazyVGrid(
+                    columns: Array(
+                        repeating: GridItem(.fixed(Self.cellSize), spacing: Self.spacing),
+                        count: TokenActivityLayout.columnCount
+                    ),
+                    spacing: Self.spacing
+                ) {
+                    ForEach(Array(paddedActivity.enumerated()), id: \.offset) { _, day in
+                        activityCell(day)
+                    }
+                }
+                .padding(.top, 25)
+
+                if let hovered = activity.first(where: { $0.date == hoveredDate }) {
+                    Text("\(dateLabel(hovered.date)) · \(compactTokens(hovered.tokens))")
+                        .font(.system(size: 7.5, weight: .semibold, design: .rounded))
+                        .foregroundStyle(MonitorTheme.primaryText)
+                        .padding(.horizontal, 7)
+                        .frame(height: 18)
+                        .background(Color.black.opacity(0.90), in: Capsule())
+                        .overlay {
+                            Capsule().strokeBorder(Color.cyan.opacity(0.28), lineWidth: 0.6)
+                        }
+                        .transition(.opacity)
+                } else {
+                    Text("悬停查看日期与 Token")
+                        .font(.system(size: 7.2, weight: .medium))
+                        .foregroundStyle(MonitorTheme.faintText)
+                        .frame(height: 18)
+                }
+            }
+            .frame(width: gridWidth)
+
+            HStack {
+                Text(activity.first.map { dateLabel($0.date) } ?? "—")
+                Spacer()
+                Text(activity.last.map { dateLabel($0.date) } ?? "—")
+            }
+            .font(.system(size: 7.2, weight: .medium, design: .rounded))
+            .foregroundStyle(MonitorTheme.faintText)
+            .frame(width: gridWidth)
+        }
+        .frame(maxWidth: .infinity)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: hoveredDate)
+        .onChange(of: activity.map(\.date)) { _ in
+            cancelHover()
+        }
+        .onDisappear(perform: cancelHover)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Token 活动热力图")
+    }
+
+    @ViewBuilder
+    private func activityCell(_ day: DailyTokenActivity?) -> some View {
+        if let day {
+            let selected = hoveredDate == day.date
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .fill(cellColor(tokens: day.tokens))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .strokeBorder(
+                            selected ? Color.cyan.opacity(0.95) : Color.white.opacity(0.06),
+                            lineWidth: selected ? 1.2 : 0.5
+                        )
+                }
+                .frame(width: Self.cellSize, height: Self.cellSize)
+                .contentShape(Rectangle())
+                .onHover { hovering in
+                    scheduleHover(day: day, hovering: hovering)
+                }
+                .accessibilityElement()
+                .accessibilityLabel(dateLabel(day.date))
+                .accessibilityValue(compactTokens(day.tokens))
+        } else {
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .fill(Color.white.opacity(0.025))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .strokeBorder(
+                            Color.white.opacity(0.12),
+                            style: StrokeStyle(lineWidth: 0.6, dash: [2, 2])
+                        )
+                }
+                .frame(width: Self.cellSize, height: Self.cellSize)
+                .accessibilityHidden(true)
+        }
+    }
+
+    private var paddedActivity: [DailyTokenActivity?] {
+        guard !activity.isEmpty else { return [] }
+        let padding = TokenActivityLayout.placeholderCount(for: activity.count)
+        return Array(repeating: nil, count: padding) + activity.map(Optional.some)
+    }
+
+    private var maximumTokens: Int {
+        max(1, activity.map(\.tokens).max() ?? 0)
+    }
+
+    private var gridWidth: CGFloat {
+        CGFloat(TokenActivityLayout.columnCount) * Self.cellSize
+            + CGFloat(TokenActivityLayout.columnCount - 1) * Self.spacing
+    }
+
+    private func cellColor(tokens: Int) -> Color {
+        guard tokens > 0 else { return Color.white.opacity(0.12) }
+        let ratio = Double(tokens) / Double(maximumTokens)
+        if ratio < 0.25 { return Color.white.opacity(0.28) }
+        if ratio < 0.50 { return Color.white.opacity(0.44) }
+        if ratio < 0.75 { return Color.white.opacity(0.62) }
+        return Color.white.opacity(0.82)
+    }
+
+    private func scheduleHover(day: DailyTokenActivity, hovering: Bool) {
+        hoverWorkItem?.cancel()
+        hoverWorkItem = nil
+        guard hovering else {
+            if hoveredDate == day.date { hoveredDate = nil }
+            return
+        }
+        let work = DispatchWorkItem { hoveredDate = day.date }
+        hoverWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+    }
+
+    private func cancelHover() {
+        hoverWorkItem?.cancel()
+        hoverWorkItem = nil
+        hoveredDate = nil
+    }
+
+    private func dateLabel(_ date: Date) -> String {
+        let calendar = Calendar.current
+        return "\(calendar.component(.month, from: date))/\(calendar.component(.day, from: date))"
+    }
+
+    private func compactTokens(_ value: Int) -> String {
+        if value == 0 { return "0 tokens" }
+        if value < 1_000 { return "<1K tokens" }
+        if value >= 1_000_000_000 { return String(format: "%.1fB tokens", Double(value) / 1_000_000_000) }
+        if value >= 1_000_000 { return String(format: "%.1fM tokens", Double(value) / 1_000_000) }
+        return String(format: "%.1fK tokens", Double(value) / 1_000)
+    }
+}
+
+private struct CostActivityHeatmap: View {
+    private static let cellSize: CGFloat = 14
+    private static let spacing: CGFloat = 4
+
+    let activity: [DailyCostActivity]
+    let reduceMotion: Bool
+
+    @State private var hoveredDate: Date?
+    @State private var hoverWorkItem: DispatchWorkItem?
+
+    var body: some View {
+        VStack(spacing: 6) {
+            ZStack(alignment: .topTrailing) {
+                LazyVGrid(
+                    columns: Array(
+                        repeating: GridItem(.fixed(Self.cellSize), spacing: Self.spacing),
+                        count: TokenActivityLayout.columnCount
+                    ),
+                    spacing: Self.spacing
+                ) {
+                    ForEach(Array(paddedActivity.enumerated()), id: \.offset) { _, day in
+                        activityCell(day)
+                    }
+                }
+                .padding(.top, 25)
+
+                if let hovered = activity.first(where: { $0.date == hoveredDate }) {
+                    Text("\(dateLabel(hovered.date)) · \(compactDollars(hovered.dollars))")
+                        .font(.system(size: 7.5, weight: .semibold, design: .rounded))
+                        .foregroundStyle(MonitorTheme.primaryText)
+                        .padding(.horizontal, 7)
+                        .frame(height: 18)
+                        .background(Color.black.opacity(0.90), in: Capsule())
+                        .overlay {
+                            Capsule().strokeBorder(Color.cyan.opacity(0.34), lineWidth: 0.6)
+                        }
+                        .transition(.opacity)
+                } else {
+                    Text("悬停查看日期与成本")
+                        .font(.system(size: 7.2, weight: .medium))
+                        .foregroundStyle(MonitorTheme.faintText)
+                        .frame(height: 18)
+                }
+            }
+            .frame(width: gridWidth)
+
+            HStack {
+                Text(activity.first.map { dateLabel($0.date) } ?? "—")
+                Spacer()
+                Text(activity.last.map { dateLabel($0.date) } ?? "—")
+            }
+            .font(.system(size: 7.2, weight: .medium, design: .rounded))
+            .foregroundStyle(MonitorTheme.faintText)
+            .frame(width: gridWidth)
+        }
+        .frame(maxWidth: .infinity)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: hoveredDate)
+        .onChange(of: activity.map(\.date)) { _ in
+            cancelHover()
+        }
+        .onDisappear(perform: cancelHover)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("成本活动热力图")
+    }
+
+    @ViewBuilder
+    private func activityCell(_ day: DailyCostActivity?) -> some View {
+        if let day {
+            let selected = hoveredDate == day.date
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .fill(cellColor(dollars: day.dollars))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .strokeBorder(
+                            selected ? Color.cyan.opacity(0.95) : Color.white.opacity(0.06),
+                            lineWidth: selected ? 1.2 : 0.5
+                        )
+                }
+                .frame(width: Self.cellSize, height: Self.cellSize)
+                .contentShape(Rectangle())
+                .onHover { hovering in
+                    scheduleHover(day: day, hovering: hovering)
+                }
+                .accessibilityElement()
+                .accessibilityLabel(dateLabel(day.date))
+                .accessibilityValue(compactDollars(day.dollars))
+        } else {
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .fill(Color.white.opacity(0.025))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .strokeBorder(
+                            Color.white.opacity(0.12),
+                            style: StrokeStyle(lineWidth: 0.6, dash: [2, 2])
+                        )
+                }
+                .frame(width: Self.cellSize, height: Self.cellSize)
+                .accessibilityHidden(true)
+        }
+    }
+
+    private var paddedActivity: [DailyCostActivity?] {
+        guard !activity.isEmpty else { return [] }
+        let padding = TokenActivityLayout.placeholderCount(for: activity.count)
+        return Array(repeating: nil, count: padding) + activity.map(Optional.some)
+    }
+
+    private var maximumDollars: Double {
+        max(0.000_001, activity.map(\.dollars).max() ?? 0)
+    }
+
+    private var gridWidth: CGFloat {
+        CGFloat(TokenActivityLayout.columnCount) * Self.cellSize
+            + CGFloat(TokenActivityLayout.columnCount - 1) * Self.spacing
+    }
+
+    private func cellColor(dollars: Double) -> Color {
+        switch CostActivityScale.level(dollars: dollars, maximum: maximumDollars) {
+        case 0: return Color.white.opacity(0.12)
+        case 1: return Color.cyan.opacity(0.22)
+        case 2: return Color.cyan.opacity(0.38)
+        case 3: return Color.cyan.opacity(0.58)
+        default: return Color.cyan.opacity(0.82)
+        }
+    }
+
+    private func scheduleHover(day: DailyCostActivity, hovering: Bool) {
+        hoverWorkItem?.cancel()
+        hoverWorkItem = nil
+        guard hovering else {
+            if hoveredDate == day.date { hoveredDate = nil }
+            return
+        }
+        let work = DispatchWorkItem { hoveredDate = day.date }
+        hoverWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+    }
+
+    private func cancelHover() {
+        hoverWorkItem?.cancel()
+        hoverWorkItem = nil
+        hoveredDate = nil
+    }
+
+    private func dateLabel(_ date: Date) -> String {
+        let calendar = Calendar.current
+        return "\(calendar.component(.month, from: date))/\(calendar.component(.day, from: date))"
+    }
+
+    private func compactDollars(_ value: Double) -> String {
+        if value == 0 { return "US$0" }
+        if value < 1 { return String(format: "US$%.4f", value) }
+        return String(format: "US$%.2f", value)
     }
 }
 

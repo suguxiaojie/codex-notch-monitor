@@ -9,6 +9,7 @@ final class NotchWindowController: NSObject {
         height: IslandPanelLayout.hostHeight
     )
     private let store: MonitorStore
+    private let onToggleGlance: () -> Void
     private var panel: NSPanel!
     private var hostingView: NotchHostingView!
     private var observers: [NSObjectProtocol] = []
@@ -16,29 +17,27 @@ final class NotchWindowController: NSObject {
     private var localMouseMonitor: Any?
     private var globalMoveMonitor: Any?
     private var localMoveMonitor: Any?
-    private var globalScrollMonitor: Any?
-    private var localScrollMonitor: Any?
     private var pointerTrackingTimer: Timer?
     private var navigationGeometryTimer: Timer?
     private var compactDetailsObserver: AnyCancellable?
+    private var glancePresentationObserver: AnyCancellable?
     private var compactPointerOutsideSince: Date?
     private var expansionTransitionWorkItems: [DispatchWorkItem] = []
-    private var swipeAccumX: CGFloat = 0
-    private var swipeAccumY: CGFloat = 0
-    private var swipeTriggered = false
-    private var lastSwipeEventAt: TimeInterval = 0
-    private var swipeResetWorkItem: DispatchWorkItem?
 
-    init(store: MonitorStore) {
+    init(
+        store: MonitorStore,
+        onToggleGlance: @escaping () -> Void = {}
+    ) {
         self.store = store
+        self.onToggleGlance = onToggleGlance
         super.init()
         createPanel()
         observeScreens()
         observeOutsideClicks()
         observeNavigationGeometry()
         observeCompactDetails()
+        observeGlancePresentation()
         observePointerForClickThrough()
-        observePageSwipe()
     }
 
     deinit {
@@ -46,17 +45,24 @@ final class NotchWindowController: NSObject {
         if let localMouseMonitor { NSEvent.removeMonitor(localMouseMonitor) }
         if let globalMoveMonitor { NSEvent.removeMonitor(globalMoveMonitor) }
         if let localMoveMonitor { NSEvent.removeMonitor(localMoveMonitor) }
-        if let globalScrollMonitor { NSEvent.removeMonitor(globalScrollMonitor) }
-        if let localScrollMonitor { NSEvent.removeMonitor(localScrollMonitor) }
         navigationGeometryTimer?.invalidate()
         pointerTrackingTimer?.invalidate()
-        swipeResetWorkItem?.cancel()
         for observer in observers { NotificationCenter.default.removeObserver(observer) }
     }
 
     func show() {
         reposition(animated: false)
         panel.orderFrontRegardless()
+    }
+
+    func openExpanded() {
+        show()
+        onToggleGlance()
+    }
+
+    func toggle() {
+        show()
+        onToggleGlance()
     }
 
     private func createPanel() {
@@ -76,9 +82,10 @@ final class NotchWindowController: NSObject {
         panel.isMovable = false
         panel.ignoresMouseEvents = false
 
-        let view = NotchView(store: store) { [weak self] in
-            self?.toggleExpansion()
-        }
+        let view = NotchView(
+            store: store,
+            onToggle: onToggleGlance
+        )
         hostingView = NotchHostingView(rootView: view, store: store)
         hostingView.autoresizingMask = [.width, .height]
         hostingView.layer?.backgroundColor = NSColor.clear.cgColor
@@ -107,99 +114,6 @@ final class NotchWindowController: NSObject {
         if panel.ignoresMouseEvents != shouldIgnore {
             panel.ignoresMouseEvents = shouldIgnore
         }
-    }
-
-    /// Observe scroll events before nested SwiftUI/NSScrollView responders can
-    /// consume them. Global and local monitors are mutually complementary:
-    /// the nonactivating panel may leave another app key, while controls inside
-    /// the panel can still produce local events.
-    private func observePageSwipe() {
-        let handler: (NSEvent) -> Void = { [weak self] event in
-            Task { @MainActor in self?.handlePageSwipe(event) }
-        }
-        globalScrollMonitor = NSEvent.addGlobalMonitorForEvents(matching: .scrollWheel, handler: handler)
-        localScrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
-            handler(event)
-            // Never consume the event: vertical movement must still scroll the
-            // Usage content, and horizontal movement has no native child action.
-            return event
-        }
-    }
-
-    private func handlePageSwipe(_ event: NSEvent) {
-        guard store.isExpanded,
-              store.expandedContentVisible,
-              visibleIslandFrameOnScreen().contains(NSEvent.mouseLocation)
-        else {
-            resetPageSwipe()
-            return
-        }
-
-        if event.modifierFlags.contains(.shift) {
-            let delta = abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY)
-                ? event.scrollingDeltaX
-                : event.scrollingDeltaY
-            guard abs(delta) > 0.5, !swipeTriggered else { return }
-            postPageChange(for: delta)
-            swipeTriggered = true
-            schedulePageSwipeReset(after: 0.28)
-            return
-        }
-
-        guard event.hasPreciseScrollingDeltas else { return }
-        let now = ProcessInfo.processInfo.systemUptime
-        if event.phase == .began || now - lastSwipeEventAt > 0.22 {
-            resetPageSwipe()
-        }
-        lastSwipeEventAt = now
-
-        // Momentum belongs to the gesture that already crossed the threshold;
-        // never let it turn one physical swipe into a second page change.
-        if event.momentumPhase.isEmpty {
-            swipeAccumX += event.scrollingDeltaX
-            swipeAccumY += event.scrollingDeltaY
-        }
-
-        if !swipeTriggered,
-           abs(swipeAccumX) >= 30,
-           abs(swipeAccumX) > abs(swipeAccumY) * 1.20 {
-            postPageChange(for: swipeAccumX)
-            swipeTriggered = true
-        }
-
-        if event.phase == .ended || event.phase == .cancelled || event.momentumPhase == .ended {
-            schedulePageSwipeReset(after: 0.08)
-        } else {
-            // Some short trackpad gestures have no reliable ended event after
-            // crossing a nested ScrollView. An inactivity reset keeps the next
-            // physical swipe responsive without unlocking the current momentum.
-            schedulePageSwipeReset(after: 0.34)
-        }
-    }
-
-    private func postPageChange(for deltaX: CGFloat) {
-        NotificationCenter.default.post(
-            name: deltaX < 0 ? .codexMonitorAdvancePage : .codexMonitorRewindPage,
-            object: nil
-        )
-    }
-
-    private func schedulePageSwipeReset(after delay: TimeInterval) {
-        swipeResetWorkItem?.cancel()
-        let item = DispatchWorkItem { [weak self] in
-            Task { @MainActor in self?.resetPageSwipe() }
-        }
-        swipeResetWorkItem = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
-    }
-
-    private func resetPageSwipe() {
-        swipeResetWorkItem?.cancel()
-        swipeResetWorkItem = nil
-        swipeAccumX = 0
-        swipeAccumY = 0
-        swipeTriggered = false
-        lastSwipeEventAt = 0
     }
 
     private func observeScreens() {
@@ -274,6 +188,21 @@ final class NotchWindowController: NSObject {
                 Task { @MainActor in
                     guard let self, !self.store.isExpanded else { return }
                     self.reposition(animated: true)
+                }
+            }
+    }
+
+    private func observeGlancePresentation() {
+        glancePresentationObserver = store.$isGlancePresented
+            .removeDuplicates()
+            .sink { [weak self] presented in
+                Task { @MainActor in
+                    guard let self else { return }
+                    if presented {
+                        self.panel.orderOut(nil)
+                    } else {
+                        self.show()
+                    }
                 }
             }
     }

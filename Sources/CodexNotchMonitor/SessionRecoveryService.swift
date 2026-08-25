@@ -67,7 +67,7 @@ final class SessionRecoveryService {
             return
         }
 
-        threadService.rebuildThreadIndex { result in
+        threadService.rebuildThreadIndex(requiredThreadIDs: selectedIDs) { result in
             switch result {
             case let .failure(error):
                 completion(.failure(RecoveryError(

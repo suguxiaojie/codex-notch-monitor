@@ -2,6 +2,7 @@
 import json
 import os
 import pathlib
+import shlex
 import shutil
 import sys
 from datetime import datetime
@@ -22,7 +23,7 @@ EVENTS = [
 
 def merge_monitor_hooks(document: dict, command: str) -> dict:
     hooks = document.setdefault("hooks", {})
-    marker = "CodexNotchMonitor"
+    marker = "CodexMonitorHook"
     for event in EVENTS:
         groups = hooks.setdefault(event, [])
         filtered = []
@@ -50,14 +51,15 @@ def main() -> int:
     project = pathlib.Path(__file__).resolve().parent.parent
     installed_helper = pathlib.Path("/Applications/CodexNotchMonitor.app/Contents/Helpers/CodexMonitorHook")
     built_helper = project / "build/CodexNotchMonitor.app/Contents/Helpers/CodexMonitorHook"
-    helper = installed_helper if installed_helper.is_file() else built_helper
-    if not helper.is_file():
+    source_helper = installed_helper if installed_helper.is_file() else built_helper
+    if not source_helper.is_file():
         print("请先运行 scripts/build-app.sh 或 scripts/install-app.sh", file=sys.stderr)
         return 1
 
     codex_home = pathlib.Path(os.environ.get("CODEX_HOME", pathlib.Path.home() / ".codex"))
     config_path = codex_home / "hooks.json"
     codex_home.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
 
     if config_path.exists():
         try:
@@ -65,14 +67,31 @@ def main() -> int:
         except Exception as error:
             print(f"现有 hooks.json 无法解析，未做修改：{error}", file=sys.stderr)
             return 2
-        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        backup = config_path.with_name(f"hooks.json.backup-{timestamp}")
-        shutil.copy2(config_path, backup)
-        print(f"已备份：{backup}")
     else:
         document = {"description": "User-level Codex lifecycle hooks", "hooks": {}}
 
-    command = str(helper)
+    support = pathlib.Path.home() / "Library/Application Support/CodexNotchMonitor"
+    helper_directory = support / "Helpers"
+    backup_directory = support / "setup-backups"
+    helper_directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    backup_directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    helper = helper_directory / "CodexMonitorHook"
+
+    if helper.exists():
+        helper_backup = backup_directory / f"CodexMonitorHook-before-setup-{timestamp}"
+        shutil.copy2(helper, helper_backup)
+        print(f"已备份 Helper：{helper_backup}")
+    temporary_helper = helper.with_name(f".{helper.name}-{os.getpid()}.tmp")
+    shutil.copy2(source_helper, temporary_helper)
+    os.chmod(temporary_helper, 0o755)
+    temporary_helper.replace(helper)
+
+    if config_path.exists():
+        backup = config_path.with_name(f"hooks.json.backup-{timestamp}")
+        shutil.copy2(config_path, backup)
+        print(f"已备份：{backup}")
+
+    command = shlex.quote(str(helper))
     merge_monitor_hooks(document, command)
 
     temporary = config_path.with_suffix(".json.tmp")

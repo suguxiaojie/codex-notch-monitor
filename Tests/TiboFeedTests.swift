@@ -116,7 +116,146 @@ enum TiboFeedTests {
         check(!displayEvents.contains(where: { $0.event.kind == .resetScheduled }), "suppressed schedules do not duplicate")
         check(timelineFeed.officialEvidenceEvents(now: displayAt).first?.kind == .resetCompleted, "manual completion becomes reset evidence")
 
-        print("Tibo feed tests passed (13 checks).")
+        radarSnapshotDecodesAndMapsEvidence()
+        radarSnapshotRejectsUntrustedSource()
+        radarSnapshotRejectsInvalidForecast()
+
+        print("Tibo feed tests passed (22 checks).")
+    }
+
+    private static func radarSnapshotDecodesAndMapsEvidence() {
+        let fixture = radarFixture()
+        do {
+            let snapshot = try CodexResetRadarService.makeSnapshot(
+                feedData: fixture.feed,
+                timelineData: fixture.timeline,
+                forecastData: fixture.forecast
+            )
+            check(snapshot.profile.handle == "thsottiaux", "decode radar profile")
+            check(snapshot.tweets.count == 3, "decode live tweets")
+            check(snapshot.timelineEvents.count == 3, "decode timeline events")
+            check(snapshot.forecast.probabilities.rounded24H == 20, "decode 24h forecast")
+            let kinds = Dictionary(uniqueKeysWithValues: snapshot.evidenceFeed.events.map {
+                ($0.source.postId, $0.kind)
+            })
+            check(kinds["2091688655828246890"] == .resetCompleted, "archive reset becomes completed evidence")
+            check(kinds["2090964822422949999"] == .bankedReset, "banked credit stays separate")
+            check(kinds["2087706104814023111"] == .uncertain, "rejected candidate cannot confirm reset")
+        } catch {
+            fail("decode codex-reset radar snapshot: \(error.localizedDescription)")
+        }
+    }
+
+    private static func radarSnapshotRejectsUntrustedSource() {
+        let fixture = radarFixture()
+        let badFeed = Data(String(decoding: fixture.feed, as: UTF8.self)
+            .replacingOccurrences(of: "https://x.com/thsottiaux/status/2092058556707344708", with: "https://example.com/2092058556707344708")
+            .utf8)
+        do {
+            _ = try CodexResetRadarService.makeSnapshot(
+                feedData: badFeed,
+                timelineData: fixture.timeline,
+                forecastData: fixture.forecast
+            )
+            fail("reject untrusted radar URL")
+        } catch {
+            check(true, "reject untrusted radar URL")
+        }
+    }
+
+    private static func radarSnapshotRejectsInvalidForecast() {
+        let fixture = radarFixture()
+        let invalid = Data(String(decoding: fixture.forecast, as: UTF8.self)
+            .replacingOccurrences(of: #""rounded_24h":20"#, with: #""rounded_24h":120"#)
+            .utf8)
+        do {
+            _ = try CodexResetRadarService.makeSnapshot(
+                feedData: fixture.feed,
+                timelineData: fixture.timeline,
+                forecastData: invalid
+            )
+            fail("reject invalid forecast range")
+        } catch {
+            check(true, "reject invalid forecast range")
+        }
+    }
+
+    private static func radarFixture() -> (feed: Data, timeline: Data, forecast: Data) {
+        let feed = Data("""
+        {
+          "version":1,
+          "fetched_at":"2026-08-25T10:37:46.000Z",
+          "source":"x-api",
+          "source_scope":"timeline",
+          "stale":false,
+          "content_age_days":0.2,
+          "profile":{"handle":"thsottiaux","name":"Tibo","followers":332050},
+          "signal":{
+            "tweet_id":"2091688655828246890","summary":"Reset propagated.",
+            "at":"2026-08-24T00:46:51.000Z",
+            "url":"https://x.com/thsottiaux/status/2091688655828246890",
+            "kind":"candidate","active":true,
+            "localized_summary":"重置已传播到账户。","translation_status":"translated"
+          },
+          "tweets":[
+            {
+              "id":"2092058556707344708","url":"https://x.com/thsottiaux/status/2092058556707344708",
+              "text":"Plus 5h limit returns tomorrow.","at":"2026-08-25T01:16:43.000Z","kind":"limits",
+              "replies":10,"reposts":20,"likes":30,"tibo_lane":"reset_related",
+              "explicit_reset_claim":false,"localized_text":"Plus 将恢复 5 小时限额。"
+            },
+            {
+              "id":"2091688655828246890","url":"https://x.com/thsottiaux/status/2091688655828246890",
+              "text":"Reset propagated.","at":"2026-08-24T00:46:51.000Z","kind":"candidate",
+              "tibo_lane":"reset_announcement","explicit_reset_claim":true,
+              "localized_text":"重置已传播到账户。"
+            },
+            {
+              "id":"2087706104814023111","url":"https://x.com/thsottiaux/status/2087706104814023111",
+              "text":"Reset soon.","at":"2026-08-13T01:01:37.000Z","kind":"signal",
+              "tibo_lane":"reset_related","explicit_reset_claim":false
+            }
+          ]
+        }
+        """.utf8)
+        let timeline = Data("""
+        {
+          "updated_at":"2026-08-25T10:38:17.784Z",
+          "events":[
+            {
+              "id":"2091688655828246890","date":"2026-08-24","type":"reset","group":"reset",
+              "summary":"Reset propagated.","url":"https://x.com/thsottiaux/status/2091688655828246890",
+              "announced_at":"2026-08-24T00:46:51.000Z","preview":false,"scope":"global",
+              "confidence":"high","source":"archive","source_label":"Verified archive","reset_kind":"hard",
+              "audience":["codex","chatgpt_work"],"localized_summary":"重置已传播到账户。"
+            },
+            {
+              "id":"2090964822422949999","date":"2026-08-22","type":"credits","group":"credits",
+              "summary":"Banked reset landed.","url":"https://x.com/thsottiaux/status/2090964822422949999",
+              "announced_at":"2026-08-22T00:50:36.000Z","preview":false,"scope":"global",
+              "confidence":"high","source":"archive","source_label":"Verified archive","reset_kind":"banked",
+              "banked_state":"available","audience":["codex"]
+            },
+            {
+              "id":"2087706104814023111","date":"2026-08-13","type":"reset","group":"reset",
+              "summary":"Reset soon.","url":"https://x.com/thsottiaux/status/2087706104814023111",
+              "announced_at":"2026-08-13T01:01:37.000Z","preview":true,"scope":"global",
+              "confidence":"medium","source":"live","source_label":"Live radar feed",
+              "reset_verification_status":"rejected"
+            }
+          ]
+        }
+        """.utf8)
+        let forecast = Data("""
+        {
+          "mode":"model","updated_at":"2026-08-25T10:38:17.778Z",
+          "probabilities":{"rounded_24h":20,"rounded_48h":40},
+          "confidence":"low","confidence_note":"Experimental.",
+          "last_reset_at":"2026-08-24T00:46:51.000Z","age_days":1.4,
+          "translation_status":"translated"
+        }
+        """.utf8)
+        return (feed, timeline, forecast)
     }
 
     private static func check(_ condition: @autoclosure () -> Bool, _ label: String) {

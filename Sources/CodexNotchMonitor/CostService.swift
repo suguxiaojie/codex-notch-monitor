@@ -19,6 +19,22 @@ enum UsagePeriod: String, CaseIterable, Identifiable {
     case month = "月"
 
     var id: String { rawValue }
+
+    var activityDayCount: Int {
+        switch self {
+        case .day: return 1
+        case .week: return 7
+        case .month: return 30
+        }
+    }
+
+    var emptyActivityTitle: String {
+        switch self {
+        case .day: return "今日暂无活动"
+        case .week: return "近 7 日暂无活动"
+        case .month: return "近 30 日暂无活动"
+        }
+    }
 }
 
 struct ProjectUsage: Identifiable, Equatable {
@@ -40,10 +56,24 @@ struct UsageTotals: Equatable {
     var projects: [ProjectUsage] = []
 }
 
+struct DailyTokenActivity: Identifiable, Equatable {
+    var id: Date { date }
+    let date: Date
+    let tokens: Int
+}
+
+struct DailyCostActivity: Identifiable, Equatable {
+    var id: Date { date }
+    let date: Date
+    let dollars: Double
+}
+
 struct UsageSnapshot: Equatable {
     var day: UsageTotals
     var week: UsageTotals
     var month: UsageTotals
+    var activity: [DailyTokenActivity]
+    var activityIsReady: Bool
 
     func totals(for period: UsagePeriod) -> UsageTotals {
         switch period {
@@ -56,7 +86,9 @@ struct UsageSnapshot: Equatable {
     static let empty = UsageSnapshot(
         day: UsageTotals(series: Array(repeating: 0, count: 24)),
         week: UsageTotals(series: Array(repeating: 0, count: 7)),
-        month: UsageTotals(series: Array(repeating: 0, count: 30))
+        month: UsageTotals(series: Array(repeating: 0, count: 30)),
+        activity: [],
+        activityIsReady: false
     )
 }
 
@@ -84,6 +116,7 @@ struct CostScopeSnapshot: Equatable {
     var unknownModels: [String]
     var estimatedModelAliases: [String: String]
     var usage: UsageSnapshot
+    var costActivity: [DailyCostActivity]
 
     func totals(for period: UsagePeriod) -> CostTotals {
         switch period {
@@ -107,7 +140,8 @@ struct CostScopeSnapshot: Equatable {
         },
         unknownModels: [],
         estimatedModelAliases: [:],
-        usage: .empty
+        usage: .empty,
+        costActivity: []
     )
 }
 
@@ -124,6 +158,7 @@ struct CostSnapshot: Equatable {
     var unknownModels: [String] { aggregate.unknownModels }
     var estimatedModelAliases: [String: String] { aggregate.estimatedModelAliases }
     var usage: UsageSnapshot { aggregate.usage }
+    var costActivity: [DailyCostActivity] { aggregate.costActivity }
 
     func scope(for id: String) -> CostScopeSnapshot {
         if id == UsageAccountScope.unknown { return unknownAccount }
@@ -172,6 +207,15 @@ struct TokenUsageEvent {
 final class CostService {
     private let queue = DispatchQueue(label: "CodexNotchMonitor.Cost", qos: .utility)
 
+    private struct ParsedFileCacheEntry {
+        let modificationDate: Date
+        let fileSize: Int
+        let events: [TokenUsageEvent]
+    }
+
+    private static let parsedFileCacheLock = NSLock()
+    private static var parsedFileCache: [String: ParsedFileCacheEntry] = [:]
+
     init() {
         PricingCatalog.prepare()
     }
@@ -186,7 +230,7 @@ final class CostService {
         completion: @escaping (CostSnapshot) -> Void
     ) {
         queue.async {
-            let scanned = Self.scanCodex()
+            let scanned = Self.scanCodex(lookbackDays: 30)
             let catalog = CodexProjectCatalog.loadState()
             let events = Self.remapEvents(
                 scanned,
@@ -197,9 +241,23 @@ final class CostService {
             let snapshot = Self.summarize(
                 events,
                 projectNames: projectNames,
-                accountContext: accountContext
+                accountContext: accountContext,
+                includeActivity: false
             )
             DispatchQueue.main.async { completion(snapshot) }
+
+            let extendedEvents = Self.remapEvents(
+                Self.scanCodex(lookbackDays: 180),
+                sessionPathOverrides: sessionPathOverrides,
+                catalog: catalog
+            )
+            let activitySnapshot = Self.summarize(
+                extendedEvents,
+                projectNames: projectNames,
+                accountContext: accountContext,
+                includeActivity: true
+            )
+            DispatchQueue.main.async { completion(activitySnapshot) }
 
             // The first result is deliberately local and immediate. Refresh
             // public pricing in the background, then recalculate only when a
@@ -208,9 +266,10 @@ final class CostService {
                 guard await PricingCatalog.refreshIfNeeded() == .updated else { return }
                 self.queue.async {
                     let refreshed = Self.summarize(
-                        events,
+                        extendedEvents,
                         projectNames: projectNames,
-                        accountContext: accountContext
+                        accountContext: accountContext,
+                        includeActivity: true
                     )
                     DispatchQueue.main.async { completion(refreshed) }
                 }
@@ -257,12 +316,17 @@ final class CostService {
     static func scanCodex(
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         now: Date = Date(),
-        calendar: Calendar = .current
+        calendar: Calendar = .current,
+        lookbackDays: Int = 180
     ) -> [TokenUsageEvent] {
         let root = homeDirectory.appendingPathComponent(".codex/sessions", isDirectory: true)
         let todayStart = calendar.startOfDay(for: now)
-        let rollingMonthStart = calendar.date(byAdding: .day, value: -29, to: todayStart) ?? todayStart
-        let earliestRelevantDate = rollingMonthStart
+        let activityStart = calendar.date(
+            byAdding: .day,
+            value: -(max(1, lookbackDays) - 1),
+            to: todayStart
+        ) ?? todayStart
+        let earliestRelevantDate = activityStart
         // A thread can continue receiving token events long after the month in
         // which its rollout file was created. Filter the complete live tree by
         // modification time so rolling windows do not omit such long-running
@@ -276,13 +340,42 @@ final class CostService {
         )
         // archived_sessions is normally flat. Filter by the rollout's last
         // content change so a large archive does not need to be parsed on every
-        // refresh; any rollout containing a current week/month event must have
-        // been written during that same range.
+        // refresh; any rollout containing a current 180-day activity event must
+        // have been written during that same range.
         let archivedFiles = jsonlFiles(in: archiveRoot).filter {
             modificationDate(of: $0) >= earliestRelevantDate
         }
-        let events = (liveFiles + archivedFiles).flatMap(parseCodexFile)
+        let events = (liveFiles + archivedFiles).flatMap(cachedParseCodexFile)
         return deduplicated(events)
+    }
+
+    private static func cachedParseCodexFile(_ url: URL) -> [TokenUsageEvent] {
+        guard let values = try? url.resourceValues(forKeys: [
+            .contentModificationDateKey,
+            .fileSizeKey,
+        ]),
+        let modificationDate = values.contentModificationDate,
+        let fileSize = values.fileSize
+        else { return parseCodexFile(url) }
+
+        parsedFileCacheLock.lock()
+        if let cached = parsedFileCache[url.path],
+           cached.modificationDate == modificationDate,
+           cached.fileSize == fileSize {
+            parsedFileCacheLock.unlock()
+            return cached.events
+        }
+        parsedFileCacheLock.unlock()
+
+        let events = parseCodexFile(url)
+        parsedFileCacheLock.lock()
+        parsedFileCache[url.path] = ParsedFileCacheEntry(
+            modificationDate: modificationDate,
+            fileSize: fileSize,
+            events: events
+        )
+        parsedFileCacheLock.unlock()
+        return events
     }
 
     private struct TokenEventIdentity: Hashable {
@@ -450,7 +543,8 @@ final class CostService {
         projectNames: [String: String],
         accountContext: UsageAccountContext,
         now: Date = Date(),
-        calendar: Calendar = .current
+        calendar: Calendar = .current,
+        includeActivity: Bool = true
     ) -> CostSnapshot {
         let knownAccountIDs = Set(accountContext.accounts.map(\.id))
         let aggregate = summarizeScope(
@@ -458,6 +552,7 @@ final class CostService {
             projectNames: projectNames,
             now: now,
             calendar: calendar,
+            includeActivity: includeActivity,
             include: { _ in true }
         )
         let byAccount = Dictionary(uniqueKeysWithValues: accountContext.accounts.map { account in
@@ -466,6 +561,7 @@ final class CostService {
                 projectNames: projectNames,
                 now: now,
                 calendar: calendar,
+                includeActivity: includeActivity,
                 include: { event in
                     accountContext.accountID(for: event.sessionID, at: event.timestamp) == account.id
                 }
@@ -476,6 +572,7 @@ final class CostService {
             projectNames: projectNames,
             now: now,
             calendar: calendar,
+            includeActivity: includeActivity,
             include: { event in
                 guard let accountID = accountContext.accountID(
                     for: event.sessionID,
@@ -497,12 +594,15 @@ final class CostService {
         projectNames: [String: String],
         now: Date,
         calendar: Calendar,
+        includeActivity: Bool,
         include: (TokenUsageEvent) -> Bool
     ) -> CostScopeSnapshot {
         let todayStart = calendar.startOfDay(for: now)
         let weekStart = calendar.date(byAdding: .day, value: -6, to: todayStart) ?? todayStart
         let monthStart = calendar.date(byAdding: .day, value: -29, to: todayStart) ?? todayStart
-        let earliestRelevantDate = monthStart
+        let activityStart = calendar.date(byAdding: .day, value: -179, to: todayStart)
+            ?? monthStart
+        let earliestRelevantDate = includeActivity ? activityStart : monthStart
         var today = CostTotals(series: Array(repeating: 0, count: 24))
         var week = CostTotals(series: Array(repeating: 0, count: 7))
         var month = CostTotals(series: Array(repeating: 0, count: 30))
@@ -516,6 +616,7 @@ final class CostService {
         })
         var unknown = Set<String>()
         var estimatedAliases: [String: String] = [:]
+        var costByDay: [Date: Double] = [:]
         let orderedEvents = events.sorted { $0.timestamp < $1.timestamp }
         // If the month begins with an internal task, the first normal model is
         // still a better fallback than pretending the internal route has its
@@ -540,6 +641,10 @@ final class CostService {
             }
             let cost = estimatedCost(event, billingModel: billingModel)
             if cost == nil { unknown.insert(event.model) }
+            if includeActivity {
+                let day = calendar.startOfDay(for: event.timestamp)
+                costByDay[day, default: 0] += cost ?? 0
+            }
 
             if event.timestamp >= monthStart {
                 add(event, cost: cost ?? 0, to: &month)
@@ -576,16 +681,39 @@ final class CostService {
                 events.filter(include),
                 now: now,
                 calendar: calendar,
-                projectNames: projectNames
-            )
+                projectNames: projectNames,
+                includeActivity: includeActivity
+            ),
+            costActivity: includeActivity
+                ? dailyCostActivity(costByDay, now: now, calendar: calendar)
+                : []
         )
+    }
+
+    private static func dailyCostActivity(
+        _ dollarsByDay: [Date: Double],
+        now: Date,
+        calendar: Calendar
+    ) -> [DailyCostActivity] {
+        let today = calendar.startOfDay(for: now)
+        let start = calendar.date(byAdding: .day, value: -179, to: today) ?? today
+        return (0..<180).compactMap { offset in
+            guard let date = calendar.date(byAdding: .day, value: offset, to: start) else {
+                return nil
+            }
+            return DailyCostActivity(
+                date: date,
+                dollars: dollarsByDay[date, default: 0]
+            )
+        }
     }
 
     private static func summarizeUsage(
         _ events: [TokenUsageEvent],
         now: Date,
         calendar: Calendar,
-        projectNames: [String: String]
+        projectNames: [String: String],
+        includeActivity: Bool
     ) -> UsageSnapshot {
         let todayStart = calendar.startOfDay(for: now)
         let weekStart = calendar.date(byAdding: .day, value: -6, to: todayStart) ?? todayStart
@@ -599,8 +727,36 @@ final class CostService {
             },
             month: usageTotals(events, from: monthStart, seriesCount: 30, projectNames: projectNames) { event in
                 max(0, min(29, calendar.dateComponents([.day], from: monthStart, to: event.timestamp).day ?? 0))
-            }
+            },
+            activity: includeActivity
+                ? dailyTokenActivity(events, now: now, calendar: calendar)
+                : [],
+            activityIsReady: includeActivity
         )
+    }
+
+    private static func dailyTokenActivity(
+        _ events: [TokenUsageEvent],
+        now: Date,
+        calendar: Calendar
+    ) -> [DailyTokenActivity] {
+        let today = calendar.startOfDay(for: now)
+        let start = calendar.date(byAdding: .day, value: -179, to: today) ?? today
+        let end = calendar.date(byAdding: .day, value: 1, to: today) ?? now
+        var tokensByDay: [Date: Int] = [:]
+        for event in events where event.timestamp >= start && event.timestamp < end {
+            let day = calendar.startOfDay(for: event.timestamp)
+            tokensByDay[day, default: 0] += event.input
+                + event.output
+                + event.cacheCreate
+                + event.cacheRead
+        }
+        return (0..<180).compactMap { offset in
+            guard let date = calendar.date(byAdding: .day, value: offset, to: start) else {
+                return nil
+            }
+            return DailyTokenActivity(date: date, tokens: tokensByDay[date, default: 0])
+        }
     }
 
     private static func usageTotals(

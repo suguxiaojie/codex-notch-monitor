@@ -5,10 +5,26 @@ enum CostSmokeTests {
     static func main() {
         verifyArchivedSessionsAreIncludedOnce()
         verifyMovedThreadUsesCurrentProject()
+        verifyTokenActivityGridGeometry()
+        verifyProjectCatalogAliases()
+        verifyCurrentAccountSelection()
         verifyRollingWindowsAndAccountScopes()
         verifyAccountTimelineSplitsExistingSession()
         let service = CostService()
+        let fetchStartedAt = Date()
+        var immediateSnapshotSeconds: TimeInterval = 0
+        var receivedImmediateSnapshot = false
         service.fetch { snapshot in
+            if snapshot.usage.activity.isEmpty {
+                check(!snapshot.usage.activityIsReady, "immediate snapshot marks activity as loading")
+                check(snapshot.costActivity.isEmpty, "immediate snapshot defers 180-day cost activity")
+                check(snapshot.today.series.count == 24, "immediate snapshot keeps quota summaries responsive")
+                receivedImmediateSnapshot = true
+                immediateSnapshotSeconds = Date().timeIntervalSince(fetchStartedAt)
+                return
+            }
+            check(receivedImmediateSnapshot, "180-day activity follows the immediate summary snapshot")
+            check(snapshot.usage.activityIsReady, "extended snapshot marks activity ready")
             check(snapshot.today.series.count == 24, "24-hour trend")
             check(snapshot.week.series.count == 7, "7-day cost trend")
             check(snapshot.month.series.count == 30, "rolling 30-day cost trend")
@@ -30,20 +46,26 @@ enum CostSmokeTests {
             check(snapshot.usage.day.series.count == 24, "daily usage has 24 hourly buckets")
             check(snapshot.usage.week.series.count == 7, "weekly usage has 7 daily buckets")
             check(snapshot.usage.month.series.count == 30, "rolling 30-day usage has daily buckets")
+            check(snapshot.usage.activity.count == 180, "token activity has 180 daily buckets")
+            check(snapshot.costActivity.count == 180, "cost activity has 180 daily buckets")
             check(snapshot.usage.month.tokens >= snapshot.usage.week.tokens, "month usage contains current week")
             check(snapshot.usage.week.tokens >= snapshot.usage.day.tokens, "week usage contains today")
             check(snapshot.usage.month.sessionCount > 0, "usage session aggregation")
             check(snapshot.usage.month.projectCount > 0, "usage project aggregation")
             check(!snapshot.usage.month.projects.isEmpty, "usage project ranking")
-            let projectNames = Set(snapshot.usage.month.projects.map(\.name))
-            if FileManager.default.fileExists(atPath: FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(".codex/.codex-global-state.json").path) {
-                check(projectNames.contains("自媒体选题"), "Codex sidebar alias for media project")
-                check(projectNames.contains("卡网搭建"), "Codex sidebar alias for card project")
-                check(!projectNames.contains("AI博主选题"), "folder name replaced by media sidebar alias")
+            let catalog = CodexProjectCatalog.loadState()
+            for project in snapshot.usage.month.projects {
+                if let alias = CodexProjectCatalog.displayName(
+                    for: project.path,
+                    namesByPath: catalog.namesByPath
+                ) {
+                    check(project.name == alias, "runtime project ranking uses current sidebar alias")
+                }
             }
             print(String(format:
-                "Cost and usage smoke tests passed: today $%.2f / %lld tokens, rolling 30 days $%.2f / %lld tokens. Aliases: %@",
+                "Cost and usage smoke tests passed: immediate %.2fs, activity %.2fs, today $%.2f / %lld tokens, rolling 30 days $%.2f / %lld tokens. Aliases: %@",
+                immediateSnapshotSeconds,
+                Date().timeIntervalSince(fetchStartedAt),
                 snapshot.today.dollars, snapshot.today.tokens,
                 snapshot.month.dollars, snapshot.month.tokens,
                 snapshot.estimatedModelAliases.description
@@ -51,6 +73,96 @@ enum CostSmokeTests {
             exit(0)
         }
         RunLoop.main.run()
+    }
+
+    private static func verifyTokenActivityGridGeometry() {
+        check(UsagePeriod.day.activityDayCount == 1, "daily activity follows the daily summary period")
+        check(UsagePeriod.week.activityDayCount == 7, "weekly activity follows the weekly summary period")
+        check(UsagePeriod.month.activityDayCount == 30, "monthly activity follows the monthly summary period")
+        check(UsagePeriod.day.emptyActivityTitle == "今日暂无活动", "daily empty-state copy")
+        check(UsagePeriod.week.emptyActivityTitle == "近 7 日暂无活动", "weekly empty-state copy")
+        check(TokenActivityLayout.placeholderCount(for: 30) == 2, "30-day heatmap left padding")
+        check(TokenActivityLayout.rowCount(for: 30) == 2, "30-day heatmap rows")
+        check(TokenActivityLayout.placeholderCount(for: 90) == 6, "90-day heatmap left padding")
+        check(TokenActivityLayout.rowCount(for: 90) == 6, "90-day heatmap rows")
+        check(TokenActivityLayout.placeholderCount(for: 180) == 12, "180-day heatmap left padding")
+        check(TokenActivityLayout.rowCount(for: 180) == 12, "180-day heatmap rows")
+        check(CostActivityScale.level(dollars: 0, maximum: 10) == 0, "zero-cost activity uses the empty level")
+        check(CostActivityScale.level(dollars: 1, maximum: 10) == 1, "low-cost activity uses level one")
+        check(CostActivityScale.level(dollars: 3, maximum: 10) == 2, "quarter-cost activity uses level two")
+        check(CostActivityScale.level(dollars: 6, maximum: 10) == 3, "mid-cost activity uses level three")
+        check(CostActivityScale.level(dollars: 10, maximum: 10) == 4, "maximum-cost activity uses level four")
+        let weeklyCostRanges = CostActivityBucketLayout.ranges(dayCount: 7, rangeDays: 7)
+        check(weeklyCostRanges.count == 7, "weekly cost chart uses seven daily bars")
+        let monthlyCostRanges = CostActivityBucketLayout.ranges(dayCount: 30, rangeDays: 30)
+        check(
+            monthlyCostRanges.count == 30 && monthlyCostRanges.allSatisfy { $0.count == 1 },
+            "monthly cost chart uses thirty daily bars"
+        )
+        let quarterlyCostRanges = CostActivityBucketLayout.ranges(dayCount: 90, rangeDays: 90)
+        check(
+            quarterlyCostRanges.count == 30
+                && quarterlyCostRanges.allSatisfy { $0.count == 3 },
+            "quarterly cost chart uses thirty three-day bars"
+        )
+        let halfYearCostRanges = CostActivityBucketLayout.ranges(dayCount: 180, rangeDays: 180)
+        check(
+            halfYearCostRanges.count == 26
+                && halfYearCostRanges.dropLast().allSatisfy { $0.count == 7 }
+                && halfYearCostRanges.last?.count == 5,
+            "half-year cost chart uses weekly bars with one five-day edge bucket"
+        )
+    }
+
+    private static func verifyProjectCatalogAliases() {
+        let fixture = Data("""
+        {
+          "local-projects": {
+            "media": {
+              "id": "media",
+              "name": "自媒体选题",
+              "rootPaths": ["/tmp/AI博主选题"]
+            },
+            "cards": {
+              "id": "cards",
+              "name": "卡网搭建",
+              "rootPaths": ["/tmp/独角兽卡网搭建"]
+            }
+          }
+        }
+        """.utf8)
+        let names = CodexProjectCatalog.namesByPath(from: fixture)
+        check(names["/tmp/AI博主选题"] == "自媒体选题", "media sidebar alias fixture")
+        check(names["/tmp/独角兽卡网搭建"] == "卡网搭建", "card sidebar alias fixture")
+        check(
+            CodexProjectCatalog.displayName(
+                for: "/tmp/AI博主选题/drafts",
+                namesByPath: names
+            ) == "自媒体选题",
+            "nested media path inherits sidebar alias"
+        )
+    }
+
+    private static func verifyCurrentAccountSelection() {
+        let options = [
+            UsageAccountOption(id: "account-1", alias: "账号 1", emailSummary: nil, isCurrent: false),
+            UsageAccountOption(id: "account-2", alias: "账号 2", emailSummary: nil, isCurrent: true),
+        ]
+        check(
+            UsageAccountSelection.currentAccountID(in: options) == "account-2",
+            "Glance follows the observed current account"
+        )
+        check(
+            UsageAccountSelection.currentAccountID(in: options.map {
+                UsageAccountOption(
+                    id: $0.id,
+                    alias: $0.alias,
+                    emailSummary: $0.emailSummary,
+                    isCurrent: false
+                )
+            }) == nil,
+            "Glance never falls back to aggregate history without a current account"
+        )
     }
 
     private static func verifyRollingWindowsAndAccountScopes() {
@@ -109,6 +221,15 @@ enum CostSmokeTests {
         check(snapshot.usage.week.series[6] == 100, "rolling week ends today")
         check(snapshot.usage.month.series[0] == 300, "rolling month starts 29 days ago")
         check(snapshot.usage.month.series[29] == 100, "rolling month ends today")
+        check(snapshot.usage.activity.count == 180, "activity keeps a stable 180-day range")
+        check(snapshot.usage.activity.last?.date == today, "activity ends on today")
+        check(snapshot.usage.activity.reduce(0) { $0 + $1.tokens } == 1_000, "activity includes events outside the 30-day summary")
+        check(snapshot.costActivity.count == 180, "cost activity keeps a stable 180-day range")
+        check(snapshot.costActivity.last?.date == today, "cost activity ends on today")
+        check(
+            snapshot.costActivity.reduce(0) { $0 + $1.dollars } > snapshot.month.dollars,
+            "cost activity includes priced events outside the 30-day summary"
+        )
         check(account1.month.tokens == 100, "account 1 scope")
         check(account2.month.tokens == 200, "account 2 scope")
         check(unknown.month.tokens == 300, "unknown ownership scope")
@@ -125,6 +246,18 @@ enum CostSmokeTests {
                 abs($0.0 - $0.1.0 - $0.1.1.0 - $0.1.1.1) < 0.000_001
             },
             "account cost curves reconcile with aggregate"
+        )
+        check(
+            zip(snapshot.usage.activity, zip(account1.usage.activity, zip(account2.usage.activity, unknown.usage.activity))).allSatisfy {
+                $0.0.tokens == $0.1.0.tokens + $0.1.1.0.tokens + $0.1.1.1.tokens
+            },
+            "account activity cells reconcile with aggregate"
+        )
+        check(
+            zip(snapshot.costActivity, zip(account1.costActivity, zip(account2.costActivity, unknown.costActivity))).allSatisfy {
+                abs($0.0.dollars - $0.1.0.dollars - $0.1.1.0.dollars - $0.1.1.1.dollars) < 0.000_001
+            },
+            "account cost activity cells reconcile with aggregate"
         )
     }
 
@@ -268,13 +401,13 @@ enum CostSmokeTests {
         check(events.reduce(0) { $0 + $1.input } == 350, "archived tokens included exactly once")
 
         let staleURL = archiveDirectory.appendingPathComponent("rollout-stale.jsonl")
-        try! Data(rollout(sessionID: "stale-session", timestamp: "2026-07-01T08:00:00Z", input: 900).utf8)
+        try! Data(rollout(sessionID: "stale-session", timestamp: "2025-12-01T08:00:00Z", input: 900).utf8)
             .write(to: staleURL)
         try! manager.setAttributes([
-            .modificationDate: ISO8601DateFormatter().date(from: "2026-07-01T09:00:00Z")!
+            .modificationDate: ISO8601DateFormatter().date(from: "2025-12-01T09:00:00Z")!
         ], ofItemAtPath: staleURL.path)
         let filtered = CostService.scanCodex(homeDirectory: home, now: now, calendar: calendar)
-        check(!filtered.contains(where: { $0.sessionID == "stale-session" }), "old archive skipped outside current ranges")
+        check(!filtered.contains(where: { $0.sessionID == "stale-session" }), "old archive skipped outside 180-day activity range")
     }
 
     private static func rollout(sessionID: String, timestamp: String, input: Int) -> String {

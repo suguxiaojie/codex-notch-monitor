@@ -5,6 +5,12 @@ enum UsageAccountScope {
     static let unknown = "__unknown_account__"
 }
 
+enum UsageAccountSelection {
+    static func currentAccountID(in options: [UsageAccountOption]) -> String? {
+        options.first(where: \.isCurrent)?.id
+    }
+}
+
 struct UsageAccountOption: Identifiable, Equatable {
     let id: String
     let alias: String

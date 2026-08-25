@@ -1,8 +1,11 @@
+import AppKit
 import Foundation
 
 @main
 enum ModelSmokeTests {
     static func main() {
+        check(MonitorRefreshCadence.quota == 60, "quota refreshes every minute")
+        check(MonitorRefreshCadence.cost == 300, "cost scan remains five minutes")
         check(
             RateLimitWindow(usedPercent: 25, windowDurationMinutes: 300, resetsAt: nil).remainingPercent == 75,
             "remaining percentage"
@@ -58,6 +61,25 @@ enum ModelSmokeTests {
                     "primary": ["usedPercent": 5],
                 ],
             ],
+            "rateLimitResetCredits": [
+                "availableCount": 2,
+                "credits": [
+                    [
+                        "id": "credit-later",
+                        "resetType": "temporary",
+                        "status": "available",
+                        "grantedAt": 1_800_000_000,
+                        "expiresAt": 1_800_086_400,
+                    ],
+                    [
+                        "id": "credit-sooner",
+                        "resetType": "temporary",
+                        "status": "available",
+                        "grantedAt": 1_800_000_000,
+                        "expiresAt": 1_800_043_200,
+                    ],
+                ],
+            ],
         ]
         let buckets = QuotaService.parseBuckets(from: payload)
         check(buckets.first?.id == "codex", "Codex bucket ordering")
@@ -65,7 +87,206 @@ enum ModelSmokeTests {
         check(buckets.first?.headlineWindow?.windowDurationMinutes == 300, "five-hour window priority")
         check(buckets.first?.windows.map(\.windowDurationMinutes) == [300, 10_080], "all windows sorted shortest first")
         check(buckets.first?.planType == "plus", "plan type")
+        check(buckets.first?.hasCredits == true, "Credits availability")
+        check(buckets.first?.creditBalance == "12.5", "Credits balance")
+        check(OpenAIPlanDisplayName.resolve("plus") == "Plus", "Plus display name")
+        check(OpenAIPlanDisplayName.resolve("prolite") == "Pro 5x", "Pro 5x display name")
+        check(OpenAIPlanDisplayName.resolve("pro") == "Pro 20x", "Pro 20x display name")
+        check(OpenAIPlanDisplayName.resolve("future_plan") == nil, "unknown plan remains undisclosed")
         check(buckets.count == 2, "multi-bucket payload")
+        let resetCredits = QuotaService.parseResetCredits(from: payload)
+        check(resetCredits?.availableCount == 2, "reset credit availability count")
+        check(resetCredits?.credits.count == 2, "reset credit details are preserved")
+        check(
+            resetCredits?.nearestExpiration(relativeTo: countdownNow)
+                == Date(timeIntervalSince1970: 1_800_043_200),
+            "nearest future reset credit expiration"
+        )
+        check(
+            resetCredits?.nextRedeemableCredit(relativeTo: countdownNow)?.id
+                == "credit-sooner",
+            "reset operation selects the earliest redeemable credit"
+        )
+        check(
+            QuotaService.parseResetCredits(from: [:]) == nil,
+            "missing reset-credit evidence stays unknown"
+        )
+        check(
+            QuotaResetCreditSummary(availableCount: 1, credits: [])
+                .nearestExpiration(relativeTo: countdownNow) == nil,
+            "available reset credit without expiry stays explicitly unknown"
+        )
+        check(
+            ["reset", "nothingToReset", "noCredit", "alreadyRedeemed"].allSatisfy {
+                (try? QuotaService.parseConsumeOutcome(from: ["outcome": $0]))
+                    == QuotaResetConsumeOutcome(rawValue: $0)
+            },
+            "all official reset-credit outcomes are parsed"
+        )
+        check(
+            (try? QuotaService.parseConsumeOutcome(from: ["outcome": "unexpected"])) == nil,
+            "unknown reset-credit outcome fails closed"
+        )
+        let consumeKey = UUID(uuidString: "00000000-0000-4000-8000-000000000001")!
+        let consumeParams = QuotaService.consumeResetCreditParams(
+            creditID: "credit-sooner",
+            idempotencyKey: consumeKey
+        )
+        check(
+            consumeParams["creditId"] as? String == "credit-sooner"
+                && consumeParams["idempotencyKey"] as? String == consumeKey.uuidString,
+            "reset-credit request carries the selected credit and idempotency key"
+        )
+        check(
+            QuotaService.consumeResetCreditParams(
+                creditID: nil,
+                idempotencyKey: consumeKey
+            )["creditId"] == nil,
+            "reset-credit request lets the backend select a credit when details are absent"
+        )
+
+        let idleGlow = RippleGlowStyles.style(for: nil)
+        let workingGlow = RippleGlowStyles.style(for: .working)
+        let toolGlow = RippleGlowStyles.style(for: .usingTool)
+        let approvalGlow = RippleGlowStyles.style(for: .waitingApproval)
+        let failedGlow = RippleGlowStyles.style(for: .failed)
+        let endedGlow = RippleGlowStyles.style(for: .ended)
+        let statusNow = Date(timeIntervalSince1970: 1_700_000_000)
+        let statusWindow = RateLimitWindow(
+            usedPercent: 4,
+            windowDurationMinutes: 10_080,
+            resetsAt: statusNow.addingTimeInterval(6 * 86_400 + 3_600)
+        )
+        check(
+            MenuBarStatusFormatter.title(for: statusWindow, relativeTo: statusNow)
+                == "96% · 6天",
+            "menu bar status separates quota and reset day"
+        )
+        check(
+            MenuBarStatusFormatter.resetText(
+                statusNow.addingTimeInterval(4 * 3_600 + 59 * 60),
+                relativeTo: statusNow
+            ) == "4小时",
+            "menu bar reset uses compact hour label"
+        )
+        let menuBarBucket = RateLimitBucket(
+            id: "codex",
+            name: "Codex",
+            planType: "pro",
+            primary: statusWindow,
+            secondary: nil,
+            creditBalance: nil,
+            hasCredits: false
+        )
+        check(
+            MenuBarQuotaIconModel.state(for: .loaded([menuBarBucket], statusNow)) == .ready(96),
+            "menu bar quota ring reads the headline remainder"
+        )
+        check(
+            MenuBarQuotaIconModel.state(for: .failed("offline", previous: [menuBarBucket])) == .ready(96),
+            "menu bar quota ring preserves the last known remainder after failure"
+        )
+        check(
+            MenuBarQuotaIconModel.state(for: .failed("offline", previous: [])) == .failed,
+            "menu bar quota ring exposes a failure without cached quota"
+        )
+        check(
+            MenuBarQuotaIconModel.state(for: .loading) == .loading,
+            "menu bar quota ring exposes loading state"
+        )
+        check(MenuBarQuotaIconModel.progress(for: -20) == 0, "quota ring clamps low values")
+        check(MenuBarQuotaIconModel.progress(for: 140) == 1, "quota ring clamps high values")
+        let emptyRing = MenuBarQuotaRingRenderer.image(remainingPercent: 0)
+        let partialRing = MenuBarQuotaRingRenderer.image(remainingPercent: 68)
+        check(emptyRing.size == NSSize(width: 14, height: 14), "quota ring uses menu-bar dimensions")
+        check(partialRing.isTemplate, "quota ring follows system menu-bar appearance")
+        check(
+            emptyRing.tiffRepresentation != partialRing.tiffRepresentation,
+            "quota ring pixels change with remaining quota"
+        )
+        check(
+            StatusItemCoexistencePolicy.usesIconOnlyMode(
+                runningBundleIdentifiers: ["com.quotaview.menubar"]
+            ),
+            "QuotaView activates icon-only status coexistence"
+        )
+        check(
+            !StatusItemCoexistencePolicy.usesIconOnlyMode(
+                runningBundleIdentifiers: ["com.example.other"]
+            ),
+            "unrelated menu apps keep the normal status title"
+        )
+        check(
+            StatusItemCoexistencePolicy.effectiveDensity(
+                preference: .automatic,
+                quotaViewIsRunning: true,
+                availableWidth: 300
+            ) == .iconOnly,
+            "automatic density yields to QuotaView"
+        )
+        check(
+            StatusItemCoexistencePolicy.effectiveDensity(
+                preference: .automatic,
+                quotaViewIsRunning: false,
+                availableWidth: 220
+            ) == .detailed,
+            "automatic density keeps details when space is available"
+        )
+        check(
+            StatusItemCoexistencePolicy.effectiveDensity(
+                preference: .automatic,
+                quotaViewIsRunning: false,
+                availableWidth: 120
+            ) == .compact,
+            "automatic density compacts in a crowded menu bar"
+        )
+        check(
+            StatusItemCoexistencePolicy.effectiveDensity(
+                preference: .automatic,
+                quotaViewIsRunning: false,
+                availableWidth: 60
+            ) == .iconOnly,
+            "automatic density falls back to an icon in severe crowding"
+        )
+        check(
+            MenuBarActivityFormatter.title(
+                phase: .usingTool,
+                projectName: "监控",
+                actionSummary: "正在修改文件",
+                projectCount: 3,
+                quotaTitle: "90% 6天"
+            ) == "工具 · 修改文件 · +2 · 90%",
+            "menu bar activity uses one action focus plus parallel count and compact quota"
+        )
+        check(
+            MenuBarActivityFormatter.title(
+                phase: .working,
+                projectName: "监控",
+                actionSummary: "正在思考",
+                projectCount: 1,
+                quotaTitle: "90%"
+            ) == "思考 · 监控 · 90%",
+            "menu bar activity removes a duplicate phase action"
+        )
+        check(
+            MenuBarActivityFormatter.tooltip(
+                phase: .usingTool,
+                projectName: "Codex额度监控macbook插件。",
+                actionSummary: "正在修改 ParticleMetalOrb.swift\n同时：运行测试",
+                projectCount: 2,
+                quotaTitle: "90% 6天"
+            ).contains("同时运行 2 个项目"),
+            "menu bar tooltip preserves full task detail"
+        )
+        check(toolGlow.speed > workingGlow.speed, "tool glow moves faster than thinking glow")
+        check(workingGlow.speed > idleGlow.speed, "working glow moves faster than idle glow")
+        check(approvalGlow.speed < workingGlow.speed, "approval glow slows down to hold attention")
+        check(failedGlow.accent.x > failedGlow.accent.y, "failed glow uses a red-orange accent")
+        check(endedGlow.exposure < workingGlow.exposure, "ended glow settles to lower exposure")
+        check(
+            RippleGlowStyle.mix(idleGlow, toward: toolGlow, factor: 1) == toolGlow,
+            "glow interpolation reaches its target"
+        )
 
         check(HookEventMapper.phase(for: "PermissionRequest") == .waitingApproval, "approval mapping")
         check(HookEventMapper.phase(for: "Stop") == .completed, "completion mapping")
@@ -75,6 +296,21 @@ enum ModelSmokeTests {
         check(
             commandSummary == "运行命令 · swift build && echo done",
             "command summary extraction"
+        )
+        let quotedCommandInput = #"const r = await tools.exec_command({"cmd":"./scripts/test.sh","workdir":"/tmp"});"#
+        check(
+            SessionActivityService.toolSummary(name: "exec", input: quotedCommandInput)
+                == "运行命令 · ./scripts/test.sh",
+            "quoted command key summary extraction"
+        )
+        let wrappedPatchInput = """
+        const patch = "*** Update File: /tmp/ActivityIslandView.swift
+        "; await tools.apply_patch(patch);
+        """
+        check(
+            SessionActivityService.toolSummary(name: "exec", input: wrappedPatchInput)
+                == "修改 · ActivityIslandView.swift",
+            "wrapped patch extracts the changed file"
         )
         check(
             SessionActivityService.toolSummary(name: "apply_patch", input: "ignored") == "修改项目文件",
@@ -86,7 +322,7 @@ enum ModelSmokeTests {
                 == "读取 SessionActivityService.swift",
             "file read summary"
         )
-        let titledInput = #"await tools.mcp__node_repl__js({ title: "验证实时活动显示", code: "test" });"#
+        let titledInput = #"await tools.mcp__node_repl__js({"title":"验证实时活动显示","code":"test"});"#
         check(
             SessionActivityService.toolSummary(name: "exec", input: titledInput) == "验证实时活动显示",
             "tool title summary"
@@ -216,6 +452,20 @@ enum ModelSmokeTests {
             activities: Array([newestActivity, oldActivity].reversed())
         )
         check(unsortedProject.latestDisplayActivity?.id == "new", "compact card selects newest real activity")
+        let parallelActivity = SessionActivityItem(
+            id: "parallel", kind: .command, title: "运行并行命令",
+            isRunning: true, updatedAt: baseDate.addingTimeInterval(20)
+        )
+        let parallelProject = ActiveProjectState(
+            id: "/tmp/ProjectA", name: "ProjectA", path: "/tmp/ProjectA",
+            sessions: [], task: projects.last!.task,
+            activities: [parallelActivity, newestActivity]
+        )
+        check(
+            parallelProject.detailedActionSummary
+                == "正在读取最新文件\n同时：正在运行并行命令",
+            "activity island summary includes one parallel structured action"
+        )
 
         let renamedHook = MonitoredTask(
             id: "session-a", turnID: "turn-a", projectName: "ProjectA-Renamed",
@@ -325,7 +575,7 @@ enum ModelSmokeTests {
         )
         try? FileManager.default.removeItem(at: fixtureURL)
 
-        print("Model smoke tests passed (50 checks).")
+        print("Model smoke tests passed (101 checks).")
     }
 
     private static func check(_ condition: @autoclosure () -> Bool, _ label: String) {

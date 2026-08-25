@@ -13,7 +13,7 @@ def main() -> int:
 
     document = json.loads(config_path.read_text(encoding="utf-8"))
     hooks = document.get("hooks", {})
-    marker = "CodexNotchMonitor"
+    marker = "CodexMonitorHook"
     removed = 0
     for event, groups in list(hooks.items()):
         kept = []

@@ -16,10 +16,14 @@ if [[ -d "$target_app" ]]; then
   echo "已备份旧版本：$backup_app"
 fi
 
-pkill -x CodexNotchMonitor 2>/dev/null || true
+pkill -f '/Applications/CodexNotchMonitor.app/Contents/MacOS/CodexNotchMonitor' 2>/dev/null || true
 ditto "$source_app" "$target_app"
 codesign --verify --deep --strict "$target_app"
-"$project_dir/scripts/install-hooks.py"
+if [[ "${CODEX_NOTCH_INSTALL_HOOKS:-0}" == "1" ]]; then
+  "$project_dir/scripts/install-hooks.py"
+else
+  echo "已保留现有 Hook 配置；如需首次安装或重建 Hook，请单独运行 scripts/install-hooks.py"
+fi
 open "$target_app"
 
 echo "应用已安装：$target_app"

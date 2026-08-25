@@ -231,6 +231,8 @@ final class SessionActivityService {
     private static func activityKind(for toolName: String, input: String) -> SessionActivityKind {
         switch toolName {
         case "exec":
+            if input.contains("tools.apply_patch") { return .fileChange }
+            if input.contains("tools.view_image") { return .read }
             guard extractTitle(from: input) == nil, let command = extractCommand(from: input) else { return .tool }
             if isReadCommand(command) { return .read }
             if isSearchCommand(command) { return .search }
@@ -245,6 +247,21 @@ final class SessionActivityService {
         case "exec":
             if let title = extractTitle(from: input) {
                 return sanitize(title)
+            }
+            if input.contains("tools.apply_patch") {
+                return "修改 · \(extractPatchedFileLabel(from: input) ?? "项目文件")"
+            }
+            if input.contains("tools.view_image") {
+                return "检查图片 · \(fileLabel(from: input) ?? "本地图片")"
+            }
+            if input.contains("tools.web__run") {
+                return "查询网页资料"
+            }
+            if input.contains("tools.update_plan") {
+                return "更新任务计划"
+            }
+            if input.contains("tools.write_stdin") {
+                return "等待构建或测试结果"
             }
             if let command = extractCommand(from: input) {
                 if isReadCommand(command) {
@@ -266,11 +283,25 @@ final class SessionActivityService {
     }
 
     private static func extractTitle(from input: String) -> String? {
-        extractJSONString(after: #"title\s*:"#, from: input)
+        extractJSONString(after: #"(?:[\"']?title[\"']?)\s*:"#, from: input)
     }
 
     private static func extractCommand(from input: String) -> String? {
-        extractJSONString(after: #"cmd\s*:"#, from: input)
+        extractJSONString(after: #"(?:[\"']?cmd[\"']?)\s*:"#, from: input)
+    }
+
+    private static func extractPatchedFileLabel(from input: String) -> String? {
+        guard let expression = try? NSRegularExpression(
+            pattern: #"\*\*\*\s+(?:Update|Add)\s+File:\s+([^\r\n]+)"#,
+            options: .caseInsensitive
+        ) else { return nil }
+        let range = NSRange(input.startIndex..., in: input)
+        guard let match = expression.firstMatch(in: input, range: range),
+              let valueRange = Range(match.range(at: 1), in: input)
+        else { return nil }
+        let rawPath = String(input[valueRange])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return URL(fileURLWithPath: rawPath).lastPathComponent
     }
 
     private static func extractJSONString(after labelPattern: String, from input: String) -> String? {

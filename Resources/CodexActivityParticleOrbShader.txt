@@ -1,0 +1,432 @@
+#include <metal_stdlib>
+using namespace metal;
+
+struct VertexOut {
+    float4 position [[position]];
+    float2 uv;
+};
+
+struct ActivityOrbUniforms {
+    float2 resolution;
+    float time;
+    float motionPhase;
+
+    float energy;
+    float turbulence;
+    float pulse;
+    float desaturation;
+
+    float volume;
+    float refraction;
+    float tempo;
+    float motionEnergy;
+
+    float compression;
+    float compressionPulse;
+    float compressionBounce;
+    float reserved1;
+
+    float4 primary;
+    float4 secondary;
+    float4 accent;
+};
+
+vertex VertexOut activityOrbVertex(uint vertexID [[vertex_id]]) {
+    const float2 positions[3] = {
+        float2(-1.0, -1.0),
+        float2( 3.0, -1.0),
+        float2(-1.0,  3.0)
+    };
+
+    VertexOut out;
+    out.position = float4(positions[vertexID], 0.0, 1.0);
+    out.uv = positions[vertexID] * 0.5 + 0.5;
+    return out;
+}
+
+float activityHash21(float2 p) {
+    p = fract(p * float2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+}
+
+float activityValueNoise(float2 p) {
+    float2 i = floor(p);
+    float2 f = fract(p);
+    float2 u = f * f * (3.0 - 2.0 * f);
+    return mix(
+        mix(
+            activityHash21(i),
+            activityHash21(i + float2(1.0, 0.0)),
+            u.x
+        ),
+        mix(
+            activityHash21(i + float2(0.0, 1.0)),
+            activityHash21(i + 1.0),
+            u.x
+        ),
+        u.y
+    );
+}
+
+float activitySoftBand(float distance, float width) {
+    float normalized = distance / max(width, 0.0001);
+    return exp(-normalized * normalized);
+}
+
+float2 activityRotate2D(float2 value, float angle) {
+    float cosine = cos(angle);
+    float sine = sin(angle);
+    return float2(
+        value.x * cosine - value.y * sine,
+        value.x * sine + value.y * cosine
+    );
+}
+
+float3 activityRotateVolume(float3 value, float time) {
+    value.xz = activityRotate2D(value.xz, time * 0.31 + 0.42);
+    value.xy = activityRotate2D(value.xy, -time * 0.23 - 0.18);
+    value.yz = activityRotate2D(value.yz, time * 0.17 + 0.28);
+    return value;
+}
+
+float activityFluidField(
+    float3 point,
+    float time,
+    float turbulence
+) {
+    float3 warped = point;
+    warped.x += sin(point.y * 3.2 + time * 1.10) *
+        (0.10 + turbulence * 0.10);
+    warped.y += sin(point.z * 3.8 - time * 0.84) *
+        (0.09 + turbulence * 0.12);
+    warped.z += cos(point.x * 4.1 + time * 0.72) *
+        (0.08 + turbulence * 0.11);
+
+    float broad =
+        sin(warped.x * 3.8 + time * 0.55) +
+        sin(warped.y * 4.4 - time * 0.47) +
+        sin(warped.z * 4.0 + time * 0.38);
+    float detail =
+        sin((warped.x + warped.y) * 7.2 - time * 0.92) +
+        cos((warped.y - warped.z) * 6.1 + time * 0.68);
+
+    return broad * 0.30 + detail * 0.13;
+}
+
+fragment float4 activityOrbFragment(
+    VertexOut in [[stage_in]],
+    constant ActivityOrbUniforms &u [[buffer(0)]]
+) {
+    float2 p = (in.uv - 0.5) * 2.0;
+    p.x *= u.resolution.x / max(u.resolution.y, 1.0);
+
+    float rotationTime =
+        u.motionPhase * 1.45;
+    float fluidTime =
+        u.motionPhase * 2.80;
+    float surfaceTime =
+        u.motionPhase * 2.20;
+    float radius = length(p);
+    float angle = atan2(p.y, p.x);
+    float compressionAmount =
+        u.compression *
+        (
+            0.20 +
+            u.compressionPulse * 0.62 +
+            u.compressionBounce * 0.28
+        );
+    float wholeSphereCompression =
+        u.compression * u.compressionBounce;
+    float directionalPressure =
+        0.5 +
+        0.5 * cos(angle * 2.0 + u.time * 0.42);
+    float animatedTurbulence =
+        u.turbulence * (0.84 + u.motionEnergy * 0.20);
+    float breathing =
+        sin(u.time * u.tempo) *
+        (0.006 + u.pulse * 0.010);
+    float sphereRadius =
+        0.535 +
+        breathing -
+        compressionAmount *
+        (0.034 + directionalPressure * 0.018) -
+        wholeSphereCompression * 0.050;
+    float sphereDistance = abs(radius - sphereRadius);
+
+    if (radius > sphereRadius + 0.18) {
+        return float4(0.0);
+    }
+
+    float3 primary = u.primary.rgb;
+    float3 secondary = u.secondary.rgb;
+    float3 accent = u.accent.rgb;
+
+    float normalizedRadius = radius / max(sphereRadius, 0.001);
+    float inside = 1.0 - step(1.0, normalizedRadius);
+    float zExtent = sqrt(
+        max(0.0, 1.0 - normalizedRadius * normalizedRadius)
+    );
+    float3 normal = normalize(float3(
+        p / max(sphereRadius, 0.001),
+        zExtent
+    ));
+
+    float fresnel = pow(
+        saturate(1.0 - max(normal.z, 0.0)),
+        2.25
+    );
+    float rim = smoothstep(0.10, 0.96, fresnel);
+    float3 keyLight = normalize(float3(-0.48, 0.64, 0.82));
+    float specular = pow(
+        saturate(dot(normal, keyLight)),
+        38.0
+    );
+
+    float3 volumeColor = float3(0.0);
+    float volumeAlpha = 0.0;
+    constexpr int sampleCount = 20;
+
+    for (int index = 0; index < sampleCount; ++index) {
+        float samplePosition =
+            (float(index) + 0.5) / float(sampleCount);
+        float sampleZ = mix(-zExtent, zExtent, samplePosition);
+        float3 samplePoint = float3(
+            p / max(sphereRadius, 0.001),
+            sampleZ
+        );
+        float inwardScale =
+            1.0 +
+            compressionAmount *
+            (
+                0.18 +
+                0.16 * (1.0 - abs(sampleZ))
+            );
+        samplePoint.xy *= inwardScale;
+        samplePoint.z *= 1.0 + compressionAmount * 0.12;
+        samplePoint = activityRotateVolume(
+            samplePoint,
+            rotationTime *
+                (0.72 + animatedTurbulence * 0.42)
+        );
+
+        float field = activityFluidField(
+            samplePoint * (1.16 + animatedTurbulence * 0.22),
+            fluidTime,
+            animatedTurbulence
+        );
+        float ribbon = exp(
+            -abs(field) * (5.6 - u.volume * 1.8)
+        );
+        float filament = exp(
+            -abs(
+                field +
+                sin(
+                    samplePoint.x * 6.0 -
+                    samplePoint.z * 4.0 +
+                    fluidTime
+                ) * 0.20
+            ) * 12.0
+        );
+        float depthFade =
+            0.46 +
+            0.54 * sin(samplePosition * M_PI_F);
+        float density =
+            (ribbon * 0.62 + filament * 0.52) *
+            depthFade *
+            (0.018 + u.volume * 0.020) *
+            (1.0 + compressionAmount * 0.46);
+
+        float colorPhase = fract(
+            samplePosition * 0.78 +
+            field * 0.15 +
+            angle / (2.0 * M_PI_F) -
+            fluidTime * 0.035
+        );
+        float3 sampleColor =
+            colorPhase < 0.5
+            ? mix(primary, secondary, colorPhase * 2.0)
+            : mix(
+                secondary,
+                accent,
+                (colorPhase - 0.5) * 2.0
+            );
+
+        float remaining = 1.0 - volumeAlpha;
+        volumeColor +=
+            remaining *
+            sampleColor *
+            density *
+            (1.65 + u.energy * 1.12);
+        volumeAlpha += remaining * density;
+    }
+
+    volumeColor *= inside;
+    volumeAlpha *= inside;
+
+    float normalizedX = p.x / max(sphereRadius, 0.001);
+    float normalizedY = p.y / max(sphereRadius, 0.001);
+    float projectedWaveA =
+        normalizedY -
+        sin(
+            normalizedX * (4.2 + animatedTurbulence * 1.8) +
+            surfaceTime * 1.55 +
+            zExtent * 2.1
+        ) * (0.17 + animatedTurbulence * 0.08);
+    float projectedWaveB =
+        normalizedX +
+        cos(
+            normalizedY * (4.8 + animatedTurbulence * 1.2) -
+            surfaceTime * 1.12 -
+            zExtent * 1.7
+        ) * (0.15 + animatedTurbulence * 0.07);
+    float projectedRibbonA = activitySoftBand(
+        projectedWaveA,
+        0.065 + animatedTurbulence * 0.020
+    );
+    float projectedRibbonB = activitySoftBand(
+        projectedWaveB,
+        0.080 + animatedTurbulence * 0.018
+    );
+    float projectedRibbon =
+        inside *
+        (projectedRibbonA * 0.72 + projectedRibbonB * 0.44) *
+        (0.38 + zExtent * 0.62);
+    float inwardFront = mix(
+        0.92,
+        0.18,
+        u.compressionPulse
+    );
+    float inwardBand =
+        exp(
+            -abs(normalizedRadius - inwardFront) *
+            (16.0 + u.compressionPulse * 8.0)
+        ) *
+        inside *
+        u.compression;
+    float compressedCore =
+        exp(-normalizedRadius * 5.2) *
+        inside *
+        u.compression *
+        u.compressionPulse;
+    projectedRibbon +=
+        inwardBand *
+        (0.36 + u.compressionPulse * 0.28);
+    float projectedPhase =
+        0.5 +
+        0.5 * sin(
+            angle * 2.4 -
+            surfaceTime * 1.3 +
+            zExtent * 3.4
+        );
+    float3 projectedColor = mix(
+        mix(primary, secondary, projectedPhase),
+        accent,
+        saturate(
+            projectedRibbonB * 0.44 +
+            inwardBand * 0.72 +
+            compressedCore * 0.26
+        )
+    );
+
+    float chromaRed = activitySoftBand(
+        abs(radius - sphereRadius - 0.006 * u.refraction),
+        0.012 + u.refraction * 0.005
+    );
+    float chromaGreen = activitySoftBand(
+        abs(radius - sphereRadius),
+        0.011
+    );
+    float chromaBlue = activitySoftBand(
+        abs(radius - sphereRadius + 0.008 * u.refraction),
+        0.014 + u.refraction * 0.004
+    );
+    float3 chromaticRim = float3(
+        chromaRed,
+        chromaGreen,
+        chromaBlue
+    );
+    chromaticRim *= mix(
+        primary,
+        accent,
+        0.5 +
+            0.5 * sin(angle * 2.0 - surfaceTime * 1.2)
+    );
+
+    float caustic =
+        pow(
+            max(
+                0.0,
+                0.5 +
+                0.5 *
+                cos(
+                    angle * 1.4 -
+                    surfaceTime * 1.8 -
+                    0.7
+                )
+            ),
+            18.0
+        ) *
+        activitySoftBand(sphereDistance, 0.026);
+    float halo = exp(
+        -sphereDistance * (12.0 - u.energy * 1.8)
+    );
+
+    float glassTint = inside * (
+        0.035 +
+        rim * 0.14 +
+        specular * 0.24
+    );
+    float3 glassColor =
+        mix(primary, accent, fresnel) * glassTint +
+        float3(0.72, 0.86, 1.0) * specular * 0.54;
+
+    float3 color =
+        volumeColor * (1.18 + u.volume * 0.74) +
+        projectedColor *
+            projectedRibbon *
+            (0.32 + u.volume * 0.64) +
+        mix(primary, secondary, projectedPhase) *
+            inside *
+            zExtent *
+            0.035 *
+            u.volume +
+        glassColor +
+        chromaticRim * (0.34 + u.refraction * 0.50) +
+        accent * caustic * (0.60 + u.energy * 0.72) +
+        mix(secondary, accent, 0.76) *
+            (
+                inwardBand * 0.34 +
+                compressedCore * 0.24
+            ) +
+        mix(primary, secondary, 0.5) *
+            halo *
+            0.075 *
+            u.energy;
+
+    float luma = dot(color, float3(0.299, 0.587, 0.114));
+    color = mix(color, float3(luma), saturate(u.desaturation));
+
+    float alpha =
+        volumeAlpha * (0.82 + u.volume * 0.42) +
+        projectedRibbon * (0.18 + u.volume * 0.28) +
+        inwardBand * 0.12 +
+        compressedCore * 0.08 +
+        rim * inside * (0.24 + u.refraction * 0.30) +
+        specular * inside * 0.48 +
+        max(max(chromaRed, chromaGreen), chromaBlue) * 0.64 +
+        halo * 0.10 * u.energy;
+
+    alpha *= 1.0 - smoothstep(
+        sphereRadius + 0.12,
+        sphereRadius + 0.18,
+        radius
+    );
+    color *=
+        0.94 +
+        0.06 *
+        sin(u.time * u.tempo * 0.78) *
+        u.pulse;
+
+    return float4(max(color, 0.0), saturate(alpha));
+}

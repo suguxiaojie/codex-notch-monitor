@@ -28,6 +28,7 @@ build_one_architecture() {
 }
 
 mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources" "$app_dir/Contents/Helpers"
+mkdir -p "$app_dir/Contents/Resources/Fonts"
 
 if [[ "$build_arch" == "universal" ]]; then
   arm64_bin_dir="$(build_one_architecture arm64 | tail -n 1)"
@@ -68,6 +69,16 @@ verify_architectures "$app_dir/Contents/MacOS/CodexNotchMonitor"
 verify_architectures "$app_dir/Contents/Helpers/CodexMonitorHook"
 
 cp "$project_dir/Resources/Info.plist" "$app_dir/Contents/Info.plist"
+cp \
+  "$project_dir/Resources/CodexActivityRippleGlowShader.txt" \
+  "$app_dir/Contents/Resources/CodexActivityRippleGlowShader.txt"
+cp \
+  "$project_dir/Resources/CodexActivityParticleOrbShader.txt" \
+  "$app_dir/Contents/Resources/CodexActivityParticleOrbShader.txt"
+cp \
+  "$project_dir/Resources/CoverAI-Logo.png" \
+  "$app_dir/Contents/Resources/CoverAI-Logo.png"
+ditto "$project_dir/Resources/Fonts" "$app_dir/Contents/Resources/Fonts"
 chmod 755 "$app_dir/Contents/MacOS/CodexNotchMonitor" "$app_dir/Contents/Helpers/CodexMonitorHook"
 codesign --force --deep --sign - "$app_dir"
 

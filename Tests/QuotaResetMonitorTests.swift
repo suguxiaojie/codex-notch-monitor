@@ -9,7 +9,11 @@ struct QuotaResetMonitorTests {
         try delaysUnverifiedJump()
         try mergesMultipleWindows()
         try detectsManualCompletionEvidence()
-        print("Quota reset tests: 6/6 passed")
+        try detectsManualResetCredit()
+        try confirmsPendingAsUserReset()
+        try confirmsExpiredUnverifiedReset()
+        try changesDisplayTypeWithoutOverwritingEvidence()
+        print("Quota reset tests: 10/10 passed")
     }
 
     static func firstSnapshotDoesNotNotify() throws {
@@ -118,6 +122,106 @@ struct QuotaResetMonitorTests {
             now: start.addingTimeInterval(90)
         )
         expect(result.events.first?.reason == .officialCompleted, "人工确认重置应成为通知证据")
+    }
+
+    static func confirmsPendingAsUserReset() throws {
+        let monitor = makeMonitor("user-confirmed-pending")
+        let start = Date(timeIntervalSince1970: 2_000_500_000)
+        _ = monitor.evaluate(buckets: [bucket(remaining: 0)], feed: nil, now: start)
+        _ = monitor.evaluate(
+            buckets: [bucket(remaining: 100)],
+            feed: nil,
+            now: start.addingTimeInterval(60)
+        )
+        guard let candidate = monitor.confirmableRecoveries.first else {
+            expect(false, "待验证恢复应提供用户确认候选")
+            return
+        }
+        let event = monitor.confirmUserReset(candidateID: candidate.id)
+        expect(event?.reason == .userConfirmed, "用户确认应生成独立原因")
+        expect(event?.detectedAt == start.addingTimeInterval(60), "用户确认应保留原检测时间")
+        expect(event?.reason.title == "手动重置", "手动重置通知标题")
+        expect(event?.reason.isNotifiable == true, "用户确认事件应允许通知")
+        expect(monitor.confirmableRecoveries.isEmpty, "确认后应移除 pending")
+        expect(monitor.history.filter { $0.reason == .userConfirmed }.count == 1, "确认历史只保留一条")
+        expect(monitor.confirmUserReset(candidateID: candidate.id) == nil, "重复确认不得重复生成事件")
+    }
+
+    static func detectsManualResetCredit() throws {
+        let monitor = makeMonitor("manual-credit")
+        let start = Date(timeIntervalSince1970: 2_000_450_000)
+        _ = monitor.evaluate(buckets: [bucket(remaining: 12)], feed: nil, now: start)
+        monitor.markManualResetRequested(at: start.addingTimeInterval(30))
+        let result = monitor.evaluate(
+            buckets: [bucket(remaining: 100)],
+            feed: nil,
+            now: start.addingTimeInterval(60)
+        )
+        expect(result.events.first?.reason == .manualCredit, "重置卡兑换后应记录为手动重置")
+        expect(result.events.first?.reason.title == "手动重置", "手动重置标题")
+    }
+
+    static func confirmsExpiredUnverifiedReset() throws {
+        let monitor = makeMonitor("user-confirmed-expired")
+        let start = Date(timeIntervalSince1970: 2_000_600_000)
+        _ = monitor.evaluate(buckets: [bucket(remaining: 0)], feed: nil, now: start)
+        _ = monitor.evaluate(
+            buckets: [bucket(remaining: 100)],
+            feed: nil,
+            now: start.addingTimeInterval(60)
+        )
+        _ = monitor.evaluate(
+            buckets: [bucket(remaining: 100)],
+            feed: nil,
+            now: start.addingTimeInterval(3 * 60 * 60 + 120)
+        )
+        expect(monitor.history.contains { $0.reason == .unverified }, "过期 pending 应先保留为未验证历史")
+        guard let candidate = monitor.confirmableRecoveries.first else {
+            expect(false, "未验证历史仍应允许用户确认")
+            return
+        }
+        let event = monitor.confirmUserReset(candidateID: candidate.id)
+        expect(event?.reason == .userConfirmed, "未验证历史应可转换为用户确认")
+        expect(!monitor.history.contains { $0.reason == .unverified }, "转换后应移除对应未验证历史")
+        expect(monitor.history.filter { $0.reason == .userConfirmed }.count == 1, "转换后不得产生重复历史")
+    }
+
+    static func changesDisplayTypeWithoutOverwritingEvidence() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("quota-reset-test-display-type-\(UUID().uuidString).json")
+        let monitor = QuotaResetMonitor(stateURL: url)
+        let start = Date(timeIntervalSince1970: 2_000_700_000)
+        _ = monitor.evaluate(buckets: [bucket(remaining: 20)], feed: nil, now: start)
+        let result = monitor.evaluate(
+            buckets: [bucket(remaining: 100)],
+            feed: feed(kind: .resetCompleted, announcedAt: start.addingTimeInterval(30)),
+            now: start.addingTimeInterval(60)
+        )
+        guard let original = result.events.first else {
+            expect(false, "应先生成可修改显示类型的历史")
+            return
+        }
+
+        let updated = monitor.setDisplayType(eventID: original.id, displayType: .manual)
+        expect(updated?.reason == .officialCompleted, "用户修正不能覆盖原始检测原因")
+        expect(updated?.displayReason == .userConfirmed, "显示类型应切换为手动重置")
+        expect(updated?.userDisplayType == .manual, "用户修正类型应单独保存")
+
+        let reloaded = QuotaResetMonitor(stateURL: url)
+        expect(reloaded.history.first?.reason == .officialCompleted, "重载后应保留原始检测原因")
+        expect(reloaded.history.first?.displayReason == .userConfirmed, "重载后应保留用户显示类型")
+
+        let restored = reloaded.setDisplayType(eventID: original.id, displayType: nil)
+        expect(restored?.displayReason == .officialCompleted, "自动判断应恢复原始显示类型")
+        let redundant = reloaded.setDisplayType(eventID: original.id, displayType: .tibo)
+        expect(redundant?.userDisplayType == nil, "与原始判断相同的类型不应保留冗余修正")
+        let backupDirectory = url.deletingLastPathComponent()
+            .appendingPathComponent("quota-reset-backups", isDirectory: true)
+        let backups = try FileManager.default.contentsOfDirectory(
+            at: backupDirectory,
+            includingPropertiesForKeys: nil
+        )
+        expect(backups.count >= 2, "每次类型修改前都应保留可恢复备份")
     }
 
     static func makeMonitor(_ name: String) -> QuotaResetMonitor {

@@ -22,6 +22,64 @@ enum LocalThreadKind: String, Equatable {
     case system
 }
 
+enum CodexTranscriptRole: String, Equatable {
+    case user = "用户"
+    case assistant = "Codex"
+}
+
+struct CodexTranscriptMessage: Equatable {
+    let role: CodexTranscriptRole
+    let text: String
+}
+
+enum CodexTranscriptParser {
+    static func message(from object: [String: Any]) -> CodexTranscriptMessage? {
+        guard let type = object["type"] as? String,
+              let payload = object["payload"] as? [String: Any]
+        else { return nil }
+
+        if type == "event_msg",
+           let eventType = payload["type"] as? String,
+           let text = normalized(payload["message"] as? String) {
+            if eventType == "user_message" {
+                return CodexTranscriptMessage(role: .user, text: text)
+            }
+            if eventType == "agent_message" {
+                return CodexTranscriptMessage(role: .assistant, text: text)
+            }
+            return nil
+        }
+
+        guard type == "response_item",
+              payload["type"] as? String == "message",
+              let rawRole = payload["role"] as? String,
+              let content = payload["content"] as? [[String: Any]]
+        else { return nil }
+
+        let role: CodexTranscriptRole
+        if rawRole == "user" {
+            role = .user
+        } else if rawRole == "assistant" {
+            role = .assistant
+        } else {
+            return nil
+        }
+        let text = content.compactMap { part -> String? in
+            let partType = part["type"] as? String
+            guard partType == "input_text" || partType == "output_text" else { return nil }
+            return part["text"] as? String
+        }
+        .joined(separator: "\n")
+        return normalized(text).map { CodexTranscriptMessage(role: role, text: $0) }
+    }
+
+    private static func normalized(_ text: String?) -> String? {
+        guard let text else { return nil }
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+}
+
 struct LocalThreadRecord: Identifiable, Equatable {
     let id: String
     let title: String
@@ -37,9 +95,6 @@ struct LocalThreadRecord: Identifiable, Equatable {
     var visibility: ThreadVisibility
 
     var canRecover: Bool { kind == .userConversation && visibility == .localOnly }
-    var canExportSummary: Bool {
-        kind == .userConversation && visibility != .projectPathMissing && !readableMessages.isEmpty
-    }
 }
 
 struct ContinuityProjectGroup: Identifiable, Equatable {
@@ -97,6 +152,26 @@ struct SessionContinuitySnapshot: Equatable {
 final class CodexThreadService {
     static let continuitySourceKinds = ["vscode", "subAgent"]
 
+    typealias Request = (
+        _ method: String,
+        _ params: [String: Any],
+        _ timeout: TimeInterval,
+        _ completion: @escaping (Result<[String: Any], Error>) -> Void
+    ) -> Void
+
+    private let request: Request
+
+    init(request: @escaping Request = { method, params, timeout, completion in
+        CodexAppServerClient.request(
+            method: method,
+            params: params,
+            timeout: timeout,
+            completion: completion
+        )
+    }) {
+        self.request = request
+    }
+
     func listThreadIDs(
         useStateDBOnly: Bool,
         completion: @escaping (Result<Set<String>, Error>) -> Void
@@ -112,8 +187,104 @@ final class CodexThreadService {
         }
     }
 
-    func rebuildThreadIndex(completion: @escaping (Result<Set<String>, Error>) -> Void) {
-        listThreadIDs(useStateDBOnly: false, completion: completion)
+    func rebuildThreadIndex(
+        requiredThreadIDs: Set<String> = [],
+        maximumAttempts: Int = 3,
+        retryDelay: TimeInterval = 0.35,
+        completion: @escaping (Result<Set<String>, Error>) -> Void
+    ) {
+        rebuildThreadIndexAttempt(
+            requiredThreadIDs: requiredThreadIDs,
+            attempt: 1,
+            maximumAttempts: max(1, maximumAttempts),
+            retryDelay: retryDelay,
+            completion: completion
+        )
+    }
+
+    private func rebuildThreadIndexAttempt(
+        requiredThreadIDs: Set<String>,
+        attempt: Int,
+        maximumAttempts: Int,
+        retryDelay: TimeInterval,
+        completion: @escaping (Result<Set<String>, Error>) -> Void
+    ) {
+        listThreadIDs(useStateDBOnly: false) { result in
+            let shouldRetry: Bool
+            switch result {
+            case .failure:
+                shouldRetry = attempt < maximumAttempts
+            case let .success(visibleIDs):
+                shouldRetry = !requiredThreadIDs.isSubset(of: visibleIDs)
+                    && attempt < maximumAttempts
+            }
+            guard shouldRetry else {
+                completion(result)
+                return
+            }
+            let next = {
+                self.rebuildThreadIndexAttempt(
+                    requiredThreadIDs: requiredThreadIDs,
+                    attempt: attempt + 1,
+                    maximumAttempts: maximumAttempts,
+                    retryDelay: retryDelay,
+                    completion: completion
+                )
+            }
+            if retryDelay > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + retryDelay, execute: next)
+            } else {
+                next()
+            }
+        }
+    }
+
+    func deleteThread(
+        id: String,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
+        guard !id.isEmpty else {
+            completion(.failure(CodexAppServerClient.ProtocolError(
+                message: "会话 ID 无效"
+            )))
+            return
+        }
+        request("thread/delete", ["threadId": id], 20) { result in
+            switch result {
+            case let .failure(error):
+                completion(.failure(error))
+            case .success:
+                self.listThreadIDs(useStateDBOnly: true) { verification in
+                    switch verification {
+                    case let .failure(error):
+                        completion(.failure(CodexAppServerClient.ProtocolError(
+                            message: "删除请求已提交，但无法确认 Codex 侧状态：\(error.localizedDescription)"
+                        )))
+                    case let .success(ids):
+                        guard !ids.contains(id) else {
+                            completion(.failure(CodexAppServerClient.ProtocolError(
+                                message: "Codex 仍返回该会话，删除尚未生效"
+                            )))
+                            return
+                        }
+                        completion(.success(()))
+                    }
+                }
+            }
+        }
+    }
+
+    func archiveThread(
+        id: String,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
+        guard !id.isEmpty else {
+            completion(.failure(CodexAppServerClient.ProtocolError(message: "会话 ID 无效")))
+            return
+        }
+        request("thread/archive", ["threadId": id], 20) { result in
+            completion(result.map { _ in () })
+        }
     }
 
     private func listThreadIDs(
@@ -121,16 +292,16 @@ final class CodexThreadService {
         useStateDBOnly: Bool,
         completion: @escaping (Result<Set<String>, Error>) -> Void
     ) {
-        CodexAppServerClient.request(
-            method: "thread/list",
-            params: [
+        request(
+            "thread/list",
+            [
                 "archived": archived,
                 "limit": 1_000,
                 "modelProviders": [],
                 "sourceKinds": Self.continuitySourceKinds,
                 "useStateDbOnly": useStateDBOnly,
             ],
-            timeout: useStateDBOnly ? 20 : 60
+            useStateDBOnly ? 20 : 60
         ) { result in
             completion(result.map { payload in
                 let data = payload["data"] as? [[String: Any]] ?? []
@@ -169,11 +340,14 @@ final class SessionContinuityService {
         var gitBranch: String?
         var firstUserMessage: String?
         var messages: [String] = []
+        var seenMessages = Set<String>()
         var hasUserMessage = false
         var sessionSource: Any?
 
         mutating func appendMessage(_ message: String) {
-            messages.append(message)
+            let normalized = message.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalized.isEmpty, seenMessages.insert(normalized).inserted else { return }
+            messages.append(normalized)
             if messages.count > 20 {
                 messages.removeFirst(messages.count - 20)
             }
@@ -326,46 +500,18 @@ final class SessionContinuityService {
                     accumulator.gitBranch = git["branch"] as? String
                 }
                 accumulator.sessionSource = payload["source"]
-            } else if type == "event_msg", let eventType = payload["type"] as? String {
-                if eventType == "user_message", let message = payload["message"] as? String {
-                    accumulator.hasUserMessage = true
-                    if accumulator.firstUserMessage == nil { accumulator.firstUserMessage = message }
-                    accumulator.appendMessage("用户：\(message)")
-                } else if eventType == "agent_message", let message = payload["message"] as? String {
-                    accumulator.appendMessage("助手：\(message)")
-                }
+                continue
+            }
+
+            guard let message = CodexTranscriptParser.message(from: object) else { continue }
+            if message.role == .user {
+                accumulator.hasUserMessage = true
+                if accumulator.firstUserMessage == nil { accumulator.firstUserMessage = message.text }
+                accumulator.appendMessage("用户：\(message.text)")
+            } else {
+                accumulator.appendMessage("助手：\(message.text)")
             }
         }
-    }
-
-    static func handoffContext(for thread: LocalThreadRecord) -> String {
-        let recent = thread.readableMessages.suffix(10)
-        var sections = [
-            "# Codex 会话交接摘要",
-            "",
-            "来源会话：\(thread.title)",
-            "来源线程：\(thread.id)",
-            "项目：\(thread.projectName)",
-            "目录：\(thread.projectPath)",
-        ]
-        if let branch = thread.gitBranch, !branch.isEmpty {
-            sections.append("分支：\(branch)")
-        }
-        sections.append(contentsOf: [
-            "",
-            "## 最近可读上下文",
-            "",
-        ])
-        for message in recent {
-            sections.append("- \(redactSensitiveText(message))")
-        }
-        sections.append(contentsOf: [
-            "",
-            "## 继续前检查",
-            "",
-            "请先检查当前项目和 Git 状态，再根据上述本地上下文继续。不要假设旧会话的工作已在当前工作区生效。",
-        ])
-        return sections.joined(separator: "\n")
     }
 
     static func redactSensitiveText(_ text: String, limit: Int? = 700) -> String {

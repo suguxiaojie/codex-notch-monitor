@@ -7,10 +7,121 @@ enum SessionImportDuplicateStrategy: String, CaseIterable, Equatable {
 
     var title: String {
         switch self {
-        case .skip: return "跳过已存在会话（推荐）"
-        case .duplicate: return "生成新 ID 并作为副本导入"
+        case .skip: return "恢复原 ID，跳过已存在会话（推荐）"
+        case .duplicate: return "全部生成新 ID 并作为副本导入"
         }
     }
+}
+
+struct SessionImportConflict: Equatable, Identifiable {
+    let threadID: String
+    let jsonlExists: Bool
+    let stateDatabaseExists: Bool
+    let catalogExists: Bool
+    let projectBindingExists: Bool
+    let permissionPreferenceExists: Bool
+    let pendingCleanupExists: Bool
+
+    var id: String { threadID }
+    var isExistingSession: Bool { jsonlExists || stateDatabaseExists }
+    var hasResidue: Bool {
+        catalogExists || projectBindingExists || permissionPreferenceExists || pendingCleanupExists
+    }
+    var hasAnyConflict: Bool { isExistingSession || hasResidue }
+}
+
+struct SessionImportArchiveStatistics: Equatable {
+    let archiveBytes: Int64
+    let entryCount: Int
+    let expandedBytes: Int64
+    let largestEntryBytes: Int64
+}
+
+enum SessionImportStage: String, Equatable {
+    case validating
+    case backingUp
+    case cleaningConflicts
+    case importing
+    case binding
+    case rebuilding
+    case checkingVisibility
+    case completed
+    case cancelling
+
+    var title: String {
+        switch self {
+        case .validating: return "正在重新校验备份"
+        case .backingUp: return "正在备份当前状态"
+        case .cleaningConflicts: return "正在清理原 ID 残留"
+        case .importing: return "正在导入会话"
+        case .binding: return "正在写入项目绑定"
+        case .rebuilding: return "正在重建 Codex 索引"
+        case .checkingVisibility: return "正在确认 App Server 可见性"
+        case .completed: return "导入完成"
+        case .cancelling: return "正在取消并回滚"
+        }
+    }
+}
+
+struct SessionImportProgress: Equatable {
+    let stage: SessionImportStage
+    let completed: Int
+    let total: Int
+    let currentItem: String?
+
+    var fraction: Double {
+        guard total > 0 else { return stage == .completed ? 1 : 0 }
+        return min(1, max(0, Double(completed) / Double(total)))
+    }
+}
+
+final class SessionImportCancellationToken: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        lock.unlock()
+    }
+
+    func reset() {
+        lock.lock()
+        cancelled = false
+        lock.unlock()
+    }
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+}
+
+enum SessionImportVisibilityStatus: Equatable {
+    case notChecked
+    case visible(Int, expected: Int)
+    case rebuildFailed(String)
+}
+
+struct SessionImportOutcome: Equatable {
+    let result: SessionImportResult
+    let visibility: SessionImportVisibilityStatus
+
+    var requiresRetry: Bool {
+        switch visibility {
+        case .notChecked, .rebuildFailed: return true
+        case let .visible(count, expected): return count < expected
+        }
+    }
+}
+
+struct SessionImportLimits: Equatable {
+    var maximumArchiveBytes: Int64 = 2 * 1_024 * 1_024 * 1_024
+    var maximumEntries = 1_000
+    var maximumExpandedBytes: Int64 = 5 * 1_024 * 1_024 * 1_024
+    var maximumSingleEntryBytes: Int64 = 1 * 1_024 * 1_024 * 1_024
+    var maximumCompressionRatio = 200.0
 }
 
 struct SessionImportPreview: Equatable {
@@ -18,11 +129,16 @@ struct SessionImportPreview: Equatable {
     let manifest: SessionPortableManifest
     let duplicateThreadIDs: Set<String>
     let missingOriginalPath: Bool
+    let conflicts: [SessionImportConflict]
+    let archiveStatistics: SessionImportArchiveStatistics
+    let destinationIsWritable: Bool
+    let codexIsRunning: Bool
 
     var sessionCount: Int { manifest.sessions.count }
     var activeCount: Int { manifest.sessions.filter { !$0.archived }.count }
     var archivedCount: Int { manifest.sessions.filter(\.archived).count }
     var duplicateCount: Int { duplicateThreadIDs.count }
+    var conflictCount: Int { conflicts.filter(\.hasAnyConflict).count }
     var requiresPathMapping: Bool { missingOriginalPath }
 }
 
@@ -62,11 +178,15 @@ final class SessionImportService: @unchecked Sendable {
     private let backupRoot: URL
     private let now: () -> Date
     private let codexIsRunning: () -> Bool
+    private let pendingCleanupURL: URL
+    private let limits: SessionImportLimits
 
     init(
         fileManager: FileManager = .default,
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         backupRoot: URL = AppPaths.continuityBackups,
+        pendingCleanupURL: URL = AppPaths.pendingSidebarCleanups,
+        limits: SessionImportLimits = SessionImportLimits(),
         now: @escaping () -> Date = Date.init,
         codexIsRunning: @escaping () -> Bool = SessionRecoveryService.isCodexDesktopRunning
     ) {
@@ -75,6 +195,8 @@ final class SessionImportService: @unchecked Sendable {
         self.backupRoot = backupRoot
         self.now = now
         self.codexIsRunning = codexIsRunning
+        self.pendingCleanupURL = pendingCleanupURL
+        self.limits = limits
     }
 
     func inspect(bundleURL: URL, existingThreadIDs: Set<String>) throws -> SessionImportPreview {
@@ -83,60 +205,104 @@ final class SessionImportService: @unchecked Sendable {
         }
         let extracted = try extractAndValidateArchive(at: bundleURL)
         defer { try? fileManager.removeItem(at: extracted.root) }
+        let localIDs = (try? localThreadIDs()) ?? []
+        let allJSONLIDs = existingThreadIDs.union(localIDs)
+        let conflicts = try extracted.manifest.sessions.map { session in
+            try conflict(threadID: session.threadID, jsonlExists: allJSONLIDs.contains(session.threadID))
+        }
+        let originalProject = URL(fileURLWithPath: extracted.manifest.project.originalPath, isDirectory: true)
+        let projectExists = isExistingDirectory(originalProject.path)
         return SessionImportPreview(
             bundleURL: bundleURL,
             manifest: extracted.manifest,
-            duplicateThreadIDs: Set(extracted.manifest.sessions.map(\.threadID)).intersection(existingThreadIDs),
-            missingOriginalPath: !isExistingDirectory(extracted.manifest.project.originalPath)
+            duplicateThreadIDs: Set(conflicts.filter { $0.isExistingSession }.map { $0.threadID }),
+            missingOriginalPath: !projectExists,
+            conflicts: conflicts,
+            archiveStatistics: extracted.statistics,
+            destinationIsWritable: projectExists && isWritableDirectory(originalProject),
+            codexIsRunning: codexIsRunning()
         )
     }
 
     func importBundle(
         preview: SessionImportPreview,
         mappedProjectURL: URL?,
-        duplicateStrategy: SessionImportDuplicateStrategy
+        duplicateStrategy: SessionImportDuplicateStrategy,
+        pathReplacements: [String: String] = [:],
+        restoreArchivedAsActive: Bool = false,
+        progress: ((SessionImportProgress) -> Void)? = nil,
+        isCancelled: @escaping () -> Bool = { false }
     ) throws -> SessionImportResult {
         guard !codexIsRunning() else {
             throw ImportError(message: "请先使用 Cmd + Q 完全退出 Codex／ChatGPT Desktop，再导入会话")
         }
 
+        try checkCancellation(isCancelled)
+        progress?(SessionImportProgress(stage: .validating, completed: 0, total: preview.sessionCount, currentItem: nil))
         let existingIDs = try localThreadIDs()
         let currentPreview = try inspect(bundleURL: preview.bundleURL, existingThreadIDs: existingIDs)
         let destinationProjectURL: URL
-        if currentPreview.requiresPathMapping {
-            guard let mappedProjectURL else {
-                throw ImportError(message: "原项目路径不存在，请先选择新的项目目录")
-            }
+        if let mappedProjectURL {
             let values = try mappedProjectURL.resourceValues(forKeys: [.isDirectoryKey])
             guard values.isDirectory == true else {
-                throw ImportError(message: "重新映射的项目路径必须是已存在的文件夹")
+                throw ImportError(message: "导入目标必须是已存在的项目文件夹")
             }
             destinationProjectURL = mappedProjectURL.standardizedFileURL
-        } else {
+        } else if !currentPreview.requiresPathMapping {
             destinationProjectURL = URL(fileURLWithPath: currentPreview.manifest.project.originalPath)
                 .standardizedFileURL
+        } else {
+            throw ImportError(message: "请先选择要导入到的 Codex 项目")
+        }
+        guard isWritableDirectory(destinationProjectURL) else {
+            throw ImportError(message: "目标项目目录不可写：\(destinationProjectURL.path)")
         }
 
+        try checkCancellation(isCancelled)
         let extracted = try extractAndValidateArchive(at: preview.bundleURL)
         defer { try? fileManager.removeItem(at: extracted.root) }
+        progress?(SessionImportProgress(stage: .backingUp, completed: 0, total: preview.sessionCount, currentItem: nil))
         let backupURL = try createTransactionBackup(sourceBundle: preview.bundleURL)
         var createdFiles: [URL] = []
         var importedRecords: [LocalThreadRecord] = []
         var skipped = 0
 
         do {
-            for session in extracted.manifest.sessions {
-                let isDuplicate = existingIDs.contains(session.threadID)
+            for (index, session) in extracted.manifest.sessions.enumerated() {
+                try checkCancellation(isCancelled)
+                let conflict = try conflict(
+                    threadID: session.threadID,
+                    jsonlExists: existingIDs.contains(session.threadID)
+                )
+                let isDuplicate = conflict.isExistingSession
                 if isDuplicate, duplicateStrategy == .skip {
                     skipped += 1
+                    progress?(SessionImportProgress(
+                        stage: .importing,
+                        completed: index + 1,
+                        total: extracted.manifest.sessions.count,
+                        currentItem: "已跳过：\(session.title)"
+                    ))
                     continue
                 }
-                let importedID = isDuplicate ? UUID().uuidString.lowercased() : session.threadID
+                if duplicateStrategy == .skip, conflict.hasResidue {
+                    progress?(SessionImportProgress(
+                        stage: .cleaningConflicts,
+                        completed: index,
+                        total: extracted.manifest.sessions.count,
+                        currentItem: session.title
+                    ))
+                    try cleanupResidue(for: session)
+                }
+                let importedID = duplicateStrategy == .duplicate
+                    ? UUID().uuidString.lowercased()
+                    : session.threadID
                 let source = extracted.root.appendingPathComponent(session.rolloutPath)
+                let importsAsArchived = session.archived && !restoreArchivedAsActive
                 let destination = destinationURL(
                     for: session,
                     importedID: importedID,
-                    projectURL: destinationProjectURL
+                    archived: importsAsArchived
                 )
                 guard !fileManager.fileExists(atPath: destination.path) else {
                     throw ImportError(message: "目标会话文件已存在：\(destination.lastPathComponent)")
@@ -148,6 +314,7 @@ final class SessionImportService: @unchecked Sendable {
                 )
                 let needsRewrite = importedID != session.threadID
                     || destinationProjectURL.path != URL(fileURLWithPath: session.originalCwd).standardizedFileURL.path
+                    || !pathReplacements.isEmpty
                 if needsRewrite {
                     try rewriteJSONL(
                         source: source,
@@ -155,7 +322,9 @@ final class SessionImportService: @unchecked Sendable {
                         originalID: session.threadID,
                         importedID: importedID,
                         originalCwd: session.originalCwd,
-                        importedCwd: destinationProjectURL.path
+                        importedCwd: destinationProjectURL.path,
+                        pathReplacements: pathReplacements,
+                        isCancelled: isCancelled
                     )
                 } else {
                     try fileManager.copyItem(at: source, to: destination)
@@ -167,7 +336,7 @@ final class SessionImportService: @unchecked Sendable {
                     projectName: destinationProjectURL.lastPathComponent,
                     projectPath: destinationProjectURL.path,
                     rolloutURL: destination,
-                    isArchived: session.archived,
+                    isArchived: importsAsArchived,
                     updatedAt: Self.parseDate(session.updatedAt) ?? now(),
                     gitBranch: session.gitBranch,
                     readableMessages: [],
@@ -175,8 +344,21 @@ final class SessionImportService: @unchecked Sendable {
                     ownership: .unknown,
                     visibility: .localOnly
                 ))
+                progress?(SessionImportProgress(
+                    stage: .importing,
+                    completed: index + 1,
+                    total: extracted.manifest.sessions.count,
+                    currentItem: session.title
+                ))
             }
 
+            try checkCancellation(isCancelled)
+            progress?(SessionImportProgress(
+                stage: .binding,
+                completed: importedRecords.count,
+                total: extracted.manifest.sessions.count,
+                currentItem: destinationProjectURL.lastPathComponent
+            ))
             let bindings = try addProjectBindings(for: importedRecords)
             try finishTransactionBackup(at: backupURL, createdFiles: createdFiles)
             return SessionImportResult(
@@ -202,8 +384,9 @@ final class SessionImportService: @unchecked Sendable {
 
     private func extractAndValidateArchive(
         at bundleURL: URL
-    ) throws -> (root: URL, manifest: SessionPortableManifest) {
-        let entries = try archiveEntries(at: bundleURL)
+    ) throws -> (root: URL, manifest: SessionPortableManifest, statistics: SessionImportArchiveStatistics) {
+        let inspection = try inspectArchive(at: bundleURL)
+        let entries = inspection.entries
         guard !entries.isEmpty else { throw ImportError(message: "备份包为空") }
         for entry in entries {
             let normalized = entry.replacingOccurrences(of: "\\", with: "/")
@@ -284,7 +467,7 @@ final class SessionImportService: @unchecked Sendable {
                     == URL(fileURLWithPath: session.originalCwd).standardizedFileURL.path
                 else { throw ImportError(message: "会话文件与 Manifest 项目路径不一致：\(session.title)") }
             }
-            return (root, manifest)
+            return (root, manifest, inspection.statistics)
         } catch {
             try? fileManager.removeItem(at: root)
             throw error
@@ -310,11 +493,11 @@ final class SessionImportService: @unchecked Sendable {
     private func destinationURL(
         for session: SessionPortableManifest.Session,
         importedID: String,
-        projectURL: URL
+        archived: Bool
     ) -> URL {
         let codexHome = homeDirectory.appendingPathComponent(".codex", isDirectory: true)
         let root: URL
-        if session.archived {
+        if archived {
             root = codexHome.appendingPathComponent("archived_sessions", isDirectory: true)
         } else {
             let date = Self.parseDate(session.updatedAt) ?? now()
@@ -326,8 +509,19 @@ final class SessionImportService: @unchecked Sendable {
                 .appendingPathComponent(String(format: "%02d", parts.month ?? 1), isDirectory: true)
                 .appendingPathComponent(String(format: "%02d", parts.day ?? 1), isDirectory: true)
         }
-        let projectSlug = SessionExportService.safeFilenameStem(projectURL.lastPathComponent)
-        return root.appendingPathComponent("rollout-import-\(projectSlug)-\(importedID).jsonl")
+        let date = Self.parseDate(session.updatedAt) ?? now()
+        return root.appendingPathComponent(
+            Self.canonicalRolloutFilename(threadID: importedID, date: date)
+        )
+    }
+
+    static func canonicalRolloutFilename(threadID: String, date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd'T'HH-mm-ss"
+        return "rollout-\(formatter.string(from: date))-\(threadID).jsonl"
     }
 
     private func rewriteJSONL(
@@ -336,7 +530,9 @@ final class SessionImportService: @unchecked Sendable {
         originalID: String,
         importedID: String,
         originalCwd: String,
-        importedCwd: String
+        importedCwd: String,
+        pathReplacements: [String: String],
+        isCancelled: () -> Bool
     ) throws {
         let temporary = destination.deletingLastPathComponent()
             .appendingPathComponent(".\(destination.lastPathComponent).\(UUID().uuidString).tmp")
@@ -352,6 +548,7 @@ final class SessionImportService: @unchecked Sendable {
         }
         var buffer = Data()
         while true {
+            try checkCancellation(isCancelled)
             let chunk = try input.read(upToCount: 256 * 1_024) ?? Data()
             if chunk.isEmpty { break }
             buffer.append(chunk)
@@ -362,7 +559,8 @@ final class SessionImportService: @unchecked Sendable {
                     originalID: originalID,
                     importedID: importedID,
                     originalCwd: originalCwd,
-                    importedCwd: importedCwd
+                    importedCwd: importedCwd,
+                    pathReplacements: pathReplacements
                 )
                 buffer.removeSubrange(...newline)
             }
@@ -374,7 +572,8 @@ final class SessionImportService: @unchecked Sendable {
                 originalID: originalID,
                 importedID: importedID,
                 originalCwd: originalCwd,
-                importedCwd: importedCwd
+                importedCwd: importedCwd,
+                pathReplacements: pathReplacements
             )
         }
         try output.synchronize()
@@ -388,7 +587,8 @@ final class SessionImportService: @unchecked Sendable {
         originalID: String,
         importedID: String,
         originalCwd: String,
-        importedCwd: String
+        importedCwd: String,
+        pathReplacements: [String: String]
     ) throws {
         guard !line.isEmpty,
               let object = try? JSONSerialization.jsonObject(with: line)
@@ -398,7 +598,8 @@ final class SessionImportService: @unchecked Sendable {
             originalID: originalID,
             importedID: importedID,
             originalCwd: originalCwd,
-            importedCwd: importedCwd
+            importedCwd: importedCwd,
+            pathReplacements: pathReplacements
         )
         var data = try JSONSerialization.data(withJSONObject: rewritten)
         data.append(0x0A)
@@ -410,12 +611,133 @@ final class SessionImportService: @unchecked Sendable {
         return fileManager.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
     }
 
+    private func isWritableDirectory(_ url: URL) -> Bool {
+        var isDirectory: ObjCBool = false
+        return fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory)
+            && isDirectory.boolValue
+            && fileManager.isWritableFile(atPath: url.path)
+    }
+
+    private func checkCancellation(_ isCancelled: () -> Bool) throws {
+        if isCancelled() { throw ImportError(message: "导入已取消，已回滚本次写入") }
+    }
+
+    private func cleanupResidue(for session: SessionPortableManifest.Session) throws {
+        let cleanup = CodexSidebarCleanupService(
+            homeDirectory: homeDirectory,
+            pendingURL: pendingCleanupURL,
+            backupRoot: backupRoot.appendingPathComponent("sidebar-cleanups", isDirectory: true),
+            fileManager: fileManager,
+            now: now,
+            codexIsRunning: codexIsRunning
+        )
+        _ = try cleanup.cleanupForValidation(
+            threadID: session.threadID,
+            title: session.title,
+            allowWhileCodexIsRunning: false
+        )
+    }
+
+    private func conflict(threadID: String, jsonlExists: Bool) throws -> SessionImportConflict {
+        let codexHome = homeDirectory.appendingPathComponent(".codex", isDirectory: true)
+        let stateURL = codexHome.appendingPathComponent("state_5.sqlite")
+        let catalogURL = codexHome.appendingPathComponent("sqlite/codex-dev.db")
+        let globalStateURL = codexHome.appendingPathComponent(".codex-global-state.json")
+        let stateDatabaseExists = try sqliteContainsThread(
+            database: stateURL,
+            tables: ["threads", "thread"],
+            threadID: threadID
+        )
+        let catalogExists = try sqliteContainsThread(
+            database: catalogURL,
+            tables: ["local_thread_catalog"],
+            threadID: threadID
+        )
+        var projectBindingExists = false
+        var permissionPreferenceExists = false
+        if fileManager.fileExists(atPath: globalStateURL.path) {
+            let data = try Data(contentsOf: globalStateURL)
+            guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw ImportError(message: "Codex 全局状态不是有效 JSON 对象")
+            }
+            projectBindingExists = (root["thread-project-assignments"] as? [String: Any])?[threadID] != nil
+            let atoms = root["electron-persisted-atom-state"] as? [String: Any]
+            permissionPreferenceExists = (atoms?["heartbeat-thread-permissions-by-id"] as? [String: Any])?[threadID] != nil
+        }
+        let pendingCleanupExists = try loadPendingCleanupIDs().contains(threadID)
+        return SessionImportConflict(
+            threadID: threadID,
+            jsonlExists: jsonlExists,
+            stateDatabaseExists: stateDatabaseExists,
+            catalogExists: catalogExists,
+            projectBindingExists: projectBindingExists,
+            permissionPreferenceExists: permissionPreferenceExists,
+            pendingCleanupExists: pendingCleanupExists
+        )
+    }
+
+    private func loadPendingCleanupIDs() throws -> Set<String> {
+        guard fileManager.fileExists(atPath: pendingCleanupURL.path) else { return [] }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let pending = try decoder.decode(
+            [PendingCodexSidebarCleanup].self,
+            from: Data(contentsOf: pendingCleanupURL)
+        )
+        return Set(pending.map(\.threadID))
+    }
+
+    private func sqliteContainsThread(
+        database: URL,
+        tables: [String],
+        threadID: String
+    ) throws -> Bool {
+        guard fileManager.fileExists(atPath: database.path) else { return false }
+        let availableTables = try sqliteOutput(
+            database: database,
+            sql: "SELECT name FROM sqlite_master WHERE type='table';"
+        ).split(whereSeparator: \.isNewline).map(String.init)
+        for table in tables where availableTables.contains(table) {
+            let columns = try sqliteOutput(
+                database: database,
+                sql: "SELECT name FROM pragma_table_info('\(table)');"
+            ).split(whereSeparator: \.isNewline).map(String.init)
+            guard let idColumn = ["thread_id", "id"].first(where: columns.contains) else { continue }
+            let safeID = threadID.replacingOccurrences(of: "'", with: "''")
+            let value = try sqliteOutput(
+                database: database,
+                sql: "PRAGMA query_only=ON; SELECT EXISTS(SELECT 1 FROM \(table) WHERE \(idColumn)='\(safeID)');"
+            ).trimmingCharacters(in: .whitespacesAndNewlines)
+            if value == "1" { return true }
+        }
+        return false
+    }
+
+    private func sqliteOutput(database: URL, sql: String) throws -> String {
+        let process = Process()
+        let output = Pipe()
+        let errors = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+        process.arguments = [database.path, sql]
+        process.standardOutput = output
+        process.standardError = errors
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            let detail = String(data: errors.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            throw ImportError(message: detail?.isEmpty == false ? detail! : "无法读取 Codex 本地索引")
+        }
+        return String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    }
+
     private static func rewriteValue(
         _ value: Any,
         originalID: String,
         importedID: String,
         originalCwd: String,
         importedCwd: String,
+        pathReplacements: [String: String],
         key: String? = nil
     ) -> Any {
         if let dictionary = value as? [String: Any] {
@@ -427,6 +749,7 @@ final class SessionImportService: @unchecked Sendable {
                     importedID: importedID,
                     originalCwd: originalCwd,
                     importedCwd: importedCwd,
+                    pathReplacements: pathReplacements,
                     key: currentKey
                 )
             }
@@ -438,7 +761,8 @@ final class SessionImportService: @unchecked Sendable {
                     originalID: originalID,
                     importedID: importedID,
                     originalCwd: originalCwd,
-                    importedCwd: importedCwd
+                    importedCwd: importedCwd,
+                    pathReplacements: pathReplacements
                 )
             }
         }
@@ -446,6 +770,11 @@ final class SessionImportService: @unchecked Sendable {
             if (key == "id" || key == "session_id"), string == originalID { return importedID }
             if key == "cwd", URL(fileURLWithPath: string).standardizedFileURL.path
                 == URL(fileURLWithPath: originalCwd).standardizedFileURL.path { return importedCwd }
+            var replaced = string
+            for (source, destination) in pathReplacements where replaced.contains(source) {
+                replaced = replaced.replacingOccurrences(of: source, with: destination)
+            }
+            if replaced != string { return replaced }
         }
         return value
     }
@@ -458,7 +787,7 @@ final class SessionImportService: @unchecked Sendable {
             attributes: [.posixPermissions: 0o700]
         )
         let codexHome = homeDirectory.appendingPathComponent(".codex", isDirectory: true)
-        let candidates = Self.managedStateFiles(codexHome: codexHome)
+        let candidates = managedStateFiles(codexHome: codexHome)
         var managed: [TransactionFile] = []
         for (index, source) in candidates.enumerated() {
             guard fileManager.fileExists(atPath: source.path) else {
@@ -558,23 +887,77 @@ final class SessionImportService: @unchecked Sendable {
         return result.added
     }
 
-    private func archiveEntries(at url: URL) throws -> [String] {
-        let process = Process()
-        let output = Pipe()
-        let errors = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
-        process.arguments = ["-Z1", url.path]
-        process.standardOutput = output
-        process.standardError = errors
-        try process.run()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            let detail = String(data: errors.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            throw ImportError(message: detail.isEmpty ? "无法读取备份包" : detail)
+    private func inspectArchive(
+        at url: URL
+    ) throws -> (entries: [String], statistics: SessionImportArchiveStatistics) {
+        let attributes = try fileManager.attributesOfItem(atPath: url.path)
+        let archiveBytes = (attributes[.size] as? NSNumber)?.int64Value ?? 0
+        guard archiveBytes <= limits.maximumArchiveBytes else {
+            throw ImportError(message: "备份包超过允许的压缩文件大小")
         }
-        return (String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "")
+        let entries = try archiveEntries(at: url)
+        guard entries.count <= limits.maximumEntries else {
+            throw ImportError(message: "备份包文件数过多（\(entries.count) / \(limits.maximumEntries)）")
+        }
+        let listing = try runUnzip(arguments: ["-Z", "-l", url.path])
+        var expandedBytes: Int64 = 0
+        var compressedBytes: Int64 = 0
+        var largestEntryBytes: Int64 = 0
+        for line in listing.split(whereSeparator: \.isNewline) {
+            let columns = line.split(whereSeparator: \.isWhitespace)
+            guard columns.count >= 10,
+                  let mode = columns.first,
+                  mode.first == "-" || mode.first == "d" || mode.first == "l",
+                  let expanded = Int64(columns[3]),
+                  let compressed = Int64(columns[5])
+            else { continue }
+            expandedBytes += expanded
+            compressedBytes += compressed
+            largestEntryBytes = max(largestEntryBytes, expanded)
+        }
+        guard expandedBytes <= limits.maximumExpandedBytes else {
+            throw ImportError(message: "备份包解压后超过允许的总大小")
+        }
+        guard largestEntryBytes <= limits.maximumSingleEntryBytes else {
+            throw ImportError(message: "备份包包含过大的单个文件")
+        }
+        let ratio = compressedBytes > 0
+            ? Double(expandedBytes) / Double(compressedBytes)
+            : (expandedBytes > 0 ? .infinity : 1)
+        guard ratio <= limits.maximumCompressionRatio else {
+            throw ImportError(message: "备份包压缩比异常，已拒绝解压")
+        }
+        return (
+            entries,
+            SessionImportArchiveStatistics(
+                archiveBytes: archiveBytes,
+                entryCount: entries.count,
+                expandedBytes: expandedBytes,
+                largestEntryBytes: largestEntryBytes
+            )
+        )
+    }
+
+    private func archiveEntries(at url: URL) throws -> [String] {
+        try runUnzip(arguments: ["-Z1", url.path])
             .split(whereSeparator: \.isNewline)
             .map(String.init)
+    }
+
+    private func runUnzip(arguments: [String]) throws -> String {
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+        process.arguments = arguments
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw ImportError(message: "无法读取备份包")
+        }
+        return String(decoding: data, as: UTF8.self)
     }
 
     private func runDittoExtract(_ source: URL, to destination: URL) throws {
@@ -591,13 +974,17 @@ final class SessionImportService: @unchecked Sendable {
         }
     }
 
-    private static func managedStateFiles(codexHome: URL) -> [URL] {
+    private func managedStateFiles(codexHome: URL) -> [URL] {
         [
             codexHome.appendingPathComponent("state_5.sqlite"),
             codexHome.appendingPathComponent("state_5.sqlite-wal"),
             codexHome.appendingPathComponent("state_5.sqlite-shm"),
             codexHome.appendingPathComponent("session_index.jsonl"),
             codexHome.appendingPathComponent(".codex-global-state.json"),
+            codexHome.appendingPathComponent("sqlite/codex-dev.db"),
+            codexHome.appendingPathComponent("sqlite/codex-dev.db-wal"),
+            codexHome.appendingPathComponent("sqlite/codex-dev.db-shm"),
+            pendingCleanupURL,
         ]
     }
 
@@ -665,5 +1052,120 @@ final class SessionImportService: @unchecked Sendable {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return decoder
+    }
+}
+
+struct ImportedRolloutPathRepair: Equatable {
+    let thread: LocalThreadRecord
+    let originalURL: URL
+    let repairedURL: URL
+    let backupURL: URL
+}
+
+final class ImportedRolloutPathRepairService {
+    struct RepairError: LocalizedError {
+        let message: String
+        var errorDescription: String? { message }
+    }
+
+    private let fileManager: FileManager
+    private let backupRoot: URL
+    private let now: () -> Date
+
+    init(
+        fileManager: FileManager = .default,
+        backupRoot: URL = AppPaths.continuityBackups
+            .appendingPathComponent("rollout-path-repairs", isDirectory: true),
+        now: @escaping () -> Date = Date.init
+    ) {
+        self.fileManager = fileManager
+        self.backupRoot = backupRoot
+        self.now = now
+    }
+
+    func prepareForDeletion(_ thread: LocalThreadRecord) throws -> ImportedRolloutPathRepair? {
+        let originalURL = thread.rolloutURL
+        guard originalURL.lastPathComponent.hasPrefix("rollout-import-") else { return nil }
+        guard fileManager.fileExists(atPath: originalURL.path) else {
+            throw RepairError(message: "找不到待删除的导入会话文件")
+        }
+        let envelopeDate = SessionContinuityService.parseThreadEnvelope(at: originalURL)?.timestamp
+        let repairedURL = originalURL.deletingLastPathComponent().appendingPathComponent(
+            SessionImportService.canonicalRolloutFilename(
+                threadID: thread.id,
+                date: envelopeDate ?? thread.updatedAt
+            )
+        )
+        guard !fileManager.fileExists(atPath: repairedURL.path) else {
+            throw RepairError(message: "标准 rollout 文件已存在，为避免覆盖已停止删除")
+        }
+
+        let directory = backupRoot.appendingPathComponent(
+            "\(Self.timestamp(now()))-\(thread.id)",
+            isDirectory: true
+        )
+        try fileManager.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let backupURL = directory.appendingPathComponent(originalURL.lastPathComponent)
+        try fileManager.copyItem(at: originalURL, to: backupURL)
+        let manifest: [String: Any] = [
+            "version": 1,
+            "threadId": thread.id,
+            "originalPath": originalURL.path,
+            "repairedPath": repairedURL.path,
+            "createdAt": ISO8601DateFormatter().string(from: now()),
+        ]
+        try JSONSerialization.data(
+            withJSONObject: manifest,
+            options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        ).write(to: directory.appendingPathComponent("manifest.json"), options: .atomic)
+        do {
+            try fileManager.moveItem(at: originalURL, to: repairedURL)
+        } catch {
+            throw RepairError(message: "导入会话文件名修复失败：\(error.localizedDescription)")
+        }
+        return ImportedRolloutPathRepair(
+            thread: thread.withRolloutURL(repairedURL),
+            originalURL: originalURL,
+            repairedURL: repairedURL,
+            backupURL: backupURL
+        )
+    }
+
+    func rollback(_ repair: ImportedRolloutPathRepair) throws {
+        guard fileManager.fileExists(atPath: repair.repairedURL.path),
+              !fileManager.fileExists(atPath: repair.originalURL.path)
+        else { return }
+        try fileManager.moveItem(at: repair.repairedURL, to: repair.originalURL)
+    }
+
+    private static func timestamp(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyyMMdd-HHmmss-SSS"
+        return formatter.string(from: date)
+    }
+}
+
+private extension LocalThreadRecord {
+    func withRolloutURL(_ url: URL) -> LocalThreadRecord {
+        LocalThreadRecord(
+            id: id,
+            title: title,
+            projectName: projectName,
+            projectPath: projectPath,
+            rolloutURL: url,
+            isArchived: isArchived,
+            updatedAt: updatedAt,
+            gitBranch: gitBranch,
+            readableMessages: readableMessages,
+            kind: kind,
+            ownership: ownership,
+            visibility: visibility
+        )
     }
 }
