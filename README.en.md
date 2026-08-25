@@ -47,13 +47,13 @@ The app does not collapse “official quota,” “local statistics,” “commu
 
 ## Interface preview
 
-### Expanded Glance panel
+### Expanded Glance panel and transparency
 
 <p align="center">
-  <img src="docs/images/glance-expanded-retina.png" alt="Codex Monitor expanded Glance panel" width="34%">
+  <img src="docs/images/glance-transparent-retina.png" alt="Codex Monitor transparent expanded Glance panel" width="38%">
 </p>
 
-Glance focuses on the current account. It combines weekly quota, Spark quota, Credits, the quota reset action, estimated cost, today's and 30-day token usage, and token activity in one narrow panel. The bottom actions refresh all data, open Dynamic Center, and enter the full Monitor Center.
+Glance focuses on the current account. It combines weekly quota, Spark quota, Credits, the quota reset action, estimated cost, today's and 30-day token usage, and token activity in one narrow panel. The panel uses an adjustable translucent dark background; the screenshot preserves the code and colors behind the window so the real background-through-panel effect is visible. The bottom actions refresh all data, open Dynamic Center, and enter the full Monitor Center.
 
 ### Usage and Cost
 
@@ -89,13 +89,17 @@ Session Management shows the current account, local project and session counts, 
 
 Panel Settings controls which quota, Credits, reset, token, and cost modules appear in Glance. Activity Island Settings switches between the floating island and menu-bar-only modes and configures information density, opacity, scale, animation, and completion feedback.
 
-### Menu bar quota ring
+### Running menu bar and quota ring
+
+<p align="center">
+  <img src="docs/images/menu-bar-running-retina.png" alt="Codex Monitor menu bar while a task is running" width="82%">
+</p>
 
 <p align="center">
   <img src="docs/images/menu-bar-quota-rings.png" alt="Codex Monitor menu bar quota ring states" width="58%">
 </p>
 
-The menu bar quota ring shows the quota window that needs the most attention for the current account. On notched MacBooks, readable content stays in the safe wings to the left and right of the camera. On notchless displays and external monitors, the app automatically falls back to a top capsule layout.
+While a task is running, the compact menu bar area shows the running icon and status dot, current phase, latest action, and quota percentage. The real screenshot above shows the task in the Thinking phase, with Inspect Image / Local Image as the latest activity and `94%` quota remaining. The quota ring shows the quota window that needs the most attention for the current account. On notched MacBooks, readable content stays in the safe wings to the left and right of the camera. On notchless displays and external monitors, the app automatically falls back to a top capsule layout.
 
 ## Feature details
 

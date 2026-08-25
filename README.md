@@ -47,13 +47,13 @@ Codex Monitor 是一个使用 SwiftUI 与 AppKit 构建的原生 macOS 菜单栏
 
 ## 界面预览
 
-### Glance 展开面板
+### Glance 展开面板与透明效果
 
 <p align="center">
-  <img src="docs/images/glance-expanded-retina.png" alt="Codex Monitor Glance 展开面板" width="34%">
+  <img src="docs/images/glance-transparent-retina.png" alt="Codex Monitor 透明 Glance 展开面板" width="38%">
 </p>
 
-Glance 只聚焦当前账号，把周额度、Spark 额度、Credits、额度重置入口、成本估算、今日与 30 日 Token、Token 活动集中在一个窄面板中。底部按钮分别用于刷新、打开动态中心和进入完整 Monitor Center。
+Glance 只聚焦当前账号，把周额度、Spark 额度、Credits、额度重置入口、成本估算、今日与 30 日 Token、Token 活动集中在一个窄面板中。面板使用可调透明度的深色背景；上图保留了背后的代码和颜色，可以直接看到背景透过面板的真实效果。底部按钮分别用于刷新、打开动态中心和进入完整 Monitor Center。
 
 ### Usage 与 Cost
 
@@ -89,13 +89,17 @@ Usage 与 Cost 使用相同的账号范围、周期选择、字体层级和卡�
 
 面板设置用于控制 Glance 中额度、Credits、重置入口、Token 与成本模块；灵动岛设置用于切换浮动状态岛或仅菜单栏模式，并调整信息密度、透明度、缩放、动画和完成反馈。
 
-### 菜单栏额度环
+### 运行态菜单栏与额度环
+
+<p align="center">
+  <img src="docs/images/menu-bar-running-retina.png" alt="Codex Monitor 任务运行态菜单栏" width="82%">
+</p>
 
 <p align="center">
   <img src="docs/images/menu-bar-quota-rings.png" alt="Codex Monitor 菜单栏额度环不同状态" width="58%">
 </p>
 
-菜单栏额度环显示当前账号最需要关注的额度窗口。带刘海的 MacBook 会把可读信息放在摄像头左右安全翼；无刘海屏幕和外接显示器会自动使用顶部胶囊布局。
+运行态菜单栏会在一个紧凑区域中显示运行图标与状态点、当前阶段、最近动作和额度百分比。上面的真实截图表示任务处于“思考”阶段，最近动作是“检查图片／本地图片”，当前额度为 `94%`。额度环则显示当前账号最需要关注的额度窗口。带刘海的 MacBook 会把可读信息放在摄像头左右安全翼；无刘海屏幕和外接显示器会自动使用顶部胶囊布局。
 
 ## 功能详解
 
