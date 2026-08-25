@@ -8,13 +8,14 @@
 [![SwiftUI + AppKit](https://img.shields.io/badge/SwiftUI%20%2B%20AppKit-native-F05138?style=flat-square&logo=swift&logoColor=white)](Package.swift)
 [![Universal 2](https://img.shields.io/badge/Universal%202-arm64%20%2B%20x86__64-2563EB?style=flat-square)](scripts/build-app.sh)
 [![Local first](https://img.shields.io/badge/data-local%20first-10B981?style=flat-square)](#数据来源准确性与隐私边界)
+[![License: MIT](https://img.shields.io/badge/License-MIT-F7DF1E?style=flat-square)](LICENSE)
 
 由 [CoverAI](https://coverai.store/?utm_source=github&utm_medium=repository&utm_campaign=codex_monitor_readme) 构建。
 
 </div>
 
 > [!IMPORTANT]
-> 当前 [GitHub Releases](https://github.com/suguxiaojie/codex-notch-monitor/releases) 尚未提供可下载版本。请先从源码构建；README 不再提供会指向空 Release 的下载徽章。源码中的应用版本为 `1.5.0 (Build 11)`。
+> 最新版本为 [`v1.5.0 (Build 11)`](https://github.com/suguxiaojie/codex-notch-monitor/releases/tag/v1.5.0)。Release 分别提供 Apple Silicon `arm64` 与 Intel `x86_64` 安装包，请按 Mac 处理器选择对应 DMG。
 
 ## 目录
 
@@ -47,8 +48,8 @@ Codex Monitor 是一个使用 SwiftUI 与 AppKit 构建的原生 macOS 菜单栏
 ### Usage 与 Cost
 
 <p align="center">
-  <img src="docs/images/monitor-center-usage.jpeg" alt="Codex Monitor Usage 页面" width="49%">
-  <img src="docs/images/monitor-center-cost.jpeg" alt="Codex Monitor Cost 页面" width="49%">
+  <img src="docs/images/monitor-center-usage-retina.png" alt="Codex Monitor Usage 页面" width="49%">
+  <img src="docs/images/monitor-center-cost-retina.png" alt="Codex Monitor Cost 页面" width="49%">
 </p>
 
 Usage 与 Cost 使用相同的账号范围、周期选择、字体层级和卡片结构。顶部的“日／周／月”是唯一统计周期：分别对应当前自然日、最近 7 个统计日和最近 30 个统计日，并同步影响总量、趋势或活动、会话数、项目数及项目排行。
@@ -56,7 +57,7 @@ Usage 与 Cost 使用相同的账号范围、周期选择、字体层级和卡�
 ### 动态中心
 
 <p align="center">
-  <img src="docs/images/dynamic-center.jpeg" alt="Codex Monitor 动态中心" width="82%">
+  <img src="docs/images/dynamic-center-retina.png" alt="Codex Monitor 动态中心" width="82%">
 </p>
 
 动态中心把官方额度状态与第三方社区雷达分开呈现：额度百分比来自 Codex App Server；Tibo 动态、重置时间轴与概率预测来自 `codex-reset.com`，不是 OpenAI 官方接口。
@@ -551,4 +552,4 @@ docs/images/                          README 当前真实界面截图
 
 ## 许可证
 
-项目当前尚未指定对外开源许可证。没有许可证并不等于可以自由复制、修改或再发布；正式开放第三方复用前，应先补充明确的许可证文件。
+本项目使用 [MIT License](LICENSE)，Copyright (c) 2026 CoverAI。你可以在保留版权与许可声明的前提下使用、复制、修改、合并、发布、分发、再许可或销售本软件；软件按“原样”提供，不附带任何明示或默示担保。
