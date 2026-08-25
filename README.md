@@ -45,6 +45,14 @@ Codex Monitor 是一个使用 SwiftUI 与 AppKit 构建的原生 macOS 菜单栏
 
 ## 界面预览
 
+### Glance 展开面板
+
+<p align="center">
+  <img src="docs/images/glance-expanded-retina.png" alt="Codex Monitor Glance 展开面板" width="34%">
+</p>
+
+Glance 只聚焦当前账号，把周额度、Spark 额度、Credits、额度重置入口、成本估算、今日与 30 日 Token、Token 活动集中在一个窄面板中。底部按钮分别用于刷新、打开动态中心和进入完整 Monitor Center。
+
 ### Usage 与 Cost
 
 <p align="center">
@@ -61,6 +69,23 @@ Usage 与 Cost 使用相同的账号范围、周期选择、字体层级和卡�
 </p>
 
 动态中心把官方额度状态与第三方社区雷达分开呈现：额度百分比来自 Codex App Server；Tibo 动态、重置时间轴与概率预测来自 `codex-reset.com`，不是 OpenAI 官方接口。
+
+### 会话管理
+
+<p align="center">
+  <img src="docs/images/session-management-retina.png" alt="Codex Monitor 会话管理页面" width="82%">
+</p>
+
+会话管理展示当前账号、本地项目与会话数量、已归档和待恢复状态，并提供会话包／完整项目迁移包导入。项目与会话操作收在省略号菜单中；基线前无法可靠归属的历史明确保留为“归属未知”。
+
+### 面板设置与灵动岛设置
+
+<p align="center">
+  <img src="docs/images/panel-settings-retina.png" alt="Codex Monitor 面板设置页面" width="49%">
+  <img src="docs/images/activity-island-settings-retina.png" alt="Codex Monitor 灵动岛设置页面" width="49%">
+</p>
+
+面板设置用于控制 Glance 中额度、Credits、重置入口、Token 与成本模块；灵动岛设置用于切换浮动状态岛或仅菜单栏模式，并调整信息密度、透明度、缩放、动画和完成反馈。
 
 ### 菜单栏额度环
 
