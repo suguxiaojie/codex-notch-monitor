@@ -1,5 +1,7 @@
 <div align="center">
 
+<p><strong>简体中文</strong> · <a href="README.en.md">English</a></p>
+
 # Codex Monitor for macOS
 
 **把 Codex 的额度、Token、成本、实时任务、重置信号和本机会话集中到一个原生 macOS 应用中。**
@@ -562,7 +564,7 @@ docs/images/                          README 当前真实界面截图
 - 动态中心不是 OpenAI 官方消息源；Tibo 动态和社区概率只能作为额度变化的辅助证据。
 - Cost 不是账单；模型公开价格变化会影响估算，未知模型按 `$0`。
 - 原始会话和项目迁移包含敏感内容，不适合公开分享。
-- 当前使用 ad-hoc 签名，没有 Developer ID 公证、自动更新签名或已发布 GitHub Release。
+- 当前使用 ad-hoc 签名，没有 Developer ID 公证或自动更新签名；GitHub Release 已提供手动下载。
 
 ## 官方协议依据
 
