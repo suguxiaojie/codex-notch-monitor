@@ -170,6 +170,7 @@ final class MonitorStore: ObservableObject {
     private var tiboFeedTimer: Timer?
     private var notificationStatusTimer: Timer?
     private var codexSetupTimer: Timer?
+    private var appUpdateTimer: Timer?
     private var accountTimer: Timer?
     private var accountStateRefreshWorkItem: DispatchWorkItem?
     private var codexTerminationObserver: NSObjectProtocol?
@@ -304,6 +305,12 @@ final class MonitorStore: ObservableObject {
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
             self?.checkForAppUpdate(force: false)
+        }
+        appUpdateTimer = Timer.scheduledTimer(
+            withTimeInterval: AppUpdateService.automaticCheckInterval,
+            repeats: true
+        ) { [weak self] _ in
+            Task { @MainActor in self?.checkForAppUpdate(force: false) }
         }
         codexSetupTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshCodexSetup() }
@@ -2401,6 +2408,7 @@ final class MonitorStore: ObservableObject {
 
     deinit {
         codexSetupTimer?.invalidate()
+        appUpdateTimer?.invalidate()
         if let codexTerminationObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(codexTerminationObserver)
         }

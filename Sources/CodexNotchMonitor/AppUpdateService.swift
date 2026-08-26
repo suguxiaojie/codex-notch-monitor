@@ -176,7 +176,7 @@ final class AppUpdateService {
     )!
     static let releasePagePrefix = "https://github.com/\(repository)/releases/tag/"
     static let releaseDownloadPrefix = "https://github.com/\(repository)/releases/download/"
-    static let automaticCheckInterval: TimeInterval = 24 * 60 * 60
+    static let automaticCheckInterval: TimeInterval = 30 * 60
     static let maximumPayloadSize = 2 * 1_024 * 1_024
     static let maximumAssetSize: Int64 = 512 * 1_024 * 1_024
 

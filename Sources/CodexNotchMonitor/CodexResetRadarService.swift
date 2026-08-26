@@ -1,5 +1,36 @@
 import Foundation
 
+enum CodexResetContentTag: String, Equatable {
+    case limit = "限额"
+    case banked = "储备"
+    case fulfilled = "已兑现"
+    case reset = "重置"
+    case preview = "预告"
+}
+
+enum CodexResetRadarPresentation {
+    static func contentTag(
+        tweetKind: String,
+        explicitResetClaim: Bool,
+        eventType: String?,
+        eventPreview: Bool,
+        eventSource: String?,
+        eventConfidence: String?
+    ) -> CodexResetContentTag? {
+        if tweetKind == "limits" { return .limit }
+        if eventType == "credits" { return .banked }
+        if eventType == "reset",
+           eventPreview == false,
+           eventSource == "archive",
+           eventConfidence == "high" {
+            return .fulfilled
+        }
+        if explicitResetClaim { return .reset }
+        if tweetKind == "signal" || eventPreview { return .preview }
+        return nil
+    }
+}
+
 struct CodexResetRadarProfile: Codable, Equatable {
     let handle: String
     let name: String

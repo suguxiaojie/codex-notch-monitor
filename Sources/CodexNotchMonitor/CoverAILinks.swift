@@ -4,7 +4,6 @@ import Foundation
 enum CoverAILinks {
     enum Campaign: String {
         case brandAttribution = "brand_attribution"
-        case dashboardCard = "dashboard_card"
         case appMenu = "app_menu"
     }
 

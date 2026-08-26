@@ -84,11 +84,25 @@ enum AppUpdateServiceTests {
             "recent check is reused"
         )
         check(
-            AppUpdateService.shouldCheckAutomatically(
-                lastCheckedAt: now.addingTimeInterval(-25 * 60 * 60),
+            !AppUpdateService.shouldCheckAutomatically(
+                lastCheckedAt: now.addingTimeInterval(-29 * 60),
                 now: now
             ),
-            "stale check refreshes"
+            "cache remains valid before thirty minutes"
+        )
+        check(
+            AppUpdateService.shouldCheckAutomatically(
+                lastCheckedAt: now.addingTimeInterval(-30 * 60),
+                now: now
+            ),
+            "cache refreshes at thirty minutes"
+        )
+        check(
+            AppUpdateService.shouldCheckAutomatically(
+                lastCheckedAt: now.addingTimeInterval(-31 * 60),
+                now: now
+            ),
+            "stale cache refreshes after thirty minutes"
         )
         let suite = "AppUpdateServiceTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
@@ -169,7 +183,7 @@ enum AppUpdateServiceTests {
             check(true, "reject external latest page redirect")
         }
 
-        print("App update tests: 41/41 passed")
+        print("App update tests: 43/43 passed")
     }
 
     private static func expectDecodeFailure(

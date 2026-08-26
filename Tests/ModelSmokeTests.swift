@@ -569,9 +569,8 @@ enum ModelSmokeTests {
         )
         check(
             attributionItems.contains(URLQueryItem(name: "utm_campaign", value: "brand_attribution"))
-                && CoverAILinks.url(for: .dashboardCard)?.absoluteString.contains("utm_campaign=dashboard_card") == true
                 && CoverAILinks.url(for: .appMenu)?.absoluteString.contains("utm_campaign=app_menu") == true,
-            "CoverAI entry points use distinct campaigns"
+            "remaining CoverAI entry points use their intended campaigns"
         )
         try? FileManager.default.removeItem(at: fixtureURL)
 

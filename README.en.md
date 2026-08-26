@@ -12,12 +12,13 @@
 [![Local first](https://img.shields.io/badge/data-local%20first-10B981?style=flat-square)](#data-sources-accuracy-and-privacy-boundaries)
 [![License: MIT](https://img.shields.io/badge/License-MIT-F7DF1E?style=flat-square)](LICENSE)
 
-Built by [CoverAI](https://coverai.store/?utm_source=github&utm_medium=repository&utm_campaign=codex_monitor_readme_en).
-
 </div>
 
 > [!IMPORTANT]
-> The latest version is [`v1.5.1 (Build 12)`](https://github.com/suguxiaojie/codex-notch-monitor/releases/tag/v1.5.1). The Release provides separate DMGs for Apple Silicon `arm64` and Intel `x86_64`; choose the package that matches your Mac.
+> The latest version is [`v1.5.2 (Build 13)`](https://github.com/suguxiaojie/codex-notch-monitor/releases/tag/v1.5.2). The Release provides separate DMGs for Apple Silicon `arm64` and Intel `x86_64`; choose the package that matches your Mac.
+
+> [!TIP]
+> **Sponsor: CoverAI top-up service** — [Visit CoverAI](https://www.coverai.store/)
 
 ## Table of contents
 
@@ -62,7 +63,7 @@ Glance focuses on the current account. It combines weekly quota, Spark quota, Cr
   <img src="docs/images/monitor-center-cost-retina.png" alt="Codex Monitor Cost page" width="49%">
 </p>
 
-Usage and Cost share the same account scope, period selector, typography hierarchy, and card geometry. The top Day / Week / Month selector is the single reporting period: it represents the current calendar day, the latest 7 reporting days, or the latest 30 reporting days, and updates totals, trend or activity, session count, project count, and project ranking together.
+Usage and Cost share account scope, typography, and card language while using periods suited to each dataset. Both pages keep an independent Activity card first with 30 Days / 90 Days / Six Months and the page-wide account scope. Usage links Week / Month / Three Months Trend to Project Usage; Cost links Day / Week / Month Trend to Log Sources. Remaining Quota now uses the same icon, title, badge, and trailing-detail header.
 
 ### Dynamic Center
 
@@ -114,7 +115,7 @@ Glance is the panel used most often in daily work. It shows only the **current r
 - Shows the current Credits balance.
 - Displays available quota-reset credits, their expiration, and the manual reset action.
 - Shows the local API-equivalent cost estimate, today's tokens, 30-day tokens, and token activity.
-- Week / Month / Three Months / Six Months apply only to cost and token activity inside Glance; they do not change Monitor Center's Day / Week / Month reporting periods.
+- Glance keeps its own Week / Month / Three Months / Six Months observation ranges and does not change the independent selectors in Monitor Center cards.
 - Provides bottom actions for refresh, Monitor Center, Activity Island Settings, and quit.
 - Panel Settings can show or hide quota, cost, Credits, token activity, and reset modules individually and adjust panel opacity.
 
@@ -126,12 +127,13 @@ Usage calculates tokens from local structured Codex session logs. It does not de
 
 - Scans both `~/.codex/sessions/` and `~/.codex/archived_sessions/`.
 - Deduplicates structured token events so a session that briefly exists in both active and archived storage is not counted twice.
-- Uses one consistent Day / Week / Month period selector.
+- Keeps Token Activity first with 30 Days / 90 Days / Six Months, independent from Trend.
+- Places Token Trend next with Week / Month / Three Months; Project Usage follows immediately and displays the period inherited from Trend.
 - Shows total tokens split into input, output, and cache.
 - Displays session count, project count, and per-project usage ranking.
 - Uses the full project path as the stable aggregation key while preferring the local Codex sidebar alias as the display name.
-- Trend mode displays non-cumulative hourly or calendar-day buckets and stops at the current time instead of drawing future empty buckets as a sudden drop to zero.
-- Activity mode uses a token-density heatmap to show active dates.
+- Trend displays non-cumulative calendar-day buckets and drives the project ranking for the same period.
+- The Activity card uses a token-density heatmap with an independent range.
 - Hovering a trend point or activity cell reveals the exact time and token count.
 - When reliable structured evidence shows that a session's project path changed, the latest path updates its project attribution.
 - Account scope can show combined statistics, an observed account, or unattributed history. Baseline history is never guessed to belong to the current account.
@@ -140,7 +142,9 @@ Usage calculates tokens from local structured Codex session logs. It does not de
 
 Cost reuses the same local structured-log scan as Usage and keeps the same period, account, and project scope.
 
-- Shows Day / Week / Month API-equivalent cost in USD.
+- Keeps Cost Activity first with 30 Days / 90 Days / Six Months and the page-wide account scope.
+- Uses Day / Week / Month for API-equivalent Cost Trend.
+- Places Log Sources directly after Trend with a `Follows Trend · Period` context label.
 - Calculates input, output, cache-write, and cache-read tokens separately.
 - Displays token throughput, hourly or daily cost trends, and local log sources.
 - Refreshes model prices daily from the public [CodexIsland Model Catalog](https://ericjypark.github.io/codex-island-model-catalog/v1/models.json) and ships with an embedded fallback table.
@@ -159,6 +163,9 @@ Dynamic Center preserves the complete feed while using hierarchy and filters to 
 - Community forecasts are labeled separately with their confidence level and are never presented as official conclusions.
 - Feed mode keeps the complete relevant `@thsottiaux` timeline and groups entries by date.
 - Supports All / Reset Signals / Quota Updates filters.
+- Ordinary posts no longer repeat a generic Dynamic tag; only Limits, Reserve, Fulfilled, Reset, and Preview use semantic content tags.
+- Live Radar, Archived Evidence, and confidence are status metadata shown as text or dots rather than encoded through content-tag color.
+- Recovery History remains a neutral action with a separate count instead of sharing forecast-confidence or content-tag capsule styling.
 - A pinned signal highlights the latest confirmed or otherwise important quota event.
 - Reset Timeline presents previews, arrival, confirmation, archival, and evidence links as related events rather than renaming an ordinary list.
 - Each item keeps its original link, source account, publication time, and engagement counts and can open the original post on X.
@@ -230,7 +237,7 @@ Monitor Center currently contains seven pages:
 | Setup & Permissions | First-run setup, notification permission, Hook installation/review, connection verification, and app updates |
 | Activity Island Settings | Appearance, position, scale, and animation for menu bar and floating island modes |
 
-The Setup & Permissions maintenance page includes an app-update card. It checks GitHub Latest Release at most once per day in the background and also supports manual checks. When an update is available, it selects the correct DMG for Apple Silicon or Intel Mac, shows release notes, file size, and a shortened SHA-256 digest, and offers Remind Later, View Notes, and Download DMG actions. The icon rotates while checking and uses a subtle breathing effect for an available update; Reduce Motion disables continuous animation. This version guides the user through download and manual installation and never replaces `/Applications` automatically.
+The Setup & Permissions maintenance page includes an app-update card. It checks GitHub Latest Release after launch, repeats automatically every 30 minutes while the app runs, reuses cache younger than 30 minutes when Settings opens, and also supports an immediate manual check. When an update is available, it selects the correct DMG for Apple Silicon or Intel Mac, shows release notes, file size, and a shortened SHA-256 digest, and offers Remind Later, View Notes, and Download DMG actions. The icon rotates while checking and uses a subtle breathing effect for an available update; Reduce Motion disables continuous animation. This version guides the user through download and manual installation and never replaces `/Applications` automatically. Only a Release with a higher semantic version is an update; pushing `main` or replacing same-version assets is not.
 
 ## Data sources, accuracy, and privacy boundaries
 

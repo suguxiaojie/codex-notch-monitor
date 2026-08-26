@@ -37,6 +37,46 @@ enum UsagePeriod: String, CaseIterable, Identifiable {
     }
 }
 
+enum UsageTrendPeriod: String, CaseIterable, Identifiable {
+    case week = "周"
+    case month = "月"
+    case quarter = "三月"
+
+    var id: String { rawValue }
+
+    var dayCount: Int {
+        switch self {
+        case .week: return 7
+        case .month: return 30
+        case .quarter: return 90
+        }
+    }
+
+    var emptyHistoryTitle: String {
+        switch self {
+        case .week: return "近 7 日暂无活动"
+        case .month: return "近 30 日暂无活动"
+        case .quarter: return "近 90 日暂无活动"
+        }
+    }
+}
+
+enum ActivityPeriod: String, CaseIterable, Identifiable {
+    case month = "30 日"
+    case quarter = "90 日"
+    case halfYear = "半年"
+
+    var id: String { rawValue }
+
+    var dayCount: Int {
+        switch self {
+        case .month: return 30
+        case .quarter: return 90
+        case .halfYear: return 180
+        }
+    }
+}
+
 struct ProjectUsage: Identifiable, Equatable {
     var id: String { path }
     let name: String
@@ -72,6 +112,7 @@ struct UsageSnapshot: Equatable {
     var day: UsageTotals
     var week: UsageTotals
     var month: UsageTotals
+    var quarter: UsageTotals
     var activity: [DailyTokenActivity]
     var activityIsReady: Bool
 
@@ -83,10 +124,19 @@ struct UsageSnapshot: Equatable {
         }
     }
 
+    func totals(for period: UsageTrendPeriod) -> UsageTotals {
+        switch period {
+        case .week: return week
+        case .month: return month
+        case .quarter: return quarter
+        }
+    }
+
     static let empty = UsageSnapshot(
         day: UsageTotals(series: Array(repeating: 0, count: 24)),
         week: UsageTotals(series: Array(repeating: 0, count: 7)),
         month: UsageTotals(series: Array(repeating: 0, count: 30)),
+        quarter: UsageTotals(series: Array(repeating: 0, count: 90)),
         activity: [],
         activityIsReady: false
     )
@@ -718,6 +768,7 @@ final class CostService {
         let todayStart = calendar.startOfDay(for: now)
         let weekStart = calendar.date(byAdding: .day, value: -6, to: todayStart) ?? todayStart
         let monthStart = calendar.date(byAdding: .day, value: -29, to: todayStart) ?? todayStart
+        let quarterStart = calendar.date(byAdding: .day, value: -89, to: todayStart) ?? todayStart
         return UsageSnapshot(
             day: usageTotals(events, from: todayStart, seriesCount: 24, projectNames: projectNames) { event in
                 calendar.component(.hour, from: event.timestamp)
@@ -727,6 +778,9 @@ final class CostService {
             },
             month: usageTotals(events, from: monthStart, seriesCount: 30, projectNames: projectNames) { event in
                 max(0, min(29, calendar.dateComponents([.day], from: monthStart, to: event.timestamp).day ?? 0))
+            },
+            quarter: usageTotals(events, from: quarterStart, seriesCount: 90, projectNames: projectNames) { event in
+                max(0, min(89, calendar.dateComponents([.day], from: quarterStart, to: event.timestamp).day ?? 0))
             },
             activity: includeActivity
                 ? dailyTokenActivity(events, now: now, calendar: calendar)

@@ -63,13 +63,6 @@ enum MonitorViewSurface {
     case center
 }
 
-private enum UsageVisualizationMode: String, CaseIterable, Identifiable {
-    case trend = "趋势"
-    case activity = "活动"
-
-    var id: String { rawValue }
-}
-
 private enum TiboRadarMode: String, CaseIterable, Identifiable {
     case live = "实时动态"
     case timeline = "重置时间轴"
@@ -101,11 +94,11 @@ struct NotchView: View {
     let surface: MonitorViewSurface
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var expandedPage: MonitorCenterSection
-    @State private var usagePeriod: UsagePeriod = .day
+    @State private var usagePeriod: UsageTrendPeriod = .week
+    @State private var usageActivityPeriod: ActivityPeriod = .month
+    @State private var costActivityPeriod: ActivityPeriod = .month
     @State private var costPeriod: UsagePeriod = .day
     @State private var usageAccountScopeID = UsageAccountScope.all
-    @State private var usageVisualizationMode: UsageVisualizationMode = .trend
-    @State private var costVisualizationMode: UsageVisualizationMode = .trend
     @AppStorage(ActivityIslandPreferenceKey.enabled) private var activityIslandEnabled = true
     @AppStorage(ActivityIslandPreferenceKey.mode) private var activityIslandModeRaw = ActivityIslandMode.floating.rawValue
     @State private var compactHideWorkItem: DispatchWorkItem?
@@ -1173,8 +1166,11 @@ struct NotchView: View {
         case .usage:
             ScrollView(.vertical, showsIndicators: true) {
                 VStack(spacing: 12) {
-                    usageOverviewCard
-                    usageProjectCard
+                    usageActivityCard
+                    VStack(spacing: 8) {
+                        usageOverviewCard
+                        usageProjectCard
+                    }
                     quotaCard
                 }
             }
@@ -2606,12 +2602,20 @@ struct NotchView: View {
                 tiboForecastMetric("48h", store.tiboRadar?.forecast.probabilities.rounded48H)
             }
 
-            Text("社区预测 · \(tiboForecastConfidenceText)")
-                .font(AstaSans.semiBold(8))
-                .foregroundStyle(.orange)
-                .padding(.horizontal, 8)
-                .frame(height: 22)
-                .background(Color.orange.opacity(0.07), in: Capsule())
+            Rectangle()
+                .fill(MonitorTheme.separator)
+                .frame(width: 1, height: 22)
+
+            HStack(spacing: 5) {
+                Text("社区预测")
+                    .foregroundStyle(MonitorTheme.tertiaryText)
+                Circle()
+                    .fill(tiboForecastConfidenceColor)
+                    .frame(width: 5, height: 5)
+                Text(tiboForecastConfidenceText)
+                    .foregroundStyle(tiboForecastConfidenceColor)
+            }
+            .font(AstaSans.semiBold(8))
 
             Spacer(minLength: 6)
 
@@ -2624,16 +2628,25 @@ struct NotchView: View {
                         Text("恢复记录")
                         Text("\(tiboQuotaHistoryCount)")
                             .monospacedDigit()
+                            .foregroundStyle(MonitorTheme.primaryText)
+                            .padding(.horizontal, 5)
+                            .frame(height: 16)
+                            .background(Color.white.opacity(0.08), in: Capsule())
                     }
                     .font(AstaSans.semiBold(8))
                     .foregroundStyle(
                         showsTiboQuotaHistory
                             ? MonitorTheme.cyanAccent
-                            : MonitorTheme.tertiaryText
+                            : MonitorTheme.secondaryText
                     )
                     .padding(.horizontal, 8)
                     .frame(height: 24)
-                    .background(MonitorTheme.controlFill, in: Capsule())
+                    .background(
+                        showsTiboQuotaHistory
+                            ? MonitorTheme.cyanAccent.opacity(0.08)
+                            : MonitorTheme.controlFill,
+                        in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    )
                 }
                 .buttonStyle(.plain)
                 .popover(isPresented: $showsTiboQuotaHistory, arrowEdge: .bottom) {
@@ -2914,6 +2927,14 @@ struct NotchView: View {
         }
     }
 
+    private var tiboForecastConfidenceColor: Color {
+        switch store.tiboRadar?.forecast.confidence {
+        case "high": return .green
+        case "medium": return .cyan
+        default: return .orange
+        }
+    }
+
     private var tiboSourceFreshnessText: String {
         if let error = store.tiboFeedError { return "显示缓存 · \(error)" }
         guard let date = store.tiboRadar?.fetchedDate ?? store.tiboFeedFetchedAt else {
@@ -2992,6 +3013,8 @@ struct NotchView: View {
                 .lineSpacing(2)
                 .lineLimit(3)
             HStack(spacing: 7) {
+                Image(systemName: "info.circle")
+                    .font(.system(size: 8, weight: .medium))
                 Text(metadata.joined(separator: " · "))
                 Spacer()
                 Button {
@@ -2999,7 +3022,7 @@ struct NotchView: View {
                     NSWorkspace.shared.open(url)
                 } label: {
                     HStack(spacing: 4) {
-                        Text(displaysFulfillment ? "查看兑现证据" : "在 X 查看")
+                        Text(displaysFulfillment ? "查看证据" : "在 X 查看")
                         Image(systemName: "arrow.up.right")
                     }
                 }
@@ -3056,24 +3079,35 @@ struct NotchView: View {
 
             Spacer()
 
-            ForEach(TiboRadarFilter.allCases) { filter in
-                Button {
-                    animate(.islandContentSwap) { tiboRadarFilter = filter }
-                } label: {
-                    Text(tiboFilterTitle(filter))
-                        .font(AstaSans.semiBold(8))
-                        .foregroundStyle(tiboRadarFilter == filter ? MonitorTheme.cyanAccent : MonitorTheme.tertiaryText)
-                        .padding(.horizontal, 8)
-                        .frame(height: 24)
-                        .background(
-                            tiboRadarFilter == filter
-                                ? MonitorTheme.cyanAccent.opacity(0.08)
-                                : Color.clear,
-                            in: Capsule()
-                        )
+            HStack(spacing: 2) {
+                ForEach(TiboRadarFilter.allCases) { filter in
+                    Button {
+                        animate(.islandContentSwap) { tiboRadarFilter = filter }
+                    } label: {
+                        Text(tiboFilterTitle(filter))
+                            .font(AstaSans.semiBold(8))
+                            .foregroundStyle(
+                                tiboRadarFilter == filter
+                                    ? MonitorTheme.primaryText
+                                    : MonitorTheme.faintText
+                            )
+                            .padding(.horizontal, 8)
+                            .frame(height: 22)
+                            .background(
+                                tiboRadarFilter == filter
+                                    ? Color.white.opacity(0.07)
+                                    : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            )
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
+            .padding(2)
+            .background(
+                MonitorTheme.subtleCardFill.opacity(0.72),
+                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+            )
         }
     }
 
@@ -3143,18 +3177,21 @@ struct NotchView: View {
         let event = radar.timelineEvents.first { $0.id == tweet.id }
         let title = tiboHeadline(tweet.displayText)
         let body = tiboBodyText(tweet.displayText)
+        let contentTag = tiboTweetTag(tweet, event: event)
         return VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 7) {
-                Text(tiboTweetTag(tweet, event: event))
-                    .font(AstaSans.semiBold(8))
-                    .foregroundStyle(tiboTweetColor(tweet, event: event))
-                    .padding(.horizontal, 7)
-                    .frame(height: 21)
-                    .background(tiboTweetColor(tweet, event: event).opacity(0.08), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .strokeBorder(tiboTweetColor(tweet, event: event).opacity(0.35), lineWidth: 0.7)
-                    }
+                if let contentTag {
+                    Text(contentTag.rawValue)
+                        .font(AstaSans.semiBold(8))
+                        .foregroundStyle(tiboTweetColor(contentTag))
+                        .padding(.horizontal, 7)
+                        .frame(height: 21)
+                        .background(tiboTweetColor(contentTag).opacity(0.08), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                .strokeBorder(tiboTweetColor(contentTag).opacity(0.35), lineWidth: 0.7)
+                        }
+                }
                 Text(title)
                     .font(AstaSans.semiBold(10.8))
                     .lineLimit(1)
@@ -3173,6 +3210,9 @@ struct NotchView: View {
             HStack(spacing: 11) {
                 Text("@thsottiaux")
                 Text("·")
+                Circle()
+                    .fill(tiboTweetEvidenceColor(event))
+                    .frame(width: 4, height: 4)
                 Text(event.map(tiboTimelineSourceLabel) ?? "实时雷达")
                 Button {
                     guard let url = URL(string: tweet.url) else { return }
@@ -3388,23 +3428,30 @@ struct NotchView: View {
     private func tiboTweetTag(
         _ tweet: CodexResetRadarTweet,
         event: CodexResetTimelineEvent?
-    ) -> String {
-        if tweet.kind == "limits" { return "限额" }
-        if event?.type == "credits" { return "储备" }
-        if tweet.explicitResetClaim == true { return "重置" }
-        if tweet.kind == "signal" || event?.preview == true { return "预告" }
-        return "动态"
+    ) -> CodexResetContentTag? {
+        CodexResetRadarPresentation.contentTag(
+            tweetKind: tweet.kind,
+            explicitResetClaim: tweet.explicitResetClaim == true,
+            eventType: event?.type,
+            eventPreview: event?.preview == true,
+            eventSource: event?.source,
+            eventConfidence: event?.confidence
+        )
     }
 
-    private func tiboTweetColor(
-        _ tweet: CodexResetRadarTweet,
-        event: CodexResetTimelineEvent?
-    ) -> Color {
-        if tweet.kind == "limits" { return .orange }
-        if event?.type == "credits" { return .orange }
-        if event?.source == "archive", event?.confidence == "high" { return .green }
-        if tweet.explicitResetClaim == true || event?.preview == true { return .cyan }
-        return MonitorTheme.secondaryText
+    private func tiboTweetColor(_ tag: CodexResetContentTag) -> Color {
+        switch tag {
+        case .limit, .banked: return .orange
+        case .fulfilled: return .green
+        case .reset, .preview: return .cyan
+        }
+    }
+
+    private func tiboTweetEvidenceColor(_ event: CodexResetTimelineEvent?) -> Color {
+        guard let event else { return MonitorTheme.faintText }
+        if event.source == "archive", event.confidence == "high" { return .green }
+        if event.source == "archive" { return .cyan }
+        return MonitorTheme.faintText
     }
 
     private func tiboTimelineTitle(_ event: CodexResetTimelineEvent) -> String {
@@ -3829,9 +3876,11 @@ struct NotchView: View {
     private var costPage: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: MonitorGeometry.pageGap) {
-                costOverviewCard
-                providerCostCard
-                coverAIPromoCard
+                costActivityCard
+                VStack(spacing: 8) {
+                    costOverviewCard
+                    providerCostCard
+                }
             }
         }
     }
@@ -3839,6 +3888,11 @@ struct NotchView: View {
     private var costOverviewCard: some View {
         let totals = selectedCost
         return VStack(alignment: .leading, spacing: MonitorGeometry.overviewItemGap) {
+            dataCardHeader(
+                symbol: "chart.xyaxis.line",
+                title: "成本趋势"
+            ) { Text("API 等价成本趋势") }
+
             HStack(spacing: 3) {
                 ForEach(UsagePeriod.allCases) { period in
                     Button {
@@ -3862,8 +3916,6 @@ struct NotchView: View {
                 MonitorTheme.subtleCardFill,
                 in: RoundedRectangle(cornerRadius: MonitorTheme.controlCornerRadius, style: .continuous)
             )
-
-            accountScopeControl
 
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
@@ -3900,35 +3952,19 @@ struct NotchView: View {
             .foregroundStyle(MonitorTheme.tertiaryText)
             .lineLimit(1)
 
-            costVisualizationSelector
+            CostTrendChart(
+                values: Array(selectedCost.series.prefix(costVisiblePointCount)),
+                period: costPeriod
+            )
+            .frame(height: MonitorGeometry.chartHeight)
 
-            if costVisualizationMode == .trend {
-                CostTrendChart(
-                    values: Array(selectedCost.series.prefix(costVisiblePointCount)),
-                    period: costPeriod
-                )
-                .frame(height: MonitorGeometry.chartHeight)
-
-                HStack {
-                    Text(costTrendStartLabel)
-                    Spacer()
-                    Text(costTrendEndLabel)
-                }
-                .font(MonitorTypography.body)
-                .foregroundStyle(MonitorTheme.faintText)
-            } else {
-                if !selectedCostScope.usage.activityIsReady {
-                    Text("正在整理成本活动…")
-                        .font(AstaSans.regular(10.5))
-                        .foregroundStyle(MonitorTheme.tertiaryText)
-                        .frame(maxWidth: .infinity, minHeight: 48)
-                } else {
-                    CostActivityHeatmap(
-                        activity: selectedCostActivity,
-                        reduceMotion: reduceMotion
-                    )
-                }
+            HStack {
+                Text(costTrendStartLabel)
+                Spacer()
+                Text(costTrendEndLabel)
             }
+            .font(MonitorTypography.body)
+            .foregroundStyle(MonitorTheme.faintText)
         }
         .padding(MonitorGeometry.cardPadding)
         .background(
@@ -3939,118 +3975,82 @@ struct NotchView: View {
         .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: totals.tokens)
     }
 
-    private var coverAIPromoCard: some View {
-        Button {
-            CoverAILinks.open(.dashboardCard)
-        } label: {
-            HStack(spacing: 10) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [.cyan.opacity(0.22), .blue.opacity(0.12)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
+    private var costActivityCard: some View {
+        VStack(alignment: .leading, spacing: MonitorGeometry.overviewItemGap) {
+            dataCardHeader(
+                symbol: "square.grid.3x3.fill",
+                title: "成本活动"
+            ) { Text("每日成本密度") }
+
+            HStack(spacing: 3) {
+                ForEach(ActivityPeriod.allCases) { period in
+                    Button {
+                        animate(.islandContentSwap) { costActivityPeriod = period }
+                    } label: {
+                        Text(period.rawValue)
+                            .font(AstaSans.semiBold(10.5))
+                            .frame(maxWidth: .infinity, minHeight: 22)
+                            .foregroundStyle(
+                                costActivityPeriod == period
+                                    ? MonitorTheme.primaryText
+                                    : MonitorTheme.tertiaryText
                             )
-                        )
-                    Image(systemName: "sparkles")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.cyan.opacity(0.92))
+                            .background(
+                                costActivityPeriod == period
+                                    ? Color.white.opacity(0.11)
+                                    : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            )
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                 }
-                .frame(width: 31, height: 31)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("CoverAI")
-                        .font(MonitorTypography.cardTitle)
-                    Text("发现实用的 AI 工具、订阅与使用指南")
-                        .font(MonitorTypography.body)
-                        .foregroundStyle(.white.opacity(0.44))
-                        .lineLimit(1)
-                }
-
-                Spacer(minLength: 8)
-
-                HStack(spacing: 4) {
-                    Text("访问官网")
-                    Image(systemName: "arrow.up.right")
-                }
-                .font(MonitorTypography.control)
-                .foregroundStyle(.cyan.opacity(0.78))
             }
-            .padding(.horizontal, 11)
-            .frame(maxWidth: .infinity, minHeight: 49, maxHeight: 49)
+            .padding(3)
             .background(
-                LinearGradient(
-                    colors: [.white.opacity(0.065), .cyan.opacity(0.035)],
-                    startPoint: .leading,
-                    endPoint: .trailing
-                ),
-                in: RoundedRectangle(cornerRadius: MonitorGeometry.cardRadius, style: .continuous)
+                MonitorTheme.subtleCardFill,
+                in: RoundedRectangle(cornerRadius: MonitorTheme.controlCornerRadius, style: .continuous)
             )
-            .overlay {
-                RoundedRectangle(cornerRadius: MonitorGeometry.cardRadius, style: .continuous)
-                    .strokeBorder(.cyan.opacity(0.10), lineWidth: 0.6)
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(CompactPressButtonStyle())
-        .help("在默认浏览器打开 coverai.store")
-        .accessibilityLabel("访问 CoverAI 官网")
-    }
 
-    private var costTrendCard: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            costVisualizationSelector
+            accountScopeControl
 
-            if costVisualizationMode == .trend {
-                CostTrendChart(
-                    values: Array(selectedCost.series.prefix(costVisiblePointCount)),
-                    period: costPeriod
-                )
-                .frame(height: MonitorGeometry.chartHeight)
-
-                HStack {
-                    Text(costTrendStartLabel)
-                    Spacer()
-                    Text(costTrendEndLabel)
-                }
-                .font(.system(size: 7.5, weight: .medium, design: .rounded))
-                .foregroundStyle(.white.opacity(0.28))
+            if !selectedCostScope.usage.activityIsReady {
+                Text("正在整理成本活动…")
+                    .font(AstaSans.regular(10.5))
+                    .foregroundStyle(MonitorTheme.tertiaryText)
+                    .frame(maxWidth: .infinity, minHeight: 48)
             } else {
-                if !selectedCostScope.usage.activityIsReady {
-                    Text("正在整理成本活动…")
-                        .font(AstaSans.regular(10.5))
-                        .foregroundStyle(MonitorTheme.tertiaryText)
-                        .frame(maxWidth: .infinity, minHeight: 48)
-                } else {
-                    CostActivityHeatmap(
-                        activity: selectedCostActivity,
-                        reduceMotion: reduceMotion
-                    )
-                }
+                CostActivityHeatmap(
+                    activity: selectedCostActivity,
+                    reduceMotion: reduceMotion
+                )
             }
         }
-        .padding(11)
+        .padding(MonitorGeometry.cardPadding)
         .background(
             MonitorTheme.cardFill,
-            in: RoundedRectangle(cornerRadius: MonitorTheme.compactCardCornerRadius, style: .continuous)
+            in: RoundedRectangle(cornerRadius: MonitorGeometry.cardRadius, style: .continuous)
         )
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: costActivityPeriod)
     }
 
     private var providerCostCard: some View {
-        VStack(spacing: 7) {
-            HStack {
-                Text("本地日志来源")
-                    .font(MonitorTypography.cardTitle)
-                    .foregroundStyle(.white.opacity(0.55))
-                Spacer()
-                if store.isCostLoading { ProgressView().controlSize(.mini).tint(.cyan) }
-                Button { store.refreshCost() } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.45))
+        VStack(alignment: .leading, spacing: 7) {
+            dataCardHeader(
+                symbol: "doc.text.fill",
+                title: "日志来源"
+            ) {
+                HStack(spacing: 6) {
+                    Text("跟随趋势 · \(costPeriod.rawValue)")
+                    if store.isCostLoading { ProgressView().controlSize(.mini).tint(.cyan) }
+                    Button { store.refreshCost() } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.45))
+                    }
+                    .buttonStyle(.plain)
+                    .help("刷新成本数据")
                 }
-                .buttonStyle(.plain)
             }
             ForEach(selectedCostScope.providers) { provider in
                 let totals = provider.totals(for: costPeriod)
@@ -4062,9 +4062,6 @@ struct NotchView: View {
                         Text(provider.provider.rawValue)
                             .font(MonitorTypography.cardTitle)
                         Spacer()
-                        Text(costPeriod.rawValue + "统计")
-                            .font(MonitorTypography.metadata)
-                            .foregroundStyle(.white.opacity(0.34))
                     }
                     HStack {
                         if totals.tokens == 0 {
@@ -4234,25 +4231,31 @@ struct NotchView: View {
             return "仅显示基线前或尚无可靠账号归属的记录"
         }
         if shouldOfferMonthlyHistoryShortcut {
-            return "(selectedPagePeriod.emptyActivityTitle) · 近 30 日 (formatCompactTokens(selectedCostScope.usage.month.tokens))"
+            return "\(selectedPageEmptyHistoryTitle) · 近 30 日 \(formatCompactTokens(selectedCostScope.usage.month.tokens))"
         }
         if selectedCostScope.usage.month.tokens == 0,
            store.costSnapshot.unknownAccount.usage.month.tokens > 0 {
-            return "暂无可靠归属记录 · 未归属历史 (formatCompactTokens(store.costSnapshot.unknownAccount.usage.month.tokens))"
+            return "暂无可靠归属记录 · 未归属历史 \(formatCompactTokens(store.costSnapshot.unknownAccount.usage.month.tokens))"
         }
         return "仅显示插件可靠观察到归属该账号的会话"
     }
 
-    private var selectedPagePeriod: UsagePeriod {
-        expandedPage == .cost ? costPeriod : usagePeriod
+    private var selectedPageEmptyHistoryTitle: String {
+        if expandedPage == .cost { return costPeriod.emptyActivityTitle }
+        return usagePeriod.emptyHistoryTitle
     }
 
     private var shouldOfferMonthlyHistoryShortcut: Bool {
         guard usageAccountScopeID != UsageAccountScope.all,
-              usageAccountScopeID != UsageAccountScope.unknown,
-              selectedPagePeriod != .month
+              usageAccountScopeID != UsageAccountScope.unknown
         else { return false }
-        return selectedCostScope.usage.totals(for: selectedPagePeriod).tokens == 0
+        if expandedPage == .cost {
+            guard costPeriod != .month else { return false }
+            return selectedCostScope.usage.totals(for: costPeriod).tokens == 0
+                && selectedCostScope.usage.month.tokens > 0
+        }
+        guard usagePeriod != .month else { return false }
+        return selectedCostScope.usage.totals(for: usagePeriod).tokens == 0
             && selectedCostScope.usage.month.tokens > 0
     }
 
@@ -4276,7 +4279,7 @@ struct NotchView: View {
     }
 
     private var selectedCostActivity: [DailyCostActivity] {
-        Array(selectedCostScope.costActivity.suffix(costPeriod.activityDayCount))
+        Array(selectedCostScope.costActivity.suffix(costActivityPeriod.dayCount))
     }
 
     private var costPeriodTitle: String {
@@ -4284,49 +4287,6 @@ struct NotchView: View {
         case .day: return "今日 API 等价成本"
         case .week: return "近 7 日 API 等价成本"
         case .month: return "近 30 日 API 等价成本"
-        }
-    }
-
-    private var costTrendContext: String {
-        switch costPeriod {
-        case .day: return "今日 · 每小时成本"
-        case .week: return "近 7 日 · 每日成本"
-        case .month: return "近 30 日 · 每日成本"
-        }
-    }
-
-    private var costVisualizationSelector: some View {
-        HStack(spacing: 4) {
-            ForEach(UsageVisualizationMode.allCases) { mode in
-                Button {
-                    animate(.islandContentSwap) { costVisualizationMode = mode }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: mode == .trend ? "chart.xyaxis.line" : "square.grid.3x3.fill")
-                            .font(.system(size: 7.5, weight: .semibold))
-                        Text(mode.rawValue)
-                    }
-                    .font(AstaSans.semiBold(9))
-                    .foregroundStyle(
-                        costVisualizationMode == mode
-                            ? MonitorTheme.primaryText
-                            : MonitorTheme.tertiaryText
-                    )
-                    .padding(.horizontal, 8)
-                    .frame(minHeight: 22)
-                    .background(
-                        costVisualizationMode == mode
-                            ? Color.white.opacity(0.10)
-                            : Color.clear,
-                        in: Capsule()
-                    )
-                }
-                .buttonStyle(.plain)
-            }
-            Spacer(minLength: 0)
-            Text(costVisualizationMode == .trend ? costTrendContext : "按当前周期 · 每日成本密度")
-                .font(AstaSans.regular(9))
-                .foregroundStyle(MonitorTheme.faintText)
         }
     }
 
@@ -4362,49 +4322,54 @@ struct NotchView: View {
     }
 
     private var selectedTokenActivity: [DailyTokenActivity] {
-        Array(selectedCostScope.usage.activity.suffix(usagePeriod.activityDayCount))
+        Array(selectedCostScope.usage.activity.suffix(usageActivityPeriod.dayCount))
     }
 
-    private var usageVisualizationSelector: some View {
-        HStack(spacing: 4) {
-            ForEach(UsageVisualizationMode.allCases) { mode in
-                Button {
-                    animate(.islandContentSwap) { usageVisualizationMode = mode }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: mode == .trend ? "chart.xyaxis.line" : "square.grid.3x3.fill")
-                            .font(.system(size: 7.5, weight: .semibold))
-                        Text(mode.rawValue)
+    private func dataCardHeader<Trailing: View>(
+        symbol: String,
+        title: String,
+        badge: String? = nil,
+        @ViewBuilder trailing: () -> Trailing
+    ) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: symbol)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(MonitorTheme.cyanAccent)
+                .frame(width: 12)
+            Text(title)
+                .font(MonitorTypography.cardTitle)
+                .foregroundStyle(MonitorTheme.primaryText)
+            if let badge {
+                Text(badge)
+                    .font(.system(size: 7, weight: .bold, design: .rounded))
+                    .tracking(0.35)
+                    .foregroundStyle(MonitorTheme.cyanAccent)
+                    .padding(.horizontal, 6)
+                    .frame(height: 15)
+                    .background(MonitorTheme.cyanAccent.opacity(0.09), in: Capsule())
+                    .overlay {
+                        Capsule().strokeBorder(MonitorTheme.cyanAccent.opacity(0.15), lineWidth: 0.5)
                     }
-                    .font(AstaSans.semiBold(9))
-                    .foregroundStyle(
-                        usageVisualizationMode == mode
-                            ? MonitorTheme.primaryText
-                            : MonitorTheme.tertiaryText
-                    )
-                    .padding(.horizontal, 8)
-                    .frame(minHeight: 22)
-                    .background(
-                        usageVisualizationMode == mode
-                            ? Color.white.opacity(0.10)
-                            : Color.clear,
-                        in: Capsule()
-                    )
-                }
-                .buttonStyle(.plain)
             }
-            Spacer(minLength: 0)
-            Text(usageVisualizationMode == .trend ? "按当前周期" : "按当前周期 · 每日 Token 密度")
-                .font(AstaSans.regular(9))
+            Spacer(minLength: 8)
+            trailing()
+                .font(MonitorTypography.metadata)
                 .foregroundStyle(MonitorTheme.faintText)
+                .lineLimit(1)
         }
+        .frame(minHeight: 18)
     }
 
     private var usageOverviewCard: some View {
         let usage = selectedUsage
         return VStack(alignment: .leading, spacing: MonitorGeometry.overviewItemGap) {
+            dataCardHeader(
+                symbol: "chart.xyaxis.line",
+                title: "Token 趋势"
+            ) { Text("每日 Token 趋势") }
+
             HStack(spacing: 3) {
-                ForEach(UsagePeriod.allCases) { period in
+                ForEach(UsageTrendPeriod.allCases) { period in
                     Button {
                         animate(.islandContentSwap) { usagePeriod = period }
                     } label: {
@@ -4426,8 +4391,6 @@ struct NotchView: View {
                 MonitorTheme.subtleCardFill,
                 in: RoundedRectangle(cornerRadius: MonitorTheme.controlCornerRadius, style: .continuous)
             )
-
-            accountScopeControl
 
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
@@ -4457,35 +4420,19 @@ struct NotchView: View {
             .foregroundStyle(MonitorTheme.tertiaryText)
             .lineLimit(1)
 
-            usageVisualizationSelector
+            UsageTrendChart(
+                values: Array(usage.series.prefix(usageVisiblePointCount)),
+                period: usagePeriod
+            )
+            .frame(height: 58)
 
-            if usageVisualizationMode == .trend {
-                UsageTrendChart(
-                    values: Array(usage.series.prefix(usageVisiblePointCount)),
-                    period: usagePeriod
-                )
-                .frame(height: 58)
-
-                HStack {
-                    Text(usageTrendStartLabel)
-                    Spacer()
-                    Text(usageTrendEndLabel)
-                }
-                .font(AstaSans.regular(9))
-                .foregroundStyle(MonitorTheme.faintText)
-            } else {
-                if !selectedCostScope.usage.activityIsReady {
-                    Text("正在整理 Token 活动…")
-                        .font(AstaSans.regular(10.5))
-                        .foregroundStyle(MonitorTheme.tertiaryText)
-                        .frame(maxWidth: .infinity, minHeight: 48)
-                } else {
-                    TokenActivityHeatmap(
-                        activity: selectedTokenActivity,
-                        reduceMotion: reduceMotion
-                    )
-                }
+            HStack {
+                Text(usageTrendStartLabel)
+                Spacer()
+                Text(usageTrendEndLabel)
             }
+            .font(AstaSans.regular(9))
+            .foregroundStyle(MonitorTheme.faintText)
         }
         .padding(MonitorGeometry.cardPadding)
         .background(
@@ -4497,19 +4444,73 @@ struct NotchView: View {
         .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: usage.projectCount)
     }
 
+    private var usageActivityCard: some View {
+        VStack(alignment: .leading, spacing: MonitorGeometry.overviewItemGap) {
+            dataCardHeader(
+                symbol: "square.grid.3x3.fill",
+                title: "Token 活动"
+            ) { Text("每日 Token 密度") }
+
+            HStack(spacing: 3) {
+                ForEach(ActivityPeriod.allCases) { period in
+                    Button {
+                        animate(.islandContentSwap) { usageActivityPeriod = period }
+                    } label: {
+                        Text(period.rawValue)
+                            .font(AstaSans.semiBold(10.5))
+                            .frame(maxWidth: .infinity, minHeight: 22)
+                            .foregroundStyle(
+                                usageActivityPeriod == period
+                                    ? MonitorTheme.primaryText
+                                    : MonitorTheme.tertiaryText
+                            )
+                            .background(
+                                usageActivityPeriod == period
+                                    ? Color.white.opacity(0.11)
+                                    : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            )
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(3)
+            .background(
+                MonitorTheme.subtleCardFill,
+                in: RoundedRectangle(cornerRadius: MonitorTheme.controlCornerRadius, style: .continuous)
+            )
+
+            accountScopeControl
+
+            if !selectedCostScope.usage.activityIsReady {
+                Text("正在整理 Token 活动…")
+                    .font(AstaSans.regular(10.5))
+                    .foregroundStyle(MonitorTheme.tertiaryText)
+                    .frame(maxWidth: .infinity, minHeight: 48)
+            } else {
+                TokenActivityHeatmap(
+                    activity: selectedTokenActivity,
+                    reduceMotion: reduceMotion
+                )
+            }
+        }
+        .padding(MonitorGeometry.cardPadding)
+        .background(
+            MonitorTheme.cardFill,
+            in: RoundedRectangle(cornerRadius: MonitorGeometry.cardRadius, style: .continuous)
+        )
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: usageActivityPeriod)
+    }
+
     private var usageProjectCard: some View {
         let usage = selectedUsage
         let topProjects = Array(usage.projects.prefix(4))
         return VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("项目用量排行")
-                    .font(AstaSans.semiBold(10.5))
-                    .foregroundStyle(.white.opacity(0.55))
-                Spacer()
-                Text(usagePeriod.rawValue + "统计")
-                    .font(AstaSans.regular(9))
-                    .foregroundStyle(.white.opacity(0.32))
-            }
+            dataCardHeader(
+                symbol: "folder.fill",
+                title: "项目用量"
+            ) { Text("跟随趋势 · \(usagePeriod.rawValue)") }
             if topProjects.isEmpty {
                 Text("当前周期暂无本地 Token 记录")
                     .font(AstaSans.regular(10.5))
@@ -4549,37 +4550,26 @@ struct NotchView: View {
 
     private var usagePeriodTitle: String {
         switch usagePeriod {
-        case .day: return "今日 Token"
         case .week: return "近 7 日 Token"
         case .month: return "近 30 日 Token"
+        case .quarter: return "近 90 日 Token"
         }
     }
 
     private var usageVisiblePointCount: Int {
-        let calendar = Calendar.current
-        switch usagePeriod {
-        case .day:
-            return min(selectedUsage.series.count, calendar.component(.hour, from: Date()) + 1)
-        case .week:
-            return min(selectedUsage.series.count, 7)
-        case .month:
-            return min(selectedUsage.series.count, 30)
-        }
+        min(selectedUsage.series.count, usagePeriod.dayCount)
     }
 
     private var usageTrendStartLabel: String {
         switch usagePeriod {
-        case .day: return "00 时"
         case .week: return rollingDateLabel(daysAgo: 6)
         case .month: return rollingDateLabel(daysAgo: 29)
+        case .quarter: return rollingDateLabel(daysAgo: 89)
         }
     }
 
     private var usageTrendEndLabel: String {
-        switch usagePeriod {
-        case .day: return "23 时"
-        case .week, .month: return rollingDateLabel(daysAgo: 0)
-        }
+        rollingDateLabel(daysAgo: 0)
     }
 
     private func rollingDateLabel(daysAgo: Int) -> String {
@@ -4597,29 +4587,15 @@ struct NotchView: View {
     }
 
     private var quotaCard: some View {
-        VStack(alignment: .leading, spacing: 11) {
-            HStack {
-                Text("剩余额度")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.55))
-                if let planType = OpenAIPlanDisplayName.resolve(
-                    store.quotaState.primaryBucket?.planType
-                ) {
-                    Text(planType)
-                        .font(.system(size: 7, weight: .bold, design: .rounded))
-                        .tracking(0.35)
-                        .foregroundStyle(.cyan.opacity(0.72))
-                        .padding(.horizontal, 6)
-                        .frame(height: 15)
-                        .background(.cyan.opacity(0.09), in: Capsule(style: .continuous))
-                        .overlay {
-                            Capsule(style: .continuous)
-                                .strokeBorder(.cyan.opacity(0.15), lineWidth: 0.5)
-                        }
-                }
-                Spacer()
-                quotaFreshness
-            }
+        let planType = OpenAIPlanDisplayName.resolve(
+            store.quotaState.primaryBucket?.planType
+        )
+        return VStack(alignment: .leading, spacing: 11) {
+            dataCardHeader(
+                symbol: "chart.pie.fill",
+                title: "剩余额度",
+                badge: planType
+            ) { quotaFreshness }
 
             if store.quotaState.buckets.isEmpty {
                 HStack {
@@ -5544,12 +5520,11 @@ private struct TokenActivityHeatmap: View {
     }
 
     private func cellColor(tokens: Int) -> Color {
-        guard tokens > 0 else { return Color.white.opacity(0.12) }
-        let ratio = Double(tokens) / Double(maximumTokens)
-        if ratio < 0.25 { return Color.white.opacity(0.28) }
-        if ratio < 0.50 { return Color.white.opacity(0.44) }
-        if ratio < 0.75 { return Color.white.opacity(0.62) }
-        return Color.white.opacity(0.82)
+        let level = ActivityHeatmapScale.level(
+            value: Double(tokens),
+            maximum: Double(maximumTokens)
+        )
+        return Color.white.opacity(ActivityHeatmapPalette.opacity(for: level))
     }
 
     private func scheduleHover(day: DailyTokenActivity, hovering: Bool) {
@@ -5701,13 +5676,8 @@ private struct CostActivityHeatmap: View {
     }
 
     private func cellColor(dollars: Double) -> Color {
-        switch CostActivityScale.level(dollars: dollars, maximum: maximumDollars) {
-        case 0: return Color.white.opacity(0.12)
-        case 1: return Color.cyan.opacity(0.22)
-        case 2: return Color.cyan.opacity(0.38)
-        case 3: return Color.cyan.opacity(0.58)
-        default: return Color.cyan.opacity(0.82)
-        }
+        let level = ActivityHeatmapScale.level(value: dollars, maximum: maximumDollars)
+        return Color.white.opacity(ActivityHeatmapPalette.opacity(for: level))
     }
 
     private func scheduleHover(day: DailyCostActivity, hovering: Bool) {
@@ -5742,7 +5712,7 @@ private struct CostActivityHeatmap: View {
 
 private struct UsageTrendChart: View {
     let values: [Double]
-    let period: UsagePeriod
+    let period: UsageTrendPeriod
     @State private var hoveredIndex: Int?
 
     var body: some View {
@@ -5856,8 +5826,6 @@ private struct UsageTrendChart: View {
         let calendar = Calendar.current
         let now = Date()
         switch period {
-        case .day:
-            return String(format: "%02d:00–%02d:59", index, index)
         case .week:
             let today = calendar.startOfDay(for: now)
             let start = calendar.date(byAdding: .day, value: -6, to: today) ?? today
@@ -5866,6 +5834,11 @@ private struct UsageTrendChart: View {
         case .month:
             let today = calendar.startOfDay(for: now)
             let start = calendar.date(byAdding: .day, value: -29, to: today) ?? today
+            let date = calendar.date(byAdding: .day, value: index, to: start) ?? start
+            return "\(calendar.component(.month, from: date))月\(calendar.component(.day, from: date))日"
+        case .quarter:
+            let today = calendar.startOfDay(for: now)
+            let start = calendar.date(byAdding: .day, value: -89, to: today) ?? today
             let date = calendar.date(byAdding: .day, value: index, to: start) ?? start
             return "\(calendar.component(.month, from: date))月\(calendar.component(.day, from: date))日"
         }

@@ -76,6 +76,18 @@ enum CostSmokeTests {
     }
 
     private static func verifyTokenActivityGridGeometry() {
+        check(
+            UsageTrendPeriod.allCases.map(\.rawValue) == ["周", "月", "三月"],
+            "Usage trend exposes week, month, and quarter filters"
+        )
+        check(UsageTrendPeriod.week.dayCount == 7, "weekly Usage trend uses seven daily points")
+        check(UsageTrendPeriod.month.dayCount == 30, "monthly Usage trend uses thirty daily points")
+        check(UsageTrendPeriod.quarter.dayCount == 90, "quarterly Usage trend uses ninety daily points")
+        check(UsageSnapshot.empty.quarter.series.count == 90, "empty quarterly Usage trend keeps ninety buckets")
+        check(
+            ActivityPeriod.allCases.map(\.dayCount) == [30, 90, 180],
+            "standalone Usage and Cost activity expose 30-day, 90-day, and half-year ranges"
+        )
         check(UsagePeriod.day.activityDayCount == 1, "daily activity follows the daily summary period")
         check(UsagePeriod.week.activityDayCount == 7, "weekly activity follows the weekly summary period")
         check(UsagePeriod.month.activityDayCount == 30, "monthly activity follows the monthly summary period")
@@ -92,6 +104,15 @@ enum CostSmokeTests {
         check(CostActivityScale.level(dollars: 3, maximum: 10) == 2, "quarter-cost activity uses level two")
         check(CostActivityScale.level(dollars: 6, maximum: 10) == 3, "mid-cost activity uses level three")
         check(CostActivityScale.level(dollars: 10, maximum: 10) == 4, "maximum-cost activity uses level four")
+        check(
+            (0...4).map(ActivityHeatmapPalette.opacity(for:)) == [0.12, 0.28, 0.44, 0.62, 0.82],
+            "Token and Cost activity share one neutral heatmap palette"
+        )
+        check(
+            ActivityHeatmapScale.level(value: 6, maximum: 10)
+                == CostActivityScale.level(dollars: 6, maximum: 10),
+            "Token and Cost activity share the same density thresholds"
+        )
         let weeklyCostRanges = CostActivityBucketLayout.ranges(dayCount: 7, rangeDays: 7)
         check(weeklyCostRanges.count == 7, "weekly cost chart uses seven daily bars")
         let monthlyCostRanges = CostActivityBucketLayout.ranges(dayCount: 30, rangeDays: 30)
@@ -192,6 +213,7 @@ enum CostSmokeTests {
             event("account-2-week-start", daysAgo: 6, input: 200),
             event("unknown-month-start", daysAgo: 29, input: 300),
             event("outside-window", daysAgo: 30, input: 400),
+            event("quarter-only", daysAgo: 60, input: 500),
         ]
         let context = UsageAccountContext(
             accounts: [
@@ -221,9 +243,12 @@ enum CostSmokeTests {
         check(snapshot.usage.week.series[6] == 100, "rolling week ends today")
         check(snapshot.usage.month.series[0] == 300, "rolling month starts 29 days ago")
         check(snapshot.usage.month.series[29] == 100, "rolling month ends today")
+        check(snapshot.usage.quarter.tokens == 1_500, "rolling 90 days includes the full quarterly window")
+        check(snapshot.usage.quarter.series[29] == 500, "quarterly Usage trend places the 60-day event correctly")
+        check(snapshot.usage.quarter.series[89] == 100, "quarterly Usage trend ends on today")
         check(snapshot.usage.activity.count == 180, "activity keeps a stable 180-day range")
         check(snapshot.usage.activity.last?.date == today, "activity ends on today")
-        check(snapshot.usage.activity.reduce(0) { $0 + $1.tokens } == 1_000, "activity includes events outside the 30-day summary")
+        check(snapshot.usage.activity.reduce(0) { $0 + $1.tokens } == 1_500, "activity includes events outside the 30-day summary")
         check(snapshot.costActivity.count == 180, "cost activity keeps a stable 180-day range")
         check(snapshot.costActivity.last?.date == today, "cost activity ends on today")
         check(

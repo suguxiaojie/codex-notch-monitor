@@ -120,8 +120,38 @@ enum TiboFeedTests {
         radarSnapshotRejectsUntrustedSource()
         radarSnapshotRejectsInvalidForecast()
         pinnedSignalResolutionTracksPreviewFulfillment()
+        contentTagPolicySeparatesTypeFromEvidenceState()
 
-        print("Tibo feed tests passed (30 checks).")
+        print("Tibo feed tests passed (36 checks).")
+    }
+
+    private static func contentTagPolicySeparatesTypeFromEvidenceState() {
+        func tag(
+            kind: String = "other",
+            explicit: Bool = false,
+            type: String? = nil,
+            preview: Bool = false,
+            source: String? = nil,
+            confidence: String? = nil
+        ) -> CodexResetContentTag? {
+            CodexResetRadarPresentation.contentTag(
+                tweetKind: kind,
+                explicitResetClaim: explicit,
+                eventType: type,
+                eventPreview: preview,
+                eventSource: source,
+                eventConfidence: confidence
+            )
+        }
+        check(tag() == nil, "ordinary live updates do not display a redundant dynamic tag")
+        check(tag(kind: "limits") == .limit, "limit updates keep the limit tag")
+        check(tag(type: "credits") == .banked, "banked resets keep the reserve tag")
+        check(
+            tag(type: "reset", source: "archive", confidence: "high") == .fulfilled,
+            "archived high-confidence reset evidence uses the fulfilled tag"
+        )
+        check(tag(explicit: true) == .reset, "explicit reset claims keep the reset tag")
+        check(tag(kind: "signal", preview: true) == .preview, "preview signals keep the preview tag")
     }
 
     private static func radarSnapshotDecodesAndMapsEvidence() {

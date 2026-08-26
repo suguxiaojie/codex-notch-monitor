@@ -14,14 +14,32 @@ enum TokenActivityLayout {
     }
 }
 
-enum CostActivityScale {
-    static func level(dollars: Double, maximum: Double) -> Int {
-        guard dollars > 0, maximum > 0 else { return 0 }
-        let ratio = dollars / maximum
+enum ActivityHeatmapScale {
+    static func level(value: Double, maximum: Double) -> Int {
+        guard value > 0, maximum > 0 else { return 0 }
+        let ratio = value / maximum
         if ratio < 0.25 { return 1 }
         if ratio < 0.50 { return 2 }
         if ratio < 0.75 { return 3 }
         return 4
+    }
+}
+
+enum ActivityHeatmapPalette {
+    static func opacity(for level: Int) -> Double {
+        switch level {
+        case 0: return 0.12
+        case 1: return 0.28
+        case 2: return 0.44
+        case 3: return 0.62
+        default: return 0.82
+        }
+    }
+}
+
+enum CostActivityScale {
+    static func level(dollars: Double, maximum: Double) -> Int {
+        ActivityHeatmapScale.level(value: dollars, maximum: maximum)
     }
 }
 
