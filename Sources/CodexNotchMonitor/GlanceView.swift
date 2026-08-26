@@ -51,7 +51,7 @@ private struct GlanceTokenBucket: Identifiable {
 
 struct GlanceView: View {
     @ObservedObject var store: MonitorStore
-    let onClose: () -> Void
+    let onQuit: () -> Void
     let onOpenCenter: (MonitorCenterSection) -> Void
     let onPreferredHeightChange: (CGFloat) -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -361,11 +361,12 @@ struct GlanceView: View {
                 .font(AstaSans.semiBold(15))
                 .tracking(-0.15)
             Spacer()
-            Button(action: onClose) {
+            Button(action: onQuit) {
                 Image(systemName: "power")
             }
             .buttonStyle(GlancePowerButtonStyle())
-            .help("收起面板")
+            .help("退出 Codex Monitor")
+            .accessibilityLabel("退出 Codex Monitor")
         }
         .padding(.horizontal, GlanceLayout.contentInset)
         .frame(height: 50)

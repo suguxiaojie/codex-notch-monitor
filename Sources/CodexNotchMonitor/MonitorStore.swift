@@ -81,7 +81,13 @@ final class MonitorStore: ObservableObject {
     @Published private(set) var codexSetupMessage: String?
     @Published private(set) var isCodexSetupWorking = false
     @Published private(set) var isSetupOnboardingComplete = false
-    @Published private(set) var isCodexSecurityReviewRunning = false
+    @Published private(set) var isCodexSecurityReviewLaunching = false
+    @Published private(set) var appUpdateStatus = AppUpdateStatus.idle(
+        currentVersion: AppUpdateService.bundleVersion,
+        currentBuild: AppUpdateService.bundleBuild
+    )
+    @Published private(set) var appUpdateMessage: String?
+    @Published private(set) var isManualAppUpdateCheck = false
     @Published private(set) var observedAccount: ObservedAccount?
     @Published private(set) var accountTransition: AccountTransition?
     @Published private(set) var continuitySnapshot: SessionContinuitySnapshot = .empty
@@ -133,6 +139,7 @@ final class MonitorStore: ObservableObject {
     private let quotaResetMonitor = QuotaResetMonitor()
     private let quotaResetNotifier = QuotaResetNotifier()
     private let codexSetupService = CodexSetupService()
+    private let appUpdateService = AppUpdateService()
     private let accountIdentityService = AccountIdentityService()
     private let accountContinuityStore = AccountContinuityStore()
     private let accountStateWatcher = CodexAccountStateWatcher()
@@ -289,6 +296,15 @@ final class MonitorStore: ObservableObject {
             Task { @MainActor in self?.refreshNotificationStatus() }
         }
         refreshCodexSetup()
+        if let cachedUpdate = appUpdateService.cachedStatus(
+            currentVersion: AppUpdateService.bundleVersion,
+            currentBuild: AppUpdateService.bundleBuild
+        ) {
+            appUpdateStatus = cachedUpdate
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
+            self?.checkForAppUpdate(force: false)
+        }
         codexSetupTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshCodexSetup() }
         }
@@ -466,12 +482,84 @@ final class MonitorStore: ObservableObject {
         }
     }
 
+    func checkForAppUpdate(force: Bool) {
+        guard appUpdateStatus.phase != .checking else { return }
+        isManualAppUpdateCheck = force
+        let previous = appUpdateStatus
+        appUpdateStatus = previous.checking()
+        appUpdateMessage = nil
+        appUpdateService.check(
+            force: force,
+            currentVersion: AppUpdateService.bundleVersion,
+            currentBuild: AppUpdateService.bundleBuild
+        ) { [weak self] result in
+            guard let self else { return }
+            self.isManualAppUpdateCheck = false
+            switch result {
+            case let .success(status):
+                self.appUpdateStatus = status
+                self.appUpdateMessage = status.message
+                guard status.phase == .updateAvailable,
+                      let release = status.release,
+                      self.quotaNotificationStatus == .enabled,
+                      self.appUpdateService.shouldNotify(version: release.normalizedVersion)
+                else { return }
+                self.quotaResetNotifier.notifyAppUpdate(
+                    version: release.normalizedVersion,
+                    architecture: status.asset.map { _ in AppUpdateArchitecture.current.displayName },
+                    releaseURL: release.htmlURL
+                )
+                self.appUpdateService.markNotified(version: release.normalizedVersion)
+            case let .failure(error):
+                self.appUpdateStatus = AppUpdateStatus(
+                    phase: .failed,
+                    currentVersion: previous.currentVersion,
+                    currentBuild: previous.currentBuild,
+                    release: previous.release,
+                    asset: previous.asset,
+                    checkedAt: previous.checkedAt,
+                    message: error.localizedDescription
+                )
+                self.appUpdateMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func openAppUpdateDownload() {
+        if let url = appUpdateStatus.asset?.downloadURL {
+            if !NSWorkspace.shared.open(url) {
+                appUpdateMessage = "无法打开下载地址，请改用 Release 页面。"
+            }
+            return
+        }
+        openAppReleasePage()
+    }
+
+    func openAppReleasePage() {
+        guard let url = appUpdateStatus.release?.releaseURL else {
+            appUpdateMessage = "当前没有可打开的 Release 页面。"
+            return
+        }
+        if !NSWorkspace.shared.open(url) {
+            appUpdateMessage = "无法打开 GitHub Release 页面。"
+        }
+    }
+
+    func deferAppUpdate() {
+        guard let version = appUpdateStatus.release?.normalizedVersion else { return }
+        let until = appUpdateService.deferNotification(version: version)
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "M月d日 HH:mm"
+        appUpdateMessage = "已稍后提醒；\(formatter.string(from: until)) 前不再发送此版本的系统通知。"
+    }
+
     func refreshCodexSetup() {
         if codexSetupService.consumeSecurityReviewResult() {
-            isCodexSecurityReviewRunning = false
-            codexSetupMessage = "安全审核已确认。请完全退出并重新打开 Codex，然后发送一条真实消息。"
+            isCodexSecurityReviewLaunching = false
+            codexSetupMessage = "当前 Hook Active 状态已确认。请完全退出并重新打开 Codex，然后发送一条真实消息。"
         } else if let failure = codexSetupService.consumeSecurityReviewFailure() {
-            isCodexSecurityReviewRunning = false
+            isCodexSecurityReviewLaunching = false
             codexSetupMessage = failure
         }
         codexSetupSnapshot = codexSetupService.snapshot()
@@ -491,8 +579,8 @@ final class MonitorStore: ObservableObject {
                 switch result {
                 case let .success(outcome):
                     self.codexSetupMessage = outcome.hooksBackupURL.map {
-                        "Hook 已安装；原配置已备份为 \($0.lastPathComponent)。下一步请完成 Codex 安全审核。"
-                    } ?? "Hook 已安装。下一步请完成 Codex 安全审核。"
+                        "Hook 已安装；原配置已备份为 \($0.lastPathComponent)。下一步请在 /hooks 确认当前状态。"
+                    } ?? "Hook 已安装。下一步请在 /hooks 确认当前状态。"
                 case let .failure(error):
                     self.codexSetupMessage = "Hook 安装失败：\(error.localizedDescription)"
                 }
@@ -502,8 +590,8 @@ final class MonitorStore: ObservableObject {
     }
 
     func openCodexHookSecurityReview() {
-        guard !isCodexSecurityReviewRunning else {
-            codexSetupMessage = "安全审核窗口已经打开，请在该窗口完成操作。"
+        guard !isCodexSecurityReviewLaunching else {
+            codexSetupMessage = "正在打开 Hooks 管理，请稍候。"
             return
         }
         do {
@@ -512,12 +600,12 @@ final class MonitorStore: ObservableObject {
                 codexSetupMessage = "无法打开 Terminal 安全审核窗口。"
                 return
             }
-            isCodexSecurityReviewRunning = true
-            codexSetupMessage = "请在 Codex 中选择“2. Trust all and continue”，按 Enter 确认，然后回到这里标记审核完成。"
-            DispatchQueue.main.asyncAfter(deadline: .now() + 5 * 60) { [weak self] in
-                guard let self, self.isCodexSecurityReviewRunning else { return }
-                self.isCodexSecurityReviewRunning = false
-                self.codexSetupMessage = "安全审核等待超时；如果 Terminal 仍在运行，请关闭后重新尝试。"
+            isCodexSecurityReviewLaunching = true
+            codexSetupMessage = "正在打开 Codex Hooks 管理；信任仍需由你亲自确认。"
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                guard let self, self.isCodexSecurityReviewLaunching else { return }
+                self.isCodexSecurityReviewLaunching = false
+                self.codexSetupMessage = "Hooks 管理已打开；如果窗口已经关闭，可以立即重新打开。"
             }
         } catch {
             codexSetupMessage = "无法开始安全审核：\(error.localizedDescription)"
@@ -531,8 +619,8 @@ final class MonitorStore: ObservableObject {
             refreshCodexSetup()
             return
         }
-        isCodexSecurityReviewRunning = false
-        codexSetupMessage = "已记录安全审核完成。请完全退出并重新打开 Codex，再发送一条真实消息。"
+        isCodexSecurityReviewLaunching = false
+        codexSetupMessage = "已记录当前 Hook 在 Codex 中处于 Active。请完全退出并重新打开 Codex，再发送一条真实消息。"
         refreshCodexSetup()
     }
 

@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import Security
 
 enum CodexSetupHookState: Equatable {
     case checking
@@ -8,6 +9,7 @@ enum CodexSetupHookState: Equatable {
     case invalidHooksFile
     case notInstalled
     case updateRequired
+    case trustStatusUnknown
     case securityReviewRequired
     case waitingForFirstEvent
     case connected
@@ -20,6 +22,7 @@ enum CodexSetupHookState: Equatable {
         case .invalidHooksFile: return "Hooks 配置无法解析"
         case .notInstalled: return "尚未安装"
         case .updateRequired: return "需要更新 Hook"
+        case .trustStatusUnknown: return "待确认 Hooks 状态"
         case .securityReviewRequired: return "需要安全审核"
         case .waitingForFirstEvent: return "等待首条真实消息"
         case .connected: return "连接正常"
@@ -29,10 +32,22 @@ enum CodexSetupHookState: Equatable {
     var onboardingStepMode: CodexSetupHooksStepMode {
         switch self {
         case .notInstalled, .updateRequired: return .install
-        case .securityReviewRequired: return .review
+        case .trustStatusUnknown, .securityReviewRequired: return .review
         case .waitingForFirstEvent, .connected: return .advance
         case .codexUnavailable, .helperUnavailable, .invalidHooksFile: return .deferOnly
         case .checking: return .checking
+        }
+    }
+
+    var needsTrustConfirmation: Bool {
+        self == .trustStatusUnknown || self == .securityReviewRequired
+    }
+
+    var reviewActionTitle: String {
+        switch self {
+        case .trustStatusUnknown: return "检查 Hooks 状态"
+        case .securityReviewRequired: return "去安全审核"
+        default: return "打开 Hooks 管理"
         }
     }
 }
@@ -120,6 +135,9 @@ struct CodexSetupPaths {
     var reviewResultURL: URL {
         launcherDirectory.appendingPathComponent("CodexMonitorHookReviewComplete")
     }
+    var reviewExpectURL: URL {
+        launcherDirectory.appendingPathComponent("Open Codex Hooks Review.expect")
+    }
 }
 
 final class CodexSetupService: @unchecked Sendable {
@@ -146,17 +164,20 @@ final class CodexSetupService: @unchecked Sendable {
     private let defaults: UserDefaults
     private let manager: FileManager
     private let enforceLivePathSafety: Bool
+    private let codeIdentityProvider: ((URL) -> Data?)?
 
     init(
         paths: CodexSetupPaths = .live(),
         defaults: UserDefaults = .standard,
         manager: FileManager = .default,
-        enforceLivePathSafety: Bool = true
+        enforceLivePathSafety: Bool = true,
+        codeIdentityProvider: ((URL) -> Data?)? = nil
     ) {
         self.paths = paths
         self.defaults = defaults
         self.manager = manager
         self.enforceLivePathSafety = enforceLivePathSafety
+        self.codeIdentityProvider = codeIdentityProvider
     }
 
     var shouldPresentOnboarding: Bool {
@@ -194,11 +215,30 @@ final class CodexSetupService: @unchecked Sendable {
             ? installationIdentifier(helperURL: paths.installedHelperURL)
             : nil
         let helperMatchesSource = installedIdentifier == identifier
-        let reviewed = defaults.string(forKey: PreferenceKey.reviewedInstallation)
-        let connected = defaults.string(forKey: PreferenceKey.connectedInstallation)
-        let hookDefinitionChanged = identifier.map {
-            reviewed != $0 || !hookInstalled || !helperInstalled
-        } ?? false
+        var reviewed = defaults.string(forKey: PreferenceKey.reviewedInstallation)
+        var connected = defaults.string(forKey: PreferenceKey.connectedInstallation)
+        if let identifier,
+           let sourceHelper,
+           hookInstalled,
+           helperInstalled,
+           helperMatchesSource {
+            let legacyIdentifiers = Set([
+                legacyInstallationIdentifier(helperURL: sourceHelper),
+                legacyInstallationIdentifier(helperURL: paths.installedHelperURL),
+            ].compactMap { $0 })
+            if let storedReviewed = reviewed, legacyIdentifiers.contains(storedReviewed) {
+                defaults.set(identifier, forKey: PreferenceKey.reviewedInstallation)
+                reviewed = identifier
+            }
+            if let storedConnected = connected, legacyIdentifiers.contains(storedConnected) {
+                defaults.set(identifier, forKey: PreferenceKey.connectedInstallation)
+                connected = identifier
+            }
+        }
+        let reviewedDefinitionChanged = reviewed.map { $0 != identifier } ?? false
+        let hookDefinitionChanged = reviewedDefinitionChanged
+            || !hookInstalled
+            || !helperInstalled
 
         let state: CodexSetupHookState
         if codexURL == nil {
@@ -212,6 +252,8 @@ final class CodexSetupService: @unchecked Sendable {
             state = .updateRequired
         } else if !hookInstalled || !helperInstalled || !helperMatchesSource {
             state = .notInstalled
+        } else if reviewed == nil {
+            state = .trustStatusUnknown
         } else if reviewed != identifier {
             state = .securityReviewRequired
         } else if connected != identifier {
@@ -316,7 +358,6 @@ final class CodexSetupService: @unchecked Sendable {
             try manager.moveItem(at: temporaryHooks, to: paths.hooksURL)
         }
 
-        defaults.removeObject(forKey: PreferenceKey.reviewedInstallation)
         defaults.removeObject(forKey: PreferenceKey.connectedInstallation)
         defaults.removeObject(forKey: PreferenceKey.lastConnectedAt)
         try? manager.removeItem(at: paths.reviewResultURL)
@@ -355,7 +396,6 @@ final class CodexSetupService: @unchecked Sendable {
             [.posixPermissions: 0o600],
             ofItemAtPath: paths.hooksURL.path
         )
-        defaults.removeObject(forKey: PreferenceKey.reviewedInstallation)
         defaults.removeObject(forKey: PreferenceKey.connectedInstallation)
         defaults.removeObject(forKey: PreferenceKey.lastConnectedAt)
         return backup
@@ -373,11 +413,44 @@ final class CodexSetupService: @unchecked Sendable {
             )
             let commandURL = paths.launcherDirectory
                 .appendingPathComponent("Open Codex Hooks Review.command")
+            let expectScript = """
+            #!/usr/bin/expect -f
+            set timeout 20
+            set codex $env(CODEX_MONITOR_CODEX)
+            spawn -noecho $codex --enable hooks
+            expect {
+                -re {Hooks need review} {
+                    interact
+                }
+                -re {Ask Codex to do anything} {
+                    send -- "/hooks\\r"
+                    after 100
+                    interact
+                }
+                timeout {
+                    send_user "\\nCodex Monitor: 如果没有自动进入 Hooks 页面，请输入 /hooks 并按 Enter。\\n"
+                    interact
+                }
+                eof {
+                    catch wait result
+                    exit 0
+                }
+            }
+            """
+            try Data(expectScript.utf8).write(to: paths.reviewExpectURL, options: .atomic)
+            try manager.setAttributes(
+                [.posixPermissions: 0o700],
+                ofItemAtPath: paths.reviewExpectURL.path
+            )
             let command = """
             #!/bin/zsh
-            # Codex owns the security-review UI. The user must choose
-            # "Trust all and continue" and confirm with Enter.
-            exec \(Self.shellQuote(codexURL.path))
+            # Codex owns the security-review UI and the user must confirm trust.
+            # If Codex already trusts the hooks, open the canonical /hooks browser.
+            export CODEX_MONITOR_CODEX=\(Self.shellQuote(codexURL.path))
+            if [[ ! -x /usr/bin/expect ]]; then
+                exec "$CODEX_MONITOR_CODEX" --enable hooks
+            fi
+            exec /usr/bin/expect \(Self.shellQuote(paths.reviewExpectURL.path))
             """
             try Data(command.utf8).write(to: commandURL, options: .atomic)
             try manager.setAttributes(
@@ -403,7 +476,7 @@ final class CodexSetupService: @unchecked Sendable {
 
     func markSecurityReviewConfirmed() -> Bool {
         let current = snapshot()
-        guard current.hookState == .securityReviewRequired,
+        guard current.hookState.needsTrustConfirmation,
               let identifier = current.installationIdentifier
         else { return false }
         defaults.set(identifier, forKey: PreferenceKey.reviewedInstallation)
@@ -445,13 +518,45 @@ final class CodexSetupService: @unchecked Sendable {
     }
 
     private func installationIdentifier(helperURL: URL) -> String? {
+        let codeIdentity = codeIdentityProvider?(helperURL)
+            ?? Self.codeDirectoryIdentity(helperURL: helperURL)
+            ?? (try? Data(contentsOf: helperURL))
+        guard let codeIdentity else { return nil }
+        return Self.makeInstallationIdentifier(codeIdentity: codeIdentity)
+    }
+
+    private func legacyInstallationIdentifier(helperURL: URL) -> String? {
         guard let data = try? Data(contentsOf: helperURL) else { return nil }
-        var digestInput = data
+        return Self.makeInstallationIdentifier(codeIdentity: data)
+    }
+
+    static func makeInstallationIdentifier(codeIdentity: Data) -> String {
+        var digestInput = codeIdentity
         digestInput.append(Data(Self.hookEvents.joined(separator: "|").utf8))
         digestInput.append(Data("|timeout=2|schema=1".utf8))
         return SHA256.hash(data: digestInput)
             .map { String(format: "%02x", $0) }
             .joined()
+    }
+
+    private static func codeDirectoryIdentity(helperURL: URL) -> Data? {
+        var staticCode: SecStaticCode?
+        guard SecStaticCodeCreateWithPath(
+            helperURL as CFURL,
+            [],
+            &staticCode
+        ) == errSecSuccess,
+        let staticCode else { return nil }
+        var information: CFDictionary?
+        guard SecCodeCopySigningInformation(
+            staticCode,
+            SecCSFlags(rawValue: kSecCSSigningInformation),
+            &information
+        ) == errSecSuccess,
+        let values = information as? [String: Any],
+        let identity = values[kSecCodeInfoUnique as String] as? Data,
+        !identity.isEmpty else { return nil }
+        return identity
     }
 
     private func loadHooksDocument() -> [String: Any]? {

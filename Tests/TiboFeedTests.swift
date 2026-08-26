@@ -119,8 +119,9 @@ enum TiboFeedTests {
         radarSnapshotDecodesAndMapsEvidence()
         radarSnapshotRejectsUntrustedSource()
         radarSnapshotRejectsInvalidForecast()
+        pinnedSignalResolutionTracksPreviewFulfillment()
 
-        print("Tibo feed tests passed (22 checks).")
+        print("Tibo feed tests passed (30 checks).")
     }
 
     private static func radarSnapshotDecodesAndMapsEvidence() {
@@ -178,6 +179,144 @@ enum TiboFeedTests {
         } catch {
             check(true, "reject invalid forecast range")
         }
+    }
+
+    private static func pinnedSignalResolutionTracksPreviewFulfillment() {
+        let signalDate = "2026-08-23T06:29:05.000Z"
+        let signal = CodexResetRadarSignal(
+            tweetId: "2091412393368945027",
+            summary: "Reset will land tomorrow.",
+            at: signalDate,
+            url: "https://x.com/thsottiaux/status/2091412393368945027",
+            kind: "signal",
+            active: false,
+            localizedSummary: "重置将在明天到达。",
+            translationStatus: "translated"
+        )
+        let preview = radarTimelineEvent(
+            id: signal.tweetId,
+            announcedAt: signalDate,
+            preview: true,
+            confidence: "medium",
+            source: "live",
+            officialWindow: CodexResetOfficialWindow(
+                label: "around 2 PM PT",
+                startAt: "2026-08-23T20:00:00.000Z",
+                endAt: "2026-08-23T22:00:00.000Z",
+                timeZone: "America/Los_Angeles",
+                targetKind: "center",
+                targetAt: "2026-08-23T21:00:00.000Z"
+            ),
+            announcementState: "hinted",
+            verificationStatus: "pending"
+        )
+        let fulfillment = radarTimelineEvent(
+            id: "2091688655828246890",
+            announcedAt: "2026-08-24T00:46:51.000Z",
+            preview: false,
+            confidence: "high",
+            source: "archive",
+            announcementState: "announced"
+        )
+        let resolved = CodexResetRadarService.resolvePinnedSignal(
+            signal,
+            timelineEvents: [fulfillment, preview],
+            now: TiboFeedDate.parse("2026-08-26T00:00:00.000Z")!
+        )
+        check(resolved.state == .fulfilled, "inactive preview links to later archived reset")
+        check(resolved.evidenceEvent?.id == fulfillment.id, "fulfilled preview uses later evidence post")
+        check(resolved.isLocallyConfirmed == false, "archive-only fulfillment is not local quota proof")
+
+        let locallyVerified = CodexResetRadarService.resolvePinnedSignal(
+            signal,
+            timelineEvents: [fulfillment, preview],
+            locallyConfirmedPostIDs: [fulfillment.id],
+            now: TiboFeedDate.parse("2026-08-26T00:00:00.000Z")!
+        )
+        check(locallyVerified.isLocallyConfirmed, "matching later post retains local quota proof")
+
+        let expired = CodexResetRadarService.resolvePinnedSignal(
+            signal,
+            timelineEvents: [preview],
+            now: TiboFeedDate.parse("2026-08-26T00:00:00.000Z")!
+        )
+        check(expired.state == .expired, "inactive preview without evidence expires")
+
+        let activeSignal = CodexResetRadarSignal(
+            tweetId: signal.tweetId,
+            summary: signal.summary,
+            at: signal.at,
+            url: signal.url,
+            kind: signal.kind,
+            active: true,
+            localizedSummary: signal.localizedSummary,
+            translationStatus: signal.translationStatus
+        )
+        let active = CodexResetRadarService.resolvePinnedSignal(
+            activeSignal,
+            timelineEvents: [preview],
+            now: TiboFeedDate.parse("2026-08-23T21:00:00.000Z")!
+        )
+        check(active.state == .activePreview, "active preview remains a waiting announcement")
+
+        let directlyConfirmed = CodexResetRadarService.resolvePinnedSignal(
+            signal,
+            timelineEvents: [preview],
+            locallyConfirmedPostIDs: [signal.tweetId],
+            now: TiboFeedDate.parse("2026-08-26T00:00:00.000Z")!
+        )
+        check(directlyConfirmed.state == .confirmed, "exact local post evidence confirms signal")
+
+        let lateUnrelatedReset = radarTimelineEvent(
+            id: "2099999999999999999",
+            announcedAt: "2026-08-25T14:15:00.000Z",
+            preview: false,
+            confidence: "high",
+            source: "archive",
+            announcementState: "announced"
+        )
+        let outsideWindow = CodexResetRadarService.resolvePinnedSignal(
+            signal,
+            timelineEvents: [lateUnrelatedReset, preview],
+            now: TiboFeedDate.parse("2026-08-26T00:00:00.000Z")!
+        )
+        check(outsideWindow.state == .expired, "later unrelated reset cannot fulfill old preview")
+    }
+
+    private static func radarTimelineEvent(
+        id: String,
+        announcedAt: String,
+        preview: Bool,
+        confidence: String,
+        source: String,
+        officialWindow: CodexResetOfficialWindow? = nil,
+        announcementState: String? = nil,
+        verificationStatus: String? = nil
+    ) -> CodexResetTimelineEvent {
+        CodexResetTimelineEvent(
+            id: id,
+            date: String(announcedAt.prefix(10)),
+            type: "reset",
+            group: "reset",
+            summary: preview ? "Reset preview." : "Reset fulfilled.",
+            url: "https://x.com/thsottiaux/status/\(id)",
+            announcedAt: announcedAt,
+            effectiveAt: nil,
+            officialWindow: officialWindow,
+            preview: preview,
+            scope: "global",
+            confidence: confidence,
+            source: source,
+            sourceLabel: source == "archive" ? "Verified archive" : "Live radar feed",
+            resetKind: nil,
+            bankedState: nil,
+            audience: [],
+            announcementState: announcementState,
+            observationResult: preview ? "unknown" : "confirmed",
+            resetVerificationStatus: verificationStatus,
+            localizedSummary: nil,
+            translationStatus: nil
+        )
     }
 
     private static func radarFixture() -> (feed: Data, timeline: Data, forecast: Data) {

@@ -86,6 +86,24 @@ final class QuotaResetNotifier: NSObject, UNUserNotificationCenterDelegate {
         ))
     }
 
+    func notifyAppUpdate(
+        version: String,
+        architecture: String?,
+        releaseURL: String
+    ) {
+        let content = UNMutableNotificationContent()
+        content.title = "Codex Monitor v\(version) 可用"
+        content.body = architecture.map { "已找到适用于 \($0) 的安装包。" }
+            ?? "新版本已经可以下载。"
+        content.sound = .default
+        content.userInfo["sourceURL"] = releaseURL
+        center.add(UNNotificationRequest(
+            identifier: "app-update-\(version)",
+            content: content,
+            trigger: nil
+        ))
+    }
+
     static func body(for event: QuotaResetEvent) -> String {
         let details = event.changes.map { change in
             "\(change.bucketName) \(change.windowLabel)：\(change.previousRemainingPercent)% → \(change.currentRemainingPercent)%"

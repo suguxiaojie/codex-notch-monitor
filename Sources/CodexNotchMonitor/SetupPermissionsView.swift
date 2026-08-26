@@ -45,6 +45,7 @@ struct SetupPermissionsView: View {
         .onAppear {
             step = SetupOnboardingStep(rawValue: persistedStepRawValue) ?? .welcome
             store.refreshCodexSetup()
+            store.checkForAppUpdate(force: false)
             reconcileStepWithSetupState()
         }
         .onChange(of: step) { value in
@@ -57,7 +58,7 @@ struct SetupPermissionsView: View {
             Button("取消", role: .cancel) {}
             Button("备份并安装") { store.installCodexSetupHooks() }
         } message: {
-            Text("将备份并合并 ~/.codex/hooks.json，保留其他已有 Hooks；Helper 会复制到应用支持目录的稳定路径。安装后仍需由你在 Codex 审核菜单中选择“2. Trust all and continue”并按 Enter。")
+            Text("将备份并合并 ~/.codex/hooks.json，保留其他已有 Hooks；Helper 会复制到应用支持目录的稳定路径。安装后请在 /hooks 确认当前 Hook 为 Active；只有出现新定义审核菜单时才需要选择“2. Trust all and continue”。")
         }
         .alert("卸载 Codex Monitor Hooks？", isPresented: $confirmsHookUninstall) {
             Button("取消", role: .cancel) {}
@@ -67,13 +68,13 @@ struct SetupPermissionsView: View {
         } message: {
             Text("将先备份 ~/.codex/hooks.json，再只移除命令中属于 CodexMonitorHook 的 Handler；不会删除其他 Hooks。")
         }
-        .alert("确认已完成 Codex 安全审核？", isPresented: $confirmsSecurityReviewCompletion) {
+        .alert("确认当前 Hook 已在 Codex 激活？", isPresented: $confirmsSecurityReviewCompletion) {
             Button("取消", role: .cancel) {}
-            Button("已选择信任") {
+            Button("确认已 Active") {
                 store.confirmCodexHookSecurityReview()
             }
         } message: {
-            Text("只有你已经在 Codex 菜单中选择“2. Trust all and continue”并按 Enter 后才确认。此操作只记录当前安装哈希；最终仍需首条真实 Hook 事件验证。")
+            Text("只有你已在 /hooks 确认当前 Codex Monitor Hook 为 Active，或已经完成新定义的信任审核后才确认。此操作只记录当前安装哈希；最终仍需首条真实 Hook 事件验证。")
         }
     }
 
@@ -256,11 +257,15 @@ struct SetupPermissionsView: View {
                     finishOnboarding()
                 }
                 .buttonStyle(.bordered)
-                if store.isCodexSecurityReviewRunning {
-                    Button("审核进行中") { step = .verify }
+                if store.isCodexSecurityReviewLaunching {
+                    Button("正在打开") {}
                         .buttonStyle(.borderedProminent)
+                        .disabled(true)
                 } else {
-                    Button("进入安全审核") { step = .verify }
+                    Button(snapshot?.hookState.reviewActionTitle ?? "检查 Hooks 状态") {
+                        store.openCodexHookSecurityReview()
+                        step = .verify
+                    }
                         .buttonStyle(.borderedProminent)
                 }
 
@@ -285,7 +290,7 @@ struct SetupPermissionsView: View {
     private var verificationCard: some View {
         setupCard {
             setupSectionTitle(
-                "安全审核与连接验证",
+                "Hooks 状态与连接验证",
                 detail: verificationDetail
             )
             setupDivider
@@ -294,23 +299,28 @@ struct SetupPermissionsView: View {
                 value: displayedHookStateTitle,
                 color: hookStateColor
             )
-            if snapshot?.hookState == .securityReviewRequired {
+            if snapshot?.hookState.needsTrustConfirmation == true {
                 Text(
-                    store.isCodexSecurityReviewRunning
-                        ? "安全审核窗口已经打开。请选择“2. Trust all and continue”，按 Enter 确认，然后回到这里继续。"
-                        : "打开后，Codex 会显示 Hooks 审核菜单。请选择“2. Trust all and continue”并按 Enter；应用不会替你自动信任。"
+                    store.isCodexSecurityReviewLaunching
+                        ? "正在打开 Codex Hooks 管理；应用不会替你自动信任。"
+                        : hookTrustInstruction
                 )
                     .font(MonitorTypography.body)
                     .foregroundStyle(MonitorTheme.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
-                if store.isCodexSecurityReviewRunning {
-                    Button("我已完成安全审核") {
-                        confirmsSecurityReviewCompletion = true
-                    }
-                        .buttonStyle(.borderedProminent)
-                } else {
-                    Button("打开 Codex 安全审核") {
+                HStack(spacing: 8) {
+                    Button(
+                        store.isCodexSecurityReviewLaunching
+                            ? "正在打开"
+                            : (snapshot?.hookState.reviewActionTitle ?? "检查 Hooks 状态")
+                    ) {
                         store.openCodexHookSecurityReview()
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(store.isCodexSecurityReviewLaunching)
+                    Spacer()
+                    Button("我已确认当前 Hook 已 Active") {
+                        confirmsSecurityReviewCompletion = true
                     }
                     .buttonStyle(.borderedProminent)
                 }
@@ -339,6 +349,8 @@ struct SetupPermissionsView: View {
 
     private var maintenanceDashboard: some View {
         VStack(spacing: 12) {
+            appUpdateCard
+
             setupCard {
                 setupHero(
                     symbol: hookStateSymbol,
@@ -364,15 +376,38 @@ struct SetupPermissionsView: View {
                     Button("查看备份") { store.revealCodexSetupBackups() }
                         .buttonStyle(.bordered)
                     Spacer()
-                    if snapshot?.hookState == .securityReviewRequired {
-                        Button("打开安全审核") { store.openCodexHookSecurityReview() }
+                    if snapshot?.hookState.needsTrustConfirmation == true {
+                        Button(
+                            store.isCodexSecurityReviewLaunching
+                                ? "正在打开"
+                                : (snapshot?.hookState.reviewActionTitle ?? "检查 Hooks 状态")
+                        ) {
+                            store.openCodexHookSecurityReview()
+                        }
                             .buttonStyle(.borderedProminent)
+                            .disabled(store.isCodexSecurityReviewLaunching)
+                        Button("确认已 Active") {
+                            confirmsSecurityReviewCompletion = true
+                        }
+                        .buttonStyle(.bordered)
+                    } else if snapshot?.hookState == .waitingForFirstEvent
+                        || snapshot?.hookState == .connected {
+                        Button("打开 Hooks 管理") {
+                            store.openCodexHookSecurityReview()
+                        }
+                        .buttonStyle(.bordered)
                     }
-                    Button("重新安装") { confirmsHookInstall = true }
-                        .buttonStyle(.bordered)
-                    Button("卸载 Hook") { confirmsHookUninstall = true }
-                        .buttonStyle(.bordered)
-                        .tint(.red)
+                    Menu {
+                        Button("重新安装 Hook") { confirmsHookInstall = true }
+                        Divider()
+                        Button("卸载 Hook", role: .destructive) {
+                            confirmsHookUninstall = true
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                    .menuStyle(.borderlessButton)
+                    .help("更多 Hook 操作")
                 }
             }
 
@@ -395,13 +430,167 @@ struct SetupPermissionsView: View {
         }
     }
 
+    private var appUpdateCard: some View {
+        let status = store.appUpdateStatus
+        return setupCard {
+            HStack(spacing: 11) {
+                AppUpdateStatusIcon(
+                    phase: status.phase,
+                    color: appUpdateStatusColor,
+                    reduceMotion: reduceMotion
+                )
+                setupSectionTitle(
+                    "应用更新",
+                    detail: "从 GitHub Latest Release 检查新版本，并选择适用于此 Mac 的 DMG。"
+                )
+                Spacer(minLength: 8)
+                Text(appUpdateStatusTitle)
+                    .font(MonitorTypography.control)
+                    .foregroundStyle(appUpdateStatusColor)
+                    .padding(.horizontal, 9)
+                    .frame(height: 24)
+                    .background(
+                        appUpdateStatusColor.opacity(0.10),
+                        in: Capsule()
+                    )
+            }
+
+            setupDivider
+
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("当前版本")
+                        .font(MonitorTypography.metadataMedium)
+                        .foregroundStyle(MonitorTheme.tertiaryText)
+                    Text("v\(status.currentVersion) (Build \(status.currentBuild))")
+                        .font(AstaSans.semiBold(10.5))
+                }
+                Spacer()
+                if let release = status.release {
+                    VStack(alignment: .trailing, spacing: 3) {
+                        Text("GitHub Release")
+                            .font(MonitorTypography.metadataMedium)
+                            .foregroundStyle(MonitorTheme.tertiaryText)
+                        Text(release.tagName)
+                            .font(AstaSans.semiBold(10.5))
+                            .foregroundStyle(
+                                status.phase == .updateAvailable
+                                    ? MonitorTheme.cyanAccent
+                                    : MonitorTheme.primaryText
+                            )
+                    }
+                }
+            }
+
+            if status.phase == .updateAvailable, let release = status.release {
+                if !release.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text(release.body)
+                        .font(MonitorTypography.body)
+                        .foregroundStyle(MonitorTheme.secondaryText)
+                        .lineSpacing(2)
+                        .lineLimit(4)
+                }
+                if let asset = status.asset {
+                    HStack(spacing: 7) {
+                        Label(AppUpdateArchitecture.current.displayName, systemImage: "desktopcomputer")
+                        if asset.size > 0 {
+                            Text("·")
+                            Text(ByteCountFormatter.string(fromByteCount: asset.size, countStyle: .file))
+                        }
+                        if let digest = asset.digest {
+                            Text("·")
+                            Text(shortUpdateDigest(digest))
+                                .monospaced()
+                        }
+                    }
+                    .font(MonitorTypography.metadata)
+                    .foregroundStyle(MonitorTheme.tertiaryText)
+                    .lineLimit(1)
+                }
+            }
+
+            if let message = store.appUpdateMessage ?? status.message {
+                Text(message)
+                    .font(MonitorTypography.body)
+                    .foregroundStyle(status.phase == .failed ? Color.orange : MonitorTheme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            setupDivider
+
+            HStack(spacing: 8) {
+                Text(appUpdateCheckedText)
+                    .font(MonitorTypography.metadata)
+                    .foregroundStyle(MonitorTheme.faintText)
+                Spacer()
+                if status.phase == .updateAvailable {
+                    Button("查看说明") { store.openAppReleasePage() }
+                        .buttonStyle(.bordered)
+                    Button("稍后提醒") { store.deferAppUpdate() }
+                        .buttonStyle(.bordered)
+                    Button(appUpdateDownloadTitle) { store.openAppUpdateDownload() }
+                        .buttonStyle(.borderedProminent)
+                } else {
+                    Button(status.phase == .checking ? "正在检查" : "检查更新") {
+                        store.checkForAppUpdate(force: true)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(status.phase == .checking)
+                }
+            }
+        }
+    }
+
+    private var appUpdateStatusTitle: String {
+        switch store.appUpdateStatus.phase {
+        case .idle: return "尚未检查"
+        case .checking: return "正在检查"
+        case .upToDate: return "已是最新"
+        case .updateAvailable: return "新版本可用"
+        case .developmentBuild: return "开发版本"
+        case .failed: return "检查失败"
+        }
+    }
+
+    private var appUpdateStatusColor: Color {
+        switch store.appUpdateStatus.phase {
+        case .upToDate: return .green
+        case .updateAvailable: return MonitorTheme.cyanAccent
+        case .failed: return .orange
+        case .checking: return MonitorTheme.selection
+        case .idle, .developmentBuild: return MonitorTheme.tertiaryText
+        }
+    }
+
+    private var appUpdateCheckedText: String {
+        guard let date = store.appUpdateStatus.checkedAt else {
+            return store.appUpdateStatus.phase == .checking ? "正在连接 GitHub" : "尚未检查"
+        }
+        return "上次检查：\(date.compactRelativeText)"
+    }
+
+    private var appUpdateDownloadTitle: String {
+        guard store.appUpdateStatus.asset != nil else { return "打开 Release" }
+        switch AppUpdateArchitecture.current {
+        case .arm64: return "下载 arm64 DMG"
+        case .x86_64: return "下载 x86_64 DMG"
+        case .unknown: return "下载 DMG"
+        }
+    }
+
+    private func shortUpdateDigest(_ digest: String) -> String {
+        guard digest.hasPrefix("sha256:") else { return digest }
+        let value = digest.dropFirst("sha256:".count)
+        return "SHA-256 \(value.prefix(8))…"
+    }
+
     private var snapshot: CodexSetupSnapshot? { store.codexSetupSnapshot }
 
     private var hookStateColor: Color {
-        if store.isCodexSecurityReviewRunning { return MonitorTheme.cyanAccent }
+        if store.isCodexSecurityReviewLaunching { return MonitorTheme.cyanAccent }
         switch snapshot?.hookState {
         case .connected: return .green
-        case .waitingForFirstEvent, .securityReviewRequired: return .orange
+        case .waitingForFirstEvent, .trustStatusUnknown, .securityReviewRequired: return .orange
         case .notInstalled, .checking, .none: return MonitorTheme.tertiaryText
         case .updateRequired: return .orange
         case .codexUnavailable, .helperUnavailable, .invalidHooksFile: return .red
@@ -409,8 +598,8 @@ struct SetupPermissionsView: View {
     }
 
     private var displayedHookStateTitle: String {
-        store.isCodexSecurityReviewRunning
-            ? "安全审核进行中"
+        store.isCodexSecurityReviewLaunching
+            ? "正在打开 Hooks 管理"
             : (snapshot?.hookState.title ?? "正在检查")
     }
 
@@ -429,6 +618,7 @@ struct SetupPermissionsView: View {
         switch snapshot?.hookState {
         case .connected: return "checkmark.shield.fill"
         case .waitingForFirstEvent: return "message.badge.waveform.fill"
+        case .trustStatusUnknown: return "questionmark.shield.fill"
         case .securityReviewRequired: return "person.badge.key.fill"
         default: return "wrench.and.screwdriver.fill"
         }
@@ -451,15 +641,27 @@ struct SetupPermissionsView: View {
     }
 
     private var verificationDetail: String {
-        if store.isCodexSecurityReviewRunning {
-            return "安全审核窗口已打开，等待你在正确的 Hooks 页面确认。"
+        if store.isCodexSecurityReviewLaunching {
+            return "正在打开 Codex Hooks 管理。"
         }
         switch snapshot?.hookState {
         case .connected: return "Hook 已通过首条真实事件验证，设置完成。"
         case .waitingForFirstEvent: return "审核完成后，需要重启 Codex 并发送一条真实消息。"
+        case .trustStatusUnknown: return "App 尚未保存当前 Hook 的确认记录，请在 /hooks 检查是否为 Active。"
         case .securityReviewRequired: return "信任必须由你在 Codex 审核菜单中亲自确认。"
         case .notInstalled: return "尚未安装 Hook，可以返回上一步安装或稍后处理。"
         default: return "检查当前安装状态并完成剩余步骤。"
+        }
+    }
+
+    private var hookTrustInstruction: String {
+        switch snapshot?.hookState {
+        case .trustStatusUnknown:
+            return "Codex 会打开 /hooks。确认当前 Codex Monitor Hook 为 Active 后，回到 App 记录确认；如果出现审核菜单，请先完成信任。"
+        case .securityReviewRequired:
+            return "当前 Hook 定义与之前确认的定义不同。Codex 会打开 /hooks；请审核新定义并完成信任。"
+        default:
+            return "请在 Codex 的 /hooks 页面检查当前 Hook 状态。"
         }
     }
 
@@ -606,5 +808,51 @@ struct SetupPermissionsView: View {
             MonitorTheme.cyanAccent.opacity(0.07),
             in: RoundedRectangle(cornerRadius: MonitorGeometry.compactRadius, style: .continuous)
         )
+    }
+}
+
+private struct AppUpdateStatusIcon: View {
+    let phase: AppUpdatePhase
+    let color: Color
+    let reduceMotion: Bool
+
+    @ViewBuilder
+    var body: some View {
+        switch phase {
+        case .checking where !reduceMotion:
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
+                let progress = context.date.timeIntervalSinceReferenceDate
+                    .truncatingRemainder(dividingBy: 1.0)
+                icon("arrow.triangle.2.circlepath")
+                    .rotationEffect(.degrees(progress * 360))
+            }
+        case .updateAvailable where !reduceMotion:
+            TimelineView(.animation(minimumInterval: 1.0 / 24.0)) { context in
+                let progress = context.date.timeIntervalSinceReferenceDate
+                    .truncatingRemainder(dividingBy: 1.6) / 1.6
+                let wave = progress < 0.5 ? progress * 2 : (1 - progress) * 2
+                icon("arrow.down.circle.fill")
+                    .scaleEffect(1 + wave * 0.07)
+                    .shadow(color: color.opacity(0.18 + wave * 0.22), radius: 5 + wave * 3)
+            }
+        case .upToDate:
+            icon("checkmark.circle.fill")
+        case .updateAvailable:
+            icon("arrow.down.circle.fill")
+        case .failed:
+            icon("exclamationmark.triangle.fill")
+        case .developmentBuild:
+            icon("hammer.circle.fill")
+        case .idle, .checking:
+            icon("arrow.triangle.2.circlepath")
+        }
+    }
+
+    private func icon(_ symbol: String) -> some View {
+        Image(systemName: symbol)
+            .font(.system(size: 18, weight: .semibold))
+            .foregroundStyle(color)
+            .frame(width: 40, height: 40)
+            .background(color.opacity(0.09), in: Circle())
     }
 }

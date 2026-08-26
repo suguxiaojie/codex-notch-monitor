@@ -2922,58 +2922,84 @@ struct NotchView: View {
         return "数据 \(tiboRelativeTime(date))"
     }
 
-    private func tiboPinnedSignalRow(_ signal: CodexResetRadarSignal) -> some View {
-        let event = store.tiboRadar?.timelineEvents.first { $0.id == signal.tweetId }
-        let isLocallyConfirmed = store.quotaResetEvents.contains { reset in
-            reset.sourcePostID == signal.tweetId
-                && (reset.reason == .officialCompleted || reset.reason == .mixed)
+    private func tiboPinnedSignalRow(
+        _ signal: CodexResetRadarSignal,
+        radar: CodexResetRadarSnapshot
+    ) -> some View {
+        let resolution = tiboPinnedSignalResolution(signal, radar: radar)
+        let displayEvent = resolution.evidenceEvent ?? resolution.signalEvent
+        let displaysFulfillment = resolution.state == .fulfilled
+        let displayText = displaysFulfillment
+            ? displayEvent?.displayText ?? signal.displayText
+            : signal.displayText
+        let displayDate = displaysFulfillment
+            ? displayEvent?.announcedDate ?? signal.date
+            : signal.date
+        let statusTitle: String
+        let statusColor: Color
+        switch resolution.state {
+        case .confirmed:
+            statusTitle = "已确认重置"
+            statusColor = .green
+        case .fulfilled:
+            statusTitle = "已兑现重置"
+            statusColor = .green
+        case .activePreview:
+            statusTitle = "重置预告 · 等待到达"
+            statusColor = .cyan
+        case .expired:
+            statusTitle = resolution.signalEvent?.preview == true
+                ? "重置预告 · 已结束"
+                : "重置信号 · 已结束"
+            statusColor = .orange
+        case .pending:
+            statusTitle = "重置信号 · 待确认"
+            statusColor = .cyan
         }
-        let isVerified = isLocallyConfirmed
-            || (event?.source == "archive" && event?.confidence == "high")
+        var metadata = ["来源：codex-reset.com"]
+        if resolution.isLocallyConfirmed {
+            metadata.append("官方额度已验证")
+        } else if displaysFulfillment {
+            metadata.append("已关联到账证据")
+        }
+        if let displayEvent {
+            metadata.append(tiboTimelineConfidenceLabel(displayEvent))
+            metadata.append(tiboTimelineSourceLabel(displayEvent))
+        }
+        let evidenceURL = displayEvent?.url ?? signal.url
         return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 Image(systemName: "pin.fill")
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(MonitorTheme.cyanAccent)
-                Text(isVerified ? "已确认重置" : "待验证重置信号")
+                    .foregroundStyle(statusColor)
+                Text(statusTitle)
                     .font(AstaSans.semiBold(8.5))
-                    .foregroundStyle(isVerified ? .green : .cyan)
+                    .foregroundStyle(statusColor)
                     .padding(.horizontal, 7)
                     .frame(height: 21)
-                    .background((isVerified ? Color.green : Color.cyan).opacity(0.09), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                Text(tiboHeadline(signal.displayText))
+                    .background(statusColor.opacity(0.09), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                Text(tiboHeadline(displayText))
                     .font(AstaSans.semiBold(11.5))
                     .lineLimit(1)
                 Spacer(minLength: 6)
-                Text(tiboRelativeTime(signal.date))
+                Text(tiboRelativeTime(displayDate))
                     .font(AstaSans.medium(8))
                     .foregroundStyle(MonitorTheme.faintText)
             }
-            Text(signal.displayText)
+            Text(displayText)
                 .font(AstaSans.regular(9))
                 .foregroundStyle(MonitorTheme.secondaryText)
                 .lineSpacing(2)
                 .lineLimit(3)
             HStack(spacing: 7) {
-                Text("来源：codex-reset.com")
-                if isLocallyConfirmed {
-                    Text("·")
-                    Text("官方额度已验证")
-                    Text("·")
-                    Text("实时雷达")
-                } else if let event {
-                    Text("·")
-                    Text(tiboTimelineConfidenceLabel(event))
-                    Text("·")
-                    Text(tiboTimelineSourceLabel(event))
-                }
+                Text(metadata.joined(separator: " · "))
                 Spacer()
                 Button {
-                    guard let url = URL(string: signal.url) else { return }
+                    guard let url = URL(string: evidenceURL) else { return }
                     NSWorkspace.shared.open(url)
                 } label: {
                     HStack(spacing: 4) {
-                        Text("在 X 查看")
+                        Text(displaysFulfillment ? "查看兑现证据" : "在 X 查看")
                         Image(systemName: "arrow.up.right")
                     }
                 }
@@ -2984,7 +3010,26 @@ struct NotchView: View {
             .foregroundStyle(MonitorTheme.faintText)
         }
         .padding(12)
-        .background(Color.green.opacity(0.025))
+        .background(statusColor.opacity(0.025))
+    }
+
+    private func tiboPinnedSignalResolution(
+        _ signal: CodexResetRadarSignal,
+        radar: CodexResetRadarSnapshot
+    ) -> CodexResetPinnedSignalResolution {
+        let locallyConfirmedPostIDs: Set<String> = Set(
+            store.quotaResetEvents.compactMap { reset -> String? in
+                guard reset.reason == .officialCompleted || reset.reason == .mixed else {
+                    return nil
+                }
+                return reset.sourcePostID
+            }
+        )
+        return CodexResetRadarService.resolvePinnedSignal(
+            signal,
+            timelineEvents: radar.timelineEvents,
+            locallyConfirmedPostIDs: locallyConfirmedPostIDs
+        )
     }
 
     private var tiboRadarControls: some View {
@@ -3043,8 +3088,15 @@ struct NotchView: View {
     }
 
     private func tiboLiveFeed(_ radar: CodexResetRadarSnapshot) -> some View {
+        let pinnedResolution = radar.signal.map {
+            tiboPinnedSignalResolution($0, radar: radar)
+        }
+        let pinnedPostIDs = Set([
+            radar.signal?.tweetId,
+            pinnedResolution?.evidenceEvent?.id,
+        ].compactMap { $0 })
         let tweets = radar.tweets.filter { tweet in
-            guard tweet.id != radar.signal?.tweetId else { return false }
+            guard !pinnedPostIDs.contains(tweet.id) else { return false }
             switch tiboRadarFilter {
             case .all: return true
             case .reset:
@@ -3059,7 +3111,7 @@ struct NotchView: View {
         }
         return LazyVStack(spacing: 0) {
             if let signal = radar.signal, tiboRadarFilter != .secondary {
-                tiboPinnedSignalRow(signal)
+                tiboPinnedSignalRow(signal, radar: radar)
                 if !tweets.isEmpty {
                     Rectangle().fill(MonitorTheme.separator).frame(height: 1)
                 }

@@ -17,7 +17,7 @@
 </div>
 
 > [!IMPORTANT]
-> 最新版本为 [`v1.5.0 (Build 11)`](https://github.com/suguxiaojie/codex-notch-monitor/releases/tag/v1.5.0)。Release 分别提供 Apple Silicon `arm64` 与 Intel `x86_64` 安装包，请按 Mac 处理器选择对应 DMG。
+> 最新版本为 [`v1.5.1 (Build 12)`](https://github.com/suguxiaojie/codex-notch-monitor/releases/tag/v1.5.1)。Release 分别提供 Apple Silicon `arm64` 与 Intel `x86_64` 安装包，请按 Mac 处理器选择对应 DMG。
 
 ## 目录
 
@@ -227,8 +227,10 @@ Monitor Center 当前包含七个页面：
 | 动态中心 | 官方额度、Tibo 动态、预测和重置时间轴 |
 | 会话管理 | 账号连续性、本地会话、导入导出与恢复 |
 | 面板设置 | 控制 Glance 中额度、用量、成本和操作入口 |
-| 安装与权限 | 首次引导、通知权限、Hook 安装／审核／连接验证 |
+| 安装与权限 | 首次引导、通知权限、Hook 安装／审核／连接验证和应用更新 |
 | 灵动岛设置 | 菜单栏与浮动灵动岛的外观、位置、缩放和动画 |
+
+“安装与权限”的维护页把应用更新固定为第一张卡片：每天最多一次后台检查 GitHub Latest Release，也支持手动检查；发现更新后会自动选择适用于 Apple Silicon 或 Intel Mac 的 DMG，展示更新说明、文件大小和 SHA-256 摘要，并提供“稍后提醒”“查看说明”和“下载 DMG”。检查时图标旋转，发现新版本时下载图标轻微呼吸；开启“减少动态效果”后自动停用持续动画。当前版本只负责引导下载和手动安装，不会自动替换 `/Applications`。
 
 ## 数据来源、准确性与隐私边界
 
@@ -363,13 +365,14 @@ build/CodexNotchMonitor-v<version>-universal.dmg
 
 Hook 安装后仍需要用户亲自完成 Codex 安全审核：
 
-1. 在 App 中点击“进入安全审核”。
-2. Codex 原生终端菜单出现 `Hooks need review`。
-3. 使用方向键选择 `2. Trust all and continue`，按 Enter。
-4. 返回 App，点击“我已完成安全审核”并确认。
-5. 使用 `Cmd + Q` 完全退出 Codex，再重新打开并发送一条正常消息。
+1. 在 App 中点击“进入安全审核”或“打开 Hooks 管理”。
+2. 如果 Codex 显示原生 `Hooks need review` 菜单，使用方向键选择 `2. Trust all and continue` 并按 Enter。
+3. 如果 Codex 已经跳过启动审核菜单，启动器会自动进入官方 `/hooks` 页面；在 Codex 中检查并信任当前 Hook 定义。
+4. Terminal 窗口关闭后可以立即从 App 重新打开，不需要等待固定超时。
+5. 返回 App，点击“我已完成安全审核”并确认。
+6. 使用 `Cmd + Q` 完全退出 Codex，再重新打开并发送一条正常消息。
 
-应用不会用 Expect 或自动按键替用户信任 Hooks，也不会创建测试会话来伪造连接成功。
+启动器只使用 Expect 提供真实 PTY、识别 Codex 原生审核菜单，并在普通 CLI 中输入官方 `/hooks` 命令；进入交互页面后键盘立即交还用户。应用不会自动选择信任选项、绕过 Hook 信任，也不会创建测试会话来伪造连接成功。
 
 ### Hook 状态说明
 
@@ -377,13 +380,14 @@ Hook 安装后仍需要用户亲自完成 Codex 安全审核：
 |---|---|---|
 | 未安装 | 当前配置没有完整的 Codex Monitor Hooks | 备份并安装，或跳过 |
 | 需要更新 Hook | 已发现旧定义或 Helper 与当前 App 不一致 | 备份并更新，然后重新审核 |
-| 需要安全审核 | 当前 Hook 已安装，但本次定义尚未由用户确认 | 打开 Codex 原生审核菜单 |
-| 安全审核进行中 | 审核终端已经打开 | 在现有窗口完成，不要重复启动 |
+| 待确认 Hooks 状态 | App 没有当前定义的本地确认记录，不能断言 Codex 是否已信任 | 在 `/hooks` 检查；全部 Active 后回到 App 确认 |
+| 需要安全审核 | 当前定义与之前确认的定义不同 | 在 `/hooks` 审核新定义并完成信任 |
+| 正在打开 Hooks 管理 | App 正在启动 Codex 终端 | 等待约 1.5 秒；关闭后可立即重新打开 |
 | 等待首条真实消息 | 审核哈希已记录，但尚未收到当前安装的真实事件 | 完全退出并重启 Codex，再发送正常消息 |
 | 连接正常 | 已收到与当前安装匹配的真实 Hook 事件 | 无需操作 |
 | Hooks 配置无法解析 | `hooks.json` 不是安全可合并的 JSON | 修复配置后重试；应用不会覆盖原文件 |
 
-命令行用户也可以运行 `scripts/install-hooks.py`，但仍必须在 Codex 中完成安全审核。推荐优先使用 App 内引导，因为它能显示安装哈希、审核状态和首条真实事件验证。
+命令行用户也可以运行 `scripts/install-hooks.py`。安装后应在 `/hooks` 检查状态；只有新定义或变更定义被 Codex 标为待审核时才需要重新信任。推荐优先使用 App 内引导，因为它能显示安装哈希、状态确认和首条真实事件验证。
 
 ## Hook 事件与状态映射
 
@@ -457,6 +461,7 @@ Helper 总是以成功状态退出，避免监控故障阻断 Codex 正常工作
 | Codex App Server 本机进程 | 账号、额度、状态库可见性 | 本机 IPC，不是公开网络请求 |
 | `codex-reset.com` | 动态、时间轴和预测 | 否 |
 | `ericjypark.github.io` | 公开模型价格目录 | 否 |
+| `api.github.com` | 每日或手动检查 Codex Monitor Latest Release | 否 |
 | `coverai.store` | 用户主动点击官网入口 | 只有点击时打开；不附加本机数据 |
 | `x.com` | 用户主动查看动态证据 | 只有点击时打开 |
 
@@ -474,6 +479,7 @@ Helper 总是以成功状态退出，避免监控故障阻断 Codex 正常工作
 - Ripple／Particle Orb 运行时和灵动岛生命周期。
 - 灵动岛偏好与布局状态。
 - 首次安装、Hook 合并、路径引号、审核状态和连接状态。
+- GitHub Release 解码、版本比较、架构匹配、资产与 SHA-256 校验、检查间隔和通知去重。
 - Usage／Cost 扫描、账号归属、项目别名、活动热图和价格目录。
 - Tibo／Codex Reset Radar 解码、来源校验、缓存与时间轴。
 - 额度恢复三分类、待核验、用户显示类型和通知证据。
@@ -569,6 +575,7 @@ docs/images/                          README 当前真实界面截图
 - Cost 不是账单；模型公开价格变化会影响估算，未知模型按 `$0`。
 - 原始会话和项目迁移包含敏感内容，不适合公开分享。
 - 当前使用 ad-hoc 签名，没有 Developer ID 公证或自动更新签名；GitHub Release 已提供手动下载。
+- 检查更新模块只打开对应 DMG 或 Release 下载地址，不会自动挂载镜像、替换 App 或请求管理员权限。
 
 ## 官方协议依据
 

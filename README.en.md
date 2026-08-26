@@ -17,7 +17,7 @@ Built by [CoverAI](https://coverai.store/?utm_source=github&utm_medium=repositor
 </div>
 
 > [!IMPORTANT]
-> The latest version is [`v1.5.0 (Build 11)`](https://github.com/suguxiaojie/codex-notch-monitor/releases/tag/v1.5.0). The Release provides separate DMGs for Apple Silicon `arm64` and Intel `x86_64`; choose the package that matches your Mac.
+> The latest version is [`v1.5.1 (Build 12)`](https://github.com/suguxiaojie/codex-notch-monitor/releases/tag/v1.5.1). The Release provides separate DMGs for Apple Silicon `arm64` and Intel `x86_64`; choose the package that matches your Mac.
 
 ## Table of contents
 
@@ -227,8 +227,10 @@ Monitor Center currently contains seven pages:
 | Dynamic Center | Official quota, Tibo posts, forecasts, and reset timeline |
 | Session Management | Account continuity, local sessions, import, export, and recovery |
 | Panel Settings | Controls quota, usage, cost, and actions in Glance |
-| Setup & Permissions | First-run setup, notification permission, Hook installation/review, and connection verification |
+| Setup & Permissions | First-run setup, notification permission, Hook installation/review, connection verification, and app updates |
 | Activity Island Settings | Appearance, position, scale, and animation for menu bar and floating island modes |
+
+The Setup & Permissions maintenance page includes an app-update card. It checks GitHub Latest Release at most once per day in the background and also supports manual checks. When an update is available, it selects the correct DMG for Apple Silicon or Intel Mac, shows release notes, file size, and a shortened SHA-256 digest, and offers Remind Later, View Notes, and Download DMG actions. The icon rotates while checking and uses a subtle breathing effect for an available update; Reduce Motion disables continuous animation. This version guides the user through download and manual installation and never replaces `/Applications` automatically.
 
 ## Data sources, accuracy, and privacy boundaries
 
@@ -363,13 +365,14 @@ Only after the user clicks and confirms Install/Update Hooks will the app:
 
 After installation, the user must still complete Codex security review personally:
 
-1. Click Open Security Review in the app.
-2. Wait for the native Codex terminal menu to show `Hooks need review`.
-3. Use the arrow keys to choose `2. Trust all and continue`, then press Enter.
-4. Return to the app and confirm I Completed Security Review.
-5. Use `Cmd + Q` to quit Codex completely, reopen it, and send a normal message.
+1. Click Enter Security Review or Open Hooks Manager in the app.
+2. If Codex shows the native `Hooks need review` menu, use the arrow keys to choose `2. Trust all and continue`, then press Enter.
+3. If Codex skips the startup review menu, the launcher opens the official `/hooks` page automatically; inspect and trust the current Hook definition in Codex.
+4. If the Terminal window closes, you can reopen it immediately from the app without waiting for a fixed timeout.
+5. Return to the app and confirm I Completed Security Review.
+6. Use `Cmd + Q` to quit Codex completely, reopen it, and send a normal message.
 
-The app does not use Expect or synthetic key presses to trust Hooks on the user's behalf, and it never creates a test session to fake a successful connection.
+The launcher uses Expect only to provide a real PTY, detect Codex's native review menu, and enter the official `/hooks` command from a normal CLI prompt. It immediately returns keyboard control to the user and never chooses a trust action, bypasses Hook trust, or creates a test session to fake a successful connection.
 
 ### Hook status reference
 
@@ -377,13 +380,14 @@ The app does not use Expect or synthetic key presses to trust Hooks on the user'
 |---|---|---|
 | Not installed | The current configuration does not contain the complete Codex Monitor Hooks | Back up and install, or skip |
 | Hook update required | An old definition exists or the installed Helper does not match the current app | Back up and update, then review again |
-| Security review required | Hooks are installed but the current definition has not been confirmed by the user | Open the native Codex review menu |
-| Security review in progress | The review terminal is already open | Finish in the existing window; do not launch a duplicate |
+| Hook status confirmation required | The app has no local confirmation for this definition and cannot claim that Codex distrusts it | Inspect `/hooks`; if all entries are Active, confirm in the app |
+| Security review required | The current definition differs from the previously confirmed definition | Review and trust the new definition in `/hooks` |
+| Opening Hooks manager | The app is launching the Codex terminal | Wait about 1.5 seconds; reopen immediately if the window closes |
 | Waiting for first real message | The review hash is recorded, but the current installation has not produced a real event | Fully quit and restart Codex, then send a normal message |
 | Connected | A real Hook event matching the current installation was received | No action required |
 | Hooks configuration cannot be parsed | `hooks.json` is not safe to merge | Fix the configuration and retry; the app will not overwrite it |
 
-Command-line users can also run `scripts/install-hooks.py`, but must still complete security review in Codex. The in-app flow is recommended because it shows the installation hash, review state, and first-real-event verification.
+Command-line users can also run `scripts/install-hooks.py`. Inspect `/hooks` after installation; trust is required only when Codex marks a new or changed definition for review. The in-app flow is recommended because it shows the installation hash, status confirmation, and first-real-event verification.
 
 ## Hook events and status mapping
 
@@ -457,6 +461,7 @@ Run recovery or cleanup only after Codex has fully quit, so a running Codex proc
 | Local Codex App Server process | Account, quota, and state-database visibility | Local IPC, not a public network request |
 | `codex-reset.com` | Feed, timeline, and forecasts | No |
 | `ericjypark.github.io` | Public model-price catalog | No |
+| `api.github.com` | Daily or manual Codex Monitor Latest Release check | No |
 | `coverai.store` | Website link opened by the user | Only after a click; no local data appended |
 | `x.com` | Original evidence opened by the user | Only after a click |
 
@@ -474,6 +479,7 @@ The script covers:
 - Ripple/Particle Orb runtime and Activity Island lifecycle.
 - Activity Island preferences and layout state.
 - First-run setup, Hook merge, path quoting, review state, and connection state.
+- GitHub Release decoding, version comparison, architecture matching, asset and SHA-256 validation, check cadence, and notification deduplication.
 - Usage/Cost scan, account attribution, project aliases, activity heatmap, and price catalog.
 - Tibo/Codex Reset Radar decoding, source validation, cache, and timeline.
 - Three reset categories, pending verification, user display type, and notification evidence.
@@ -569,6 +575,7 @@ Local JSONL presence, App Server indexing, and Codex UI visibility are three dif
 - Cost is not a bill. Public model-price changes affect estimates, and unknown models count as `$0`.
 - Raw session and project-transfer bundles contain sensitive content and are not suitable for public sharing.
 - The app currently uses an ad-hoc signature and has no Developer ID notarization or automatic update signature. GitHub Releases provide manual downloads.
+- The update checker opens the matching DMG or Release download URL only; it never mounts an image, replaces the app, or requests administrator privileges automatically.
 
 ## Official protocol references
 

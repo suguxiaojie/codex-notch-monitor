@@ -12,7 +12,8 @@ ripple_test_binary="$(mktemp /tmp/codex-notch-ripple-tests.XXXXXX)"
 activity_island_test_binary="$(mktemp /tmp/codex-notch-activity-island-tests.XXXXXX)"
 activity_preferences_test_binary="$(mktemp /tmp/codex-notch-activity-preferences-tests.XXXXXX)"
 setup_test_binary="$(mktemp /tmp/codex-notch-setup-tests.XXXXXX)"
-trap 'rm -f "$test_binary" "$cost_test_binary" "$catalog_test_binary" "$tibo_test_binary" "$reset_test_binary" "$continuity_test_binary" "$ripple_test_binary" "$activity_island_test_binary" "$activity_preferences_test_binary" "$setup_test_binary"' EXIT
+update_test_binary="$(mktemp /tmp/codex-notch-update-tests.XXXXXX)"
+trap 'rm -f "$test_binary" "$cost_test_binary" "$catalog_test_binary" "$tibo_test_binary" "$reset_test_binary" "$continuity_test_binary" "$ripple_test_binary" "$activity_island_test_binary" "$activity_preferences_test_binary" "$setup_test_binary" "$update_test_binary"' EXIT
 
 cd "$project_dir"
 swiftc \
@@ -67,6 +68,15 @@ swiftc \
   Tests/CodexSetupServiceTests.swift \
   -o "$setup_test_binary"
 "$setup_test_binary"
+
+swiftc \
+  -swift-version 5 \
+  -parse-as-library \
+  Sources/CodexNotchMonitor/AppPaths.swift \
+  Sources/CodexNotchMonitor/AppUpdateService.swift \
+  Tests/AppUpdateServiceTests.swift \
+  -o "$update_test_binary"
+"$update_test_binary"
 
 swiftc \
   -swift-version 5 \

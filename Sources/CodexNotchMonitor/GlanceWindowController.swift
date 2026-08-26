@@ -216,7 +216,7 @@ final class GlanceWindowController: NSObject {
 
         let root = GlanceView(
             store: store,
-            onClose: { [weak self] in self?.hide() },
+            onQuit: { NSApp.terminate(nil) },
             onOpenCenter: { [weak self] section in
                 if section == .panelSettings {
                     self?.isPinnedForPanelSettings = true

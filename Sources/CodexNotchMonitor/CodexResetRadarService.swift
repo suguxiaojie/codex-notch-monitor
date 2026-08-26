@@ -114,6 +114,21 @@ struct CodexResetRadarSnapshot: Codable, Equatable {
     var fetchedDate: Date? { TiboFeedDate.parse(fetchedAt) }
 }
 
+enum CodexResetPinnedSignalState: Equatable {
+    case confirmed
+    case fulfilled
+    case activePreview
+    case expired
+    case pending
+}
+
+struct CodexResetPinnedSignalResolution: Equatable {
+    let state: CodexResetPinnedSignalState
+    let signalEvent: CodexResetTimelineEvent?
+    let evidenceEvent: CodexResetTimelineEvent?
+    let isLocallyConfirmed: Bool
+}
+
 enum CodexResetRadarError: LocalizedError {
     case invalidResponse(String)
     case rejected(String)
@@ -176,6 +191,106 @@ final class CodexResetRadarService {
 
     var cachedAt: Date? {
         lock.withRadarLock { cache?.fetchedAt }
+    }
+
+    static func resolvePinnedSignal(
+        _ signal: CodexResetRadarSignal,
+        timelineEvents: [CodexResetTimelineEvent],
+        locallyConfirmedPostIDs: Set<String> = [],
+        now: Date = Date()
+    ) -> CodexResetPinnedSignalResolution {
+        let signalEvent = timelineEvents.first { $0.id == signal.tweetId }
+        let directLocalConfirmation = locallyConfirmedPostIDs.contains(signal.tweetId)
+        if directLocalConfirmation
+            || (signalEvent?.preview == false
+                && signalEvent?.source == "archive"
+                && signalEvent?.confidence == "high") {
+            return CodexResetPinnedSignalResolution(
+                state: .confirmed,
+                signalEvent: signalEvent,
+                evidenceEvent: signalEvent,
+                isLocallyConfirmed: directLocalConfirmation
+            )
+        }
+
+        if signalEvent?.preview == true,
+           let fulfillment = matchingFulfillment(
+               for: signal,
+               signalEvent: signalEvent,
+               timelineEvents: timelineEvents,
+               locallyConfirmedPostIDs: locallyConfirmedPostIDs
+           ) {
+            return CodexResetPinnedSignalResolution(
+                state: .fulfilled,
+                signalEvent: signalEvent,
+                evidenceEvent: fulfillment,
+                isLocallyConfirmed: locallyConfirmedPostIDs.contains(fulfillment.id)
+            )
+        }
+
+        if signalEvent?.preview == true {
+            let deadline = pinnedSignalDeadline(signal: signal, event: signalEvent)
+            return CodexResetPinnedSignalResolution(
+                state: signal.active && now <= deadline ? .activePreview : .expired,
+                signalEvent: signalEvent,
+                evidenceEvent: nil,
+                isLocallyConfirmed: false
+            )
+        }
+
+        return CodexResetPinnedSignalResolution(
+            state: signal.active ? .pending : .expired,
+            signalEvent: signalEvent,
+            evidenceEvent: nil,
+            isLocallyConfirmed: false
+        )
+    }
+
+    private static func matchingFulfillment(
+        for signal: CodexResetRadarSignal,
+        signalEvent: CodexResetTimelineEvent?,
+        timelineEvents: [CodexResetTimelineEvent],
+        locallyConfirmedPostIDs: Set<String>
+    ) -> CodexResetTimelineEvent? {
+        guard let signalDate = signal.date else { return nil }
+        let deadline = pinnedSignalDeadline(signal: signal, event: signalEvent)
+        return timelineEvents
+            .filter { event in
+                guard event.id != signal.tweetId,
+                      event.type == "reset",
+                      event.preview == false,
+                      event.resetVerificationStatus != "rejected",
+                      let eventDate = event.announcedDate,
+                      eventDate >= signalDate,
+                      eventDate <= deadline else { return false }
+                let scopeMatches = signalEvent?.scope == nil
+                    || event.scope == nil
+                    || signalEvent?.scope == event.scope
+                let hasEvidence = locallyConfirmedPostIDs.contains(event.id)
+                    || (event.source == "archive" && event.confidence == "high")
+                return scopeMatches && hasEvidence
+            }
+            .min { lhs, rhs in
+                (lhs.announcedDate ?? .distantFuture)
+                    < (rhs.announcedDate ?? .distantFuture)
+            }
+    }
+
+    private static func pinnedSignalDeadline(
+        signal: CodexResetRadarSignal,
+        event: CodexResetTimelineEvent?
+    ) -> Date {
+        let evidenceWindowEnd = [
+            event?.officialWindow?.endAt,
+            event?.officialWindow?.targetAt,
+            event?.effectiveAt,
+        ]
+        .compactMap { $0.flatMap(TiboFeedDate.parse) }
+        .first
+        if let evidenceWindowEnd {
+            return evidenceWindowEnd.addingTimeInterval(12 * 60 * 60)
+        }
+        return (signal.date ?? .distantPast).addingTimeInterval(48 * 60 * 60)
     }
 
     func fetch(completion: @escaping (Result<(CodexResetRadarSnapshot, Date), Error>) -> Void) {
