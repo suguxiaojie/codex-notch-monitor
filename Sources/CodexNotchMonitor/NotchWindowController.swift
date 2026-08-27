@@ -17,10 +17,8 @@ final class NotchWindowController: NSObject {
     private var localMouseMonitor: Any?
     private var globalMoveMonitor: Any?
     private var localMoveMonitor: Any?
-    private var pointerTrackingTimer: Timer?
     private var navigationGeometryTimer: Timer?
     private var compactDetailsObserver: AnyCancellable?
-    private var glancePresentationObserver: AnyCancellable?
     private var compactPointerOutsideSince: Date?
     private var expansionTransitionWorkItems: [DispatchWorkItem] = []
 
@@ -46,7 +44,6 @@ final class NotchWindowController: NSObject {
         if let globalMoveMonitor { NSEvent.removeMonitor(globalMoveMonitor) }
         if let localMoveMonitor { NSEvent.removeMonitor(localMoveMonitor) }
         navigationGeometryTimer?.invalidate()
-        pointerTrackingTimer?.invalidate()
         for observer in observers { NotificationCenter.default.removeObserver(observer) }
     }
 
@@ -103,9 +100,6 @@ final class NotchWindowController: NSObject {
         localMoveMonitor = NSEvent.addLocalMonitorForEvents(matching: .mouseMoved) { event in
             handler(event)
             return event
-        }
-        pointerTrackingTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.updateMouseEventPassthrough() }
         }
     }
 
@@ -193,18 +187,21 @@ final class NotchWindowController: NSObject {
     }
 
     private func observeGlancePresentation() {
-        glancePresentationObserver = store.$isGlancePresented
-            .removeDuplicates()
-            .sink { [weak self] presented in
-                Task { @MainActor in
-                    guard let self else { return }
-                    if presented {
-                        self.panel.orderOut(nil)
-                    } else {
-                        self.show()
-                    }
+        observers.append(NotificationCenter.default.addObserver(
+            forName: .glancePresentationDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let presented = notification.object as? Bool else { return }
+            Task { @MainActor in
+                guard let self else { return }
+                if presented {
+                    self.panel.orderOut(nil)
+                } else {
+                    self.show()
                 }
             }
+        })
     }
 
     private func collapseIfClickIsOutside(at screenLocation: NSPoint) {
@@ -317,20 +314,20 @@ final class NotchWindowController: NSObject {
             // physical notch, so retain the last reliable/default notch
             // geometry instead of flashing the no-notch 276 pt layout.
             if screen.safeAreaInsets.top > 0 {
-                store.displayCutoutMode = .notched
+                updateDisplayCutoutMode(.notched)
                 installFallbackNotchGeometryIfNeeded()
-                store.compactMenuBarHeight = navigationBarHeight
-                store.compactPanelHeight = compactHeight
+                updateGeometry(\.compactMenuBarHeight, to: navigationBarHeight)
+                updateGeometry(\.compactPanelHeight, to: compactHeight)
                 return
             }
-            store.displayCutoutMode = .standardMenuBar
-            store.notchObstructionWidth = 0
+            updateDisplayCutoutMode(.standardMenuBar)
+            updateGeometry(\.notchObstructionWidth, to: 0)
             // There is no physical cutout on Intel MacBooks and ordinary
             // external displays. Keep the status capsule compact so it does not
             // impersonate a notch or consume unnecessary menu-bar space.
-            store.compactPanelWidth = min(276, screen.frame.width - 32)
-            store.compactMenuBarHeight = navigationBarHeight
-            store.compactPanelHeight = compactHeight
+            updateGeometry(\.compactPanelWidth, to: min(276, screen.frame.width - 32))
+            updateGeometry(\.compactMenuBarHeight, to: navigationBarHeight)
+            updateGeometry(\.compactPanelHeight, to: compactHeight)
             return
         }
 
@@ -363,35 +360,40 @@ final class NotchWindowController: NSObject {
                 screenWidth: screen.frame.width
               )
         else {
-            store.displayCutoutMode = .notched
+            updateDisplayCutoutMode(.notched)
             installFallbackNotchGeometryIfNeeded()
-            store.compactMenuBarHeight = navigationBarHeight
-            store.compactPanelHeight = compactHeight
+            updateGeometry(\.compactMenuBarHeight, to: navigationBarHeight)
+            updateGeometry(\.compactPanelHeight, to: compactHeight)
             return
         }
 
-        store.displayCutoutMode = .notched
-        if abs(store.notchObstructionWidth - hardwareGap) > 0.5 {
-            store.notchObstructionWidth = hardwareGap
-        }
-        if abs(store.compactPanelWidth - fittedPanelWidth) > 0.5 {
-            store.compactPanelWidth = fittedPanelWidth
-        }
-        if abs(store.compactMenuBarHeight - navigationBarHeight) > 0.5 {
-            store.compactMenuBarHeight = navigationBarHeight
-        }
-        if abs(store.compactPanelHeight - compactHeight) > 0.5 {
-            store.compactPanelHeight = compactHeight
-        }
+        updateDisplayCutoutMode(.notched)
+        updateGeometry(\.notchObstructionWidth, to: hardwareGap)
+        updateGeometry(\.compactPanelWidth, to: fittedPanelWidth)
+        updateGeometry(\.compactMenuBarHeight, to: navigationBarHeight)
+        updateGeometry(\.compactPanelHeight, to: compactHeight)
     }
 
     private func installFallbackNotchGeometryIfNeeded() {
         guard store.notchObstructionWidth < 80 else { return }
-        store.notchObstructionWidth = CompactGeometryPolicy.minimumNotchGap
-        store.compactPanelWidth = min(
+        updateGeometry(\.notchObstructionWidth, to: CompactGeometryPolicy.minimumNotchGap)
+        updateGeometry(\.compactPanelWidth, to: min(
             CompactGeometryPolicy.maximumNotchedPanelWidth,
             max(store.compactPanelWidth, CompactGeometryPolicy.minimumNotchGap + 180)
-        )
+        ))
+    }
+
+    private func updateDisplayCutoutMode(_ mode: DisplayCutoutMode) {
+        guard store.displayCutoutMode != mode else { return }
+        store.displayCutoutMode = mode
+    }
+
+    private func updateGeometry(
+        _ keyPath: ReferenceWritableKeyPath<MonitorStore, CGFloat>,
+        to value: CGFloat
+    ) {
+        guard abs(store[keyPath: keyPath] - value) > 0.5 else { return }
+        store[keyPath: keyPath] = value
     }
 
     private func desiredCompactHeight() -> CGFloat {

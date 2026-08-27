@@ -1,6 +1,12 @@
 import AppKit
 import SwiftUI
 
+extension Notification.Name {
+    static let glancePresentationDidChange = Notification.Name(
+        "CodexNotchMonitor.glancePresentationDidChange"
+    )
+}
+
 private final class GlancePanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
@@ -154,7 +160,10 @@ final class GlanceWindowController: NSObject {
 
     func show() {
         reposition()
-        store.isGlancePresented = true
+        NotificationCenter.default.post(
+            name: .glancePresentationDidChange,
+            object: true
+        )
         shownAt = Date()
         panel.alphaValue = 0
         panel.orderFrontRegardless()
@@ -175,7 +184,10 @@ final class GlanceWindowController: NSObject {
     }
 
     func hide() {
-        store.isGlancePresented = false
+        NotificationCenter.default.post(
+            name: .glancePresentationDidChange,
+            object: false
+        )
         shownAt = nil
         isPinnedForPanelSettings = false
         panel.orderOut(nil)

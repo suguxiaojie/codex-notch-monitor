@@ -121,7 +121,6 @@ final class MonitorStore: ObservableObject {
     @Published private(set) var lastSessionImportBackupURL: URL?
     @Published private(set) var lastProjectImportBackupURL: URL?
     @Published var isExpanded = false
-    @Published var isGlancePresented = false
     @Published var compactContentVisible = true
     @Published var expandedContentVisible = false
     @Published var isExpansionTransitioning = false
@@ -482,7 +481,8 @@ final class MonitorStore: ObservableObject {
 
     func refreshNotificationStatus() {
         quotaResetNotifier.refreshAuthorizationStatus { [weak self] status in
-            self?.quotaNotificationStatus = status
+            guard let self, self.quotaNotificationStatus != status else { return }
+            self.quotaNotificationStatus = status
         }
     }
 
@@ -572,8 +572,14 @@ final class MonitorStore: ObservableObject {
             isCodexSecurityReviewLaunching = false
             codexSetupMessage = failure
         }
-        codexSetupSnapshot = codexSetupService.snapshot()
-        isSetupOnboardingComplete = !codexSetupService.shouldPresentOnboarding
+        let snapshot = codexSetupService.snapshot()
+        if codexSetupSnapshot != snapshot {
+            codexSetupSnapshot = snapshot
+        }
+        let onboardingComplete = !codexSetupService.shouldPresentOnboarding
+        if isSetupOnboardingComplete != onboardingComplete {
+            isSetupOnboardingComplete = onboardingComplete
+        }
     }
 
     func installCodexSetupHooks() {
@@ -2357,15 +2363,19 @@ final class MonitorStore: ObservableObject {
 
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
+        var consumedEvent = false
         for file in files.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
             defer { try? manager.removeItem(at: file) }
             guard let data = try? Data(contentsOf: file),
                   let event = try? decoder.decode(HookEvent.self, from: data)
             else { continue }
+            consumedEvent = true
             apply(event)
             codexSetupService.recordConnectedEvent()
         }
-        refreshCodexSetup()
+        if consumedEvent {
+            refreshCodexSetup()
+        }
     }
 
     func refreshSessionActivity(completion: (() -> Void)? = nil) {
@@ -2393,7 +2403,10 @@ final class MonitorStore: ObservableObject {
                 discovered: discovered.map(\.id)
             )
             let byID = Dictionary(uniqueKeysWithValues: discovered.map { ($0.id, $0) })
-            self.activeProjects = self.projectDisplayOrder.compactMap { byID[$0] }
+            let activeProjects = self.projectDisplayOrder.compactMap { byID[$0] }
+            if self.activeProjects != activeProjects {
+                self.activeProjects = activeProjects
+            }
             if let selected = self.selectedProjectID,
                !self.activeProjects.contains(where: { $0.id == selected }) {
                 self.selectedProjectID = nil

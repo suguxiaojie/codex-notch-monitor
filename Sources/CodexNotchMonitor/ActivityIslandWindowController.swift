@@ -66,12 +66,13 @@ final class ActivityIslandWindowController: NSObject {
             }
             .store(in: &cancellables)
 
-        store.$isGlancePresented
-            .removeDuplicates()
-            .sink { [weak self] _ in
-                self?.reposition(animated: true)
-            }
-            .store(in: &cancellables)
+        observers.append(NotificationCenter.default.addObserver(
+            forName: .glancePresentationDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.reposition(animated: true) }
+        })
     }
 
     private func observeScreens() {
