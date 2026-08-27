@@ -74,12 +74,17 @@ private final class MonitorCenterGlassChromeView: NSView {
 @MainActor
 final class MonitorCenterWindowController: NSObject, NSWindowDelegate {
     private let store: MonitorStore
+    private let onOpenActivitySettings: () -> Void
     private var window: NSWindow?
     private var hostingView: NSHostingView<NotchView>?
     private var exportDirectoryPanel: NSOpenPanel?
 
-    init(store: MonitorStore) {
+    init(
+        store: MonitorStore,
+        onOpenActivitySettings: @escaping () -> Void
+    ) {
         self.store = store
+        self.onOpenActivitySettings = onOpenActivitySettings
         super.init()
         store.setExportDirectoryPresenter { [weak self] currentDirectory, completion in
             self?.presentExportDirectoryPanel(
@@ -93,9 +98,18 @@ final class MonitorCenterWindowController: NSObject, NSWindowDelegate {
     }
 
     func show(section: MonitorCenterSection) {
+        guard section != .settings else {
+            onOpenActivitySettings()
+            return
+        }
         let rootView = NotchView(
             store: store,
             onToggle: {},
+            onOpenCenter: { [weak self] requestedSection in
+                if requestedSection == .settings {
+                    self?.onOpenActivitySettings()
+                }
+            },
             surface: .center,
             initialSection: section
         )

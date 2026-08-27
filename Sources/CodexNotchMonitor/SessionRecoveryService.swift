@@ -7,6 +7,18 @@ struct SessionRecoveryResult: Equatable {
     let recoveredCount: Int
     let projectBindingsAdded: Int
     let backupURL: URL
+
+    var completionState: SessionRecoveryCompletionState {
+        if recoveredCount <= 0 { return .ineffective }
+        if recoveredCount < requestedCount { return .partial }
+        return .complete
+    }
+}
+
+enum SessionRecoveryCompletionState: Equatable {
+    case complete
+    case partial
+    case ineffective
 }
 
 final class SessionRecoveryService {

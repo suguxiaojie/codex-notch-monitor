@@ -349,67 +349,10 @@ struct SetupPermissionsView: View {
 
     private var maintenanceDashboard: some View {
         VStack(spacing: 12) {
+            maintenanceOverviewCard
             appUpdateCard
-
-            setupCard {
-                setupHero(
-                    symbol: hookStateSymbol,
-                    color: hookStateColor,
-                    title: "安装与权限",
-                    detail: "随时检查通知、Hook 定义、安全审核与真实连接状态。"
-                )
-                setupDivider
-                setupStatusRow("系统通知", value: notificationStatusTitle, color: notificationStatusColor)
-                setupStatusRow("Codex Hooks", value: snapshot?.hookState.title ?? "正在检查", color: hookStateColor)
-                if let date = snapshot?.lastConnectedAt {
-                    setupStatusRow("最近真实事件", value: date.compactRelativeText, color: .green)
-                }
-            }
-
-            setupCard {
-                setupSectionTitle("Hook 管理", detail: "任何真实写入都只在你点击确认后执行。")
-                setupDivider
-                pathBlock("配置文件", path: snapshot?.hooksURL.path ?? "~/.codex/hooks.json")
-                pathBlock("Helper", path: snapshot?.installedHelperURL.path ?? "应用支持目录")
-                setupDivider
-                HStack(spacing: 8) {
-                    Button("查看备份") { store.revealCodexSetupBackups() }
-                        .buttonStyle(.bordered)
-                    Spacer()
-                    if snapshot?.hookState.needsTrustConfirmation == true {
-                        Button(
-                            store.isCodexSecurityReviewLaunching
-                                ? "正在打开"
-                                : (snapshot?.hookState.reviewActionTitle ?? "检查 Hooks 状态")
-                        ) {
-                            store.openCodexHookSecurityReview()
-                        }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(store.isCodexSecurityReviewLaunching)
-                        Button("确认已 Active") {
-                            confirmsSecurityReviewCompletion = true
-                        }
-                        .buttonStyle(.bordered)
-                    } else if snapshot?.hookState == .waitingForFirstEvent
-                        || snapshot?.hookState == .connected {
-                        Button("打开 Hooks 管理") {
-                            store.openCodexHookSecurityReview()
-                        }
-                        .buttonStyle(.bordered)
-                    }
-                    Menu {
-                        Button("重新安装 Hook") { confirmsHookInstall = true }
-                        Divider()
-                        Button("卸载 Hook", role: .destructive) {
-                            confirmsHookUninstall = true
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
-                    }
-                    .menuStyle(.borderlessButton)
-                    .help("更多 Hook 操作")
-                }
-            }
+            maintenanceEvidenceCard
+            hookManagementCard
 
             HStack {
                 Button("重新运行首次引导") {
@@ -427,6 +370,147 @@ struct SetupPermissionsView: View {
                     .buttonStyle(.bordered)
             }
             .padding(.horizontal, 2)
+        }
+    }
+
+    private var maintenanceOverviewCard: some View {
+        setupCard {
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle().fill(maintenanceOverallColor.opacity(0.12))
+                    Image(systemName: maintenanceOverallSymbol)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(maintenanceOverallColor)
+                }
+                .frame(width: 38, height: 38)
+                .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(maintenanceOverallTitle)
+                        .font(MonitorTypography.cardTitle)
+                        .foregroundStyle(MonitorTheme.primaryText)
+                    Text(maintenanceOverallDetail)
+                        .font(MonitorTypography.body)
+                        .foregroundStyle(MonitorTheme.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 10)
+
+                Text(maintenanceOverallBadge)
+                    .font(MonitorTypography.control)
+                    .foregroundStyle(maintenanceOverallColor)
+                    .padding(.horizontal, 9)
+                    .frame(height: 24)
+                    .background(
+                        maintenanceOverallColor.opacity(0.10),
+                        in: Capsule()
+                    )
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(maintenanceOverallTitle)
+            .accessibilityValue(maintenanceOverallDetail)
+        }
+    }
+
+    private var maintenanceEvidenceCard: some View {
+        setupCard {
+            setupSectionTitle(
+                "当前证据",
+                detail: "以下状态均为只读检查，不会修改通知、Hook 或配置文件。"
+            )
+            setupDivider
+            setupStatusRow(
+                "系统通知",
+                value: notificationStatusTitle,
+                color: notificationStatusColor
+            )
+            setupStatusRow(
+                "Codex Hooks",
+                value: snapshot?.hookState.title ?? "正在检查",
+                color: hookStateColor
+            )
+            if let date = snapshot?.lastConnectedAt {
+                setupStatusRow(
+                    "最近真实事件",
+                    value: date.compactRelativeText,
+                    color: .green
+                )
+            }
+            setupDivider
+            pathBlock(
+                "配置文件",
+                path: snapshot?.hooksURL.path ?? "~/.codex/hooks.json"
+            )
+            pathBlock(
+                "Helper",
+                path: snapshot?.installedHelperURL.path ?? "应用支持目录"
+            )
+        }
+    }
+
+    private var hookManagementCard: some View {
+        setupCard {
+            setupSectionTitle(
+                "Hook 管理",
+                detail: "以下操作可能写入配置；每次都会先备份，并在执行前再次确认。"
+            )
+            setupDivider
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "exclamationmark.shield.fill")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.orange)
+                    .padding(.top, 1)
+                Text("重新安装只会合并 CodexMonitorHook；卸载只会移除属于它的 Handler，不会删除其他 Hooks。")
+                    .font(MonitorTypography.body)
+                    .foregroundStyle(MonitorTheme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 8)
+            .background(
+                Color.orange.opacity(0.055),
+                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+            )
+            setupDivider
+            HStack(spacing: 8) {
+                Button("查看备份") { store.revealCodexSetupBackups() }
+                    .buttonStyle(.bordered)
+                Spacer()
+                if snapshot?.hookState.needsTrustConfirmation == true {
+                    Button(
+                        store.isCodexSecurityReviewLaunching
+                            ? "正在打开"
+                            : (snapshot?.hookState.reviewActionTitle ?? "检查 Hooks 状态")
+                    ) {
+                        store.openCodexHookSecurityReview()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(store.isCodexSecurityReviewLaunching)
+                    Button("确认已 Active") {
+                        confirmsSecurityReviewCompletion = true
+                    }
+                    .buttonStyle(.bordered)
+                } else if snapshot?.hookState == .waitingForFirstEvent
+                    || snapshot?.hookState == .connected {
+                    Button("打开 Hooks 管理") {
+                        store.openCodexHookSecurityReview()
+                    }
+                    .buttonStyle(.bordered)
+                }
+                Menu {
+                    Button("重新安装 Hook") { confirmsHookInstall = true }
+                    Divider()
+                    Button("卸载 Hook", role: .destructive) {
+                        confirmsHookUninstall = true
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                .menuStyle(.borderlessButton)
+                .help("更多 Hook 操作")
+            }
         }
     }
 
@@ -585,6 +669,103 @@ struct SetupPermissionsView: View {
     }
 
     private var snapshot: CodexSetupSnapshot? { store.codexSetupSnapshot }
+
+    private var maintenanceOverallTitle: String {
+        guard let state = snapshot?.hookState else { return "正在检查安装状态" }
+        if state == .connected,
+           store.quotaNotificationStatus == .enabled {
+            return "安装状态正常"
+        }
+        switch state {
+        case .connected:
+            return "基础连接正常"
+        case .waitingForFirstEvent:
+            return "等待真实连接验证"
+        case .trustStatusUnknown, .securityReviewRequired:
+            return "需要确认 Hook 状态"
+        case .notInstalled, .updateRequired:
+            return "Hook 需要处理"
+        case .codexUnavailable, .helperUnavailable, .invalidHooksFile:
+            return "安装环境异常"
+        case .checking:
+            return "正在检查安装状态"
+        }
+    }
+
+    private var maintenanceOverallDetail: String {
+        guard let state = snapshot?.hookState else {
+            return "正在读取通知、Hook 定义和真实连接证据。"
+        }
+        if state == .connected,
+           store.quotaNotificationStatus == .enabled {
+            return "系统通知已允许，Codex Hooks 已通过真实事件验证。"
+        }
+        if state == .connected {
+            return "Codex Hooks 已连接；系统通知当前为\(notificationStatusTitle)。"
+        }
+        return "系统通知：\(notificationStatusTitle)；Codex Hooks：\(state.title)。"
+    }
+
+    private var maintenanceOverallColor: Color {
+        guard let state = snapshot?.hookState else {
+            return MonitorTheme.tertiaryText
+        }
+        if state == .connected,
+           store.quotaNotificationStatus == .enabled {
+            return .green
+        }
+        switch state {
+        case .codexUnavailable, .helperUnavailable, .invalidHooksFile:
+            return .red
+        case .connected, .waitingForFirstEvent, .trustStatusUnknown,
+             .securityReviewRequired, .notInstalled, .updateRequired:
+            return .orange
+        case .checking:
+            return MonitorTheme.tertiaryText
+        }
+    }
+
+    private var maintenanceOverallSymbol: String {
+        guard let state = snapshot?.hookState else {
+            return "arrow.triangle.2.circlepath"
+        }
+        if state == .connected,
+           store.quotaNotificationStatus == .enabled {
+            return "checkmark.shield.fill"
+        }
+        switch state {
+        case .codexUnavailable, .helperUnavailable, .invalidHooksFile:
+            return "exclamationmark.shield.fill"
+        case .checking:
+            return "arrow.triangle.2.circlepath"
+        default:
+            return "exclamationmark.triangle.fill"
+        }
+    }
+
+    private var maintenanceOverallBadge: String {
+        guard let state = snapshot?.hookState else { return "检查中" }
+        if state == .connected,
+           store.quotaNotificationStatus == .enabled {
+            return "全部正常"
+        }
+        switch state {
+        case .connected:
+            return "通知待处理"
+        case .waitingForFirstEvent:
+            return "待验证"
+        case .trustStatusUnknown, .securityReviewRequired:
+            return "待确认"
+        case .notInstalled:
+            return "未安装"
+        case .updateRequired:
+            return "需要更新"
+        case .codexUnavailable, .helperUnavailable, .invalidHooksFile:
+            return "异常"
+        case .checking:
+            return "检查中"
+        }
+    }
 
     private var hookStateColor: Color {
         if store.isCodexSecurityReviewLaunching { return MonitorTheme.cyanAccent }

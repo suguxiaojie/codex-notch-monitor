@@ -239,7 +239,10 @@ final class ActivityIslandWindowController: NSObject {
             return
         }
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            context.duration = ActivityIslandMotionPolicy.isReduced(
+                systemPreference: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+                appPreference: preferences.reduceMotion
+            )
                 ? 0
                 : (model.presentation == .compact ? 0.28 : 0.30)
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)

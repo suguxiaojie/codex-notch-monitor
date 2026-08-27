@@ -86,7 +86,15 @@ struct GlanceContentPreferences: Equatable {
     }
 }
 
+private enum GlanceSettingsSection: String, CaseIterable, Identifiable {
+    case content = "内容"
+    case appearance = "外观"
+
+    var id: String { rawValue }
+}
+
 struct GlanceContentSettingsView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage(GlanceContentPreferenceKey.showPrimaryQuota) private var showPrimaryQuota = true
     @AppStorage(GlanceContentPreferenceKey.showSparkQuota) private var showSparkQuota = true
     @AppStorage(GlanceContentPreferenceKey.showCostEstimate) private var showCostEstimate = true
@@ -97,68 +105,50 @@ struct GlanceContentSettingsView: View {
     @AppStorage(GlanceContentPreferenceKey.showResetEntry) private var showResetEntry = true
     @AppStorage(GlanceContentPreferenceKey.surfaceOpacity) private var surfaceOpacity = 0.38
     @State private var isAdjustingOpacity = false
+    @State private var selectedSection = GlanceSettingsSection.content
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: true) {
-            VStack(spacing: 14) {
-                settingsGroup(title: "额度") {
-                    contentRow(
-                        title: "周期用量概览",
-                        detail: "显示当前周期的已用量、剩余量和重置时间。",
-                        isOn: $showPrimaryQuota
-                    )
-                    divider
-                    contentRow(
-                        title: "Spark 周额度",
-                        detail: "有可用数据时，在周期额度下方显示 Spark 周额度。",
-                        isOn: $showSparkQuota
-                    )
-                    divider
-                    contentRow(
-                        title: "Credits 余额",
-                        detail: "显示当前登录账号由 App Server 返回的 Credits 余额。",
-                        isOn: $showCreditBalance
-                    )
-                    divider
-                    contentRow(
-                        title: "额度重置入口",
-                        detail: "显示额度卡次数、到期时间和真实重置入口。",
-                        isOn: $showResetEntry
-                    )
-                }
+        VStack(spacing: 0) {
+            previewStatusBar
 
-                settingsGroup(title: "用量") {
-                    contentRow(
-                        title: "最近一天 Token",
-                        detail: "显示最近一个统计日的 Token 用量。",
-                        isOn: $showDailyTokens
-                    )
-                    divider
-                    contentRow(
-                        title: "30 日 Token",
-                        detail: "显示最近 30 个统计日的 Token 总量。",
-                        isOn: $showThirtyDayTokens
-                    )
-                    divider
-                    contentRow(
-                        title: "Token 活动图表",
-                        detail: "显示 Token 活动，并支持周、月、三月和半年。",
-                        isOn: $showTokenActivity
-                    )
+            Picker("面板设置分组", selection: $selectedSection) {
+                ForEach(GlanceSettingsSection.allCases) { section in
+                    Text(section.rawValue).tag(section)
                 }
-
-                settingsGroup(title: "成本") {
-                    contentRow(
-                        title: "成本估算图表",
-                        detail: "显示可切换周、月、三月和半年的成本估算。",
-                        isOn: $showCostEstimate
-                    )
-                }
-
-                opacityCard
             }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .accessibilityLabel("面板设置分组")
+            .padding(.horizontal, 18)
+            .padding(.top, 12)
+            .padding(.bottom, 10)
+
+            divider
+
+            ScrollView(.vertical, showsIndicators: true) {
+                Group {
+                    if selectedSection == .content {
+                        contentSettings
+                    } else {
+                        appearanceSettings
+                    }
+                }
+                .id(selectedSection)
+                .transition(
+                    reduceMotion
+                        ? .opacity
+                        : .opacity.combined(with: .offset(x: 0, y: 4))
+                )
+                .padding(.horizontal, 18)
+                .padding(.top, 14)
+                .padding(.bottom, 24)
+            }
+            .scrollDisabled(isAdjustingOpacity)
         }
-        .scrollDisabled(isAdjustingOpacity)
+        .animation(
+            reduceMotion ? nil : .easeOut(duration: 0.16),
+            value: selectedSection
+        )
         .onDisappear { isAdjustingOpacity = false }
         .onChange(of: surfaceOpacity) { opacity in
             NotificationCenter.default.post(
@@ -166,6 +156,124 @@ struct GlanceContentSettingsView: View {
                 object: opacity
             )
         }
+    }
+
+    private var previewStatusBar: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "rectangle.on.rectangle")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(MonitorTheme.cyanAccent)
+                .frame(width: 28, height: 28)
+                .background(
+                    MonitorTheme.cyanAccent.opacity(0.10),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                )
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("实时 Glance 预览")
+                    .font(MonitorTypography.cardTitle)
+                    .foregroundStyle(MonitorTheme.primaryText)
+                Text("预览已固定在菜单栏旁；更改会立即生效。")
+                    .font(MonitorTypography.body)
+                    .foregroundStyle(MonitorTheme.tertiaryText)
+            }
+            Spacer(minLength: 10)
+            Text("\(visibleContentCount) / 8 项显示")
+                .font(MonitorTypography.control)
+                .foregroundStyle(MonitorTheme.secondaryText)
+                .monospacedDigit()
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 12)
+        .background(MonitorTheme.subtleCardFill)
+        .overlay(alignment: .bottom) {
+            divider
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("实时 Glance 预览")
+        .accessibilityValue("\(visibleContentCount) 项内容正在显示")
+    }
+
+    private var contentSettings: some View {
+        VStack(spacing: 14) {
+            settingsGroup(title: "额度") {
+                contentRow(
+                    title: "周期用量概览",
+                    detail: "显示当前周期的已用量、剩余量和重置时间。",
+                    isOn: $showPrimaryQuota
+                )
+                divider
+                contentRow(
+                    title: "Spark 周额度",
+                    detail: "有可用数据时，在周期额度下方显示 Spark 周额度。",
+                    isOn: $showSparkQuota
+                )
+                divider
+                contentRow(
+                    title: "Credits 余额",
+                    detail: "显示当前登录账号由 App Server 返回的 Credits 余额。",
+                    isOn: $showCreditBalance
+                )
+                divider
+                contentRow(
+                    title: "额度重置入口",
+                    detail: "显示额度卡次数、到期时间和真实重置入口。",
+                    isOn: $showResetEntry
+                )
+            }
+
+            settingsGroup(title: "用量") {
+                contentRow(
+                    title: "最近一天 Token",
+                    detail: "显示最近一个统计日的 Token 用量。",
+                    isOn: $showDailyTokens
+                )
+                divider
+                contentRow(
+                    title: "30 日 Token",
+                    detail: "显示最近 30 个统计日的 Token 总量。",
+                    isOn: $showThirtyDayTokens
+                )
+                divider
+                contentRow(
+                    title: "Token 活动图表",
+                    detail: "显示 Token 活动，并支持周、月、三月和半年。",
+                    isOn: $showTokenActivity
+                )
+            }
+
+            settingsGroup(title: "成本") {
+                contentRow(
+                    title: "成本估算图表",
+                    detail: "显示可切换周、月、三月和半年的成本估算。",
+                    isOn: $showCostEstimate
+                )
+            }
+        }
+    }
+
+    private var appearanceSettings: some View {
+        VStack(spacing: 14) {
+            opacityCard
+            Text("透明度只影响 Glance 黑色背景，不增加磨砂或额外模糊。")
+                .font(MonitorTypography.body)
+                .foregroundStyle(MonitorTheme.tertiaryText)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 2)
+        }
+    }
+
+    private var visibleContentCount: Int {
+        [
+            showPrimaryQuota,
+            showSparkQuota,
+            showCostEstimate,
+            showCreditBalance,
+            showDailyTokens,
+            showThirtyDayTokens,
+            showTokenActivity,
+            showResetEntry,
+        ].filter { $0 }.count
     }
 
     private func settingsGroup<Content: View>(

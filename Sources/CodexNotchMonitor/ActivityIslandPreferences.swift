@@ -117,6 +117,15 @@ enum ActivityIslandPlacementPolicy {
     }
 }
 
+enum ActivityIslandMotionPolicy {
+    static func isReduced(
+        systemPreference: Bool,
+        appPreference: Bool
+    ) -> Bool {
+        systemPreference || appPreference
+    }
+}
+
 struct ActivityIslandPreferences: Equatable {
     var enabled: Bool
     var mode: ActivityIslandMode

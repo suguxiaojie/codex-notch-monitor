@@ -343,6 +343,7 @@ final class SessionContinuityService {
         var seenMessages = Set<String>()
         var hasUserMessage = false
         var sessionSource: Any?
+        var sessionOriginator: String?
 
         mutating func appendMessage(_ message: String) {
             let normalized = message.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -466,6 +467,7 @@ final class SessionContinuityService {
                 readableMessages: accumulator.messages,
                 kind: threadKind(
                     source: accumulator.sessionSource,
+                    originator: accumulator.sessionOriginator,
                     hasUserMessage: accumulator.hasUserMessage
                 ),
                 bytesRead: bytesRead
@@ -500,6 +502,7 @@ final class SessionContinuityService {
                     accumulator.gitBranch = git["branch"] as? String
                 }
                 accumulator.sessionSource = payload["source"]
+                accumulator.sessionOriginator = payload["originator"] as? String
                 continue
             }
 
@@ -539,9 +542,17 @@ final class SessionContinuityService {
         return result
     }
 
-    static func threadKind(source: Any?, hasUserMessage: Bool) -> LocalThreadKind {
+    static func threadKind(
+        source: Any?,
+        originator: String? = nil,
+        hasUserMessage: Bool
+    ) -> LocalThreadKind {
         if let source = source as? [String: Any], source["subagent"] != nil {
             return .subagent
+        }
+        if (source as? String)?.lowercased() == "exec"
+            || originator?.lowercased() == "codex_exec" {
+            return .system
         }
         return hasUserMessage ? .userConversation : .system
     }

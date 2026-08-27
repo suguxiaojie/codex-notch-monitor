@@ -9,12 +9,27 @@ struct CodexNotchMonitorApp: App {
     var body: some Scene {
         Settings {
             MonitorSettingsView(store: appDelegate.store)
-                .frame(width: 640, height: 620)
-                .padding(22)
+                .frame(
+                    minWidth: 620,
+                    idealWidth: 880,
+                    maxWidth: .infinity,
+                    minHeight: 620,
+                    idealHeight: 620,
+                    maxHeight: .infinity
+                )
                 .background(MonitorTheme.windowBackground)
                 .preferredColorScheme(.dark)
         }
+        .defaultSize(width: 880, height: 620)
+        .windowResizability(.contentSize)
         .commands {
+            CommandGroup(replacing: .appSettings) {
+                Button("灵动岛设置") {
+                    appDelegate.openActivitySettings()
+                }
+                .keyboardShortcut(",", modifiers: [.command])
+            }
+
             CommandMenu("监控") {
                 Button("显示或收起概览") {
                     appDelegate.togglePanel()
@@ -25,11 +40,6 @@ struct CodexNotchMonitorApp: App {
                     appDelegate.openMonitorCenter()
                 }
                 .keyboardShortcut("m", modifiers: [.command, .shift])
-
-                Button("灵动岛设置") {
-                    appDelegate.openActivitySettings()
-                }
-                .keyboardShortcut(",", modifiers: [.command, .shift])
 
                 Button("安装与权限") {
                     appDelegate.openSetupPermissions()
@@ -43,6 +53,7 @@ struct CodexNotchMonitorApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let store = MonitorStore()
     private var activityIslandController: ActivityIslandWindowController?
+    private var activitySettingsWindowController: ActivitySettingsWindowController?
     private var monitorCenterController: MonitorCenterWindowController?
     private var glanceWindowController: GlanceWindowController?
     private var statusItem: NSStatusItem?
@@ -52,7 +63,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         AstaSansFontRegistrar.registerBundledFonts()
-        let centerController = MonitorCenterWindowController(store: store)
+        let settingsController = ActivitySettingsWindowController(store: store)
+        activitySettingsWindowController = settingsController
+        let centerController = MonitorCenterWindowController(
+            store: store,
+            onOpenActivitySettings: { [weak settingsController] in
+                settingsController?.show()
+            }
+        )
         monitorCenterController = centerController
         let glanceController = GlanceWindowController(
             store: store,
@@ -383,7 +401,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func openActivitySettings() {
-        monitorCenterController?.show(section: .settings)
+        activitySettingsWindowController?.show()
     }
 
     @objc func openSetupPermissions() {

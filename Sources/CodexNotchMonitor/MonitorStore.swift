@@ -813,7 +813,16 @@ final class MonitorStore: ObservableObject {
                 self.continuityStatusMessage = nil
             case let .success(recovery):
                 self.lastContinuityBackupURL = recovery.backupURL
-                self.continuityStatusMessage = "已恢复 \(recovery.recoveredCount) / \(recovery.requestedCount) 条会话，新增 \(recovery.projectBindingsAdded) 条项目绑定"
+                switch recovery.completionState {
+                case .complete:
+                    self.continuityStatusMessage = "恢复成功：\(recovery.recoveredCount) / \(recovery.requestedCount) 条会话，新增 \(recovery.projectBindingsAdded) 条项目绑定"
+                case .partial:
+                    self.continuityStatusMessage = nil
+                    self.continuityError = "仅部分恢复：\(recovery.recoveredCount) / \(recovery.requestedCount) 条会话；新增 \(recovery.projectBindingsAdded) 条项目绑定。操作前备份已保留。"
+                case .ineffective:
+                    self.continuityStatusMessage = nil
+                    self.continuityError = "恢复未生效：App Server 未确认任何目标会话可见（0 / \(recovery.requestedCount)）；新增 \(recovery.projectBindingsAdded) 条项目绑定。操作前备份已保留。"
+                }
                 self.refreshContinuity(forceInventory: true)
             }
         }

@@ -76,6 +76,27 @@ struct ActivityIslandPreferencesTests {
             ActivityIslandPlacementPolicy.notchLift(safeAreaTop: 20) == 10,
             "smaller safe area preserves readable content clearance"
         )
+        expect(
+            !ActivityIslandMotionPolicy.isReduced(
+                systemPreference: false,
+                appPreference: false
+            ),
+            "motion remains enabled when both preferences are off"
+        )
+        expect(
+            ActivityIslandMotionPolicy.isReduced(
+                systemPreference: true,
+                appPreference: false
+            ),
+            "system reduce motion disables activity-island movement"
+        )
+        expect(
+            ActivityIslandMotionPolicy.isReduced(
+                systemPreference: false,
+                appPreference: true
+            ),
+            "app reduce motion disables activity-island movement"
+        )
 
         if failed > 0 {
             fputs("Activity Island preference tests failed: \(failed), passed: \(passed)\n", stderr)

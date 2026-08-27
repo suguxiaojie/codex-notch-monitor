@@ -13,6 +13,7 @@ enum ContinuityTests {
         try accountTimelinePersistsRepeatedSwitches()
         try emailSummaryIsRedactedAndBackwardCompatible()
         threadKindsFollowAppServerSourceSemantics()
+        recoveryResultsClassifyZeroPartialAndCompleteOutcomes()
         threadDeleteUsesOfficialAppServerMethod()
         threadIndexRepairRetriesUntilRequiredIDsVisible()
         continuityCountsOnlyUserConversations()
@@ -36,7 +37,7 @@ enum ContinuityTests {
         try projectTransferP1PreservesGitAndAttachments()
         try projectTransferLargeGitOutputDoesNotDeadlock()
         projectImportDirectoryDefaultsToCodexProjectsContainer()
-        print("Continuity tests: 29/29 passed")
+        print("Continuity tests: 30/30 passed")
     }
 
     private static func runLocalInventoryBenchmark() {
@@ -104,6 +105,52 @@ enum ContinuityTests {
         expect(
             SessionContinuityService.threadKind(source: "vscode", hasUserMessage: true) == .userConversation,
             "有用户消息的 vscode 记录应归为用户会话"
+        )
+        expect(
+            SessionContinuityService.threadKind(
+                source: "exec",
+                originator: "codex_exec",
+                hasUserMessage: true
+            ) == .system,
+            "OpenDesign Local Codex 执行线程即使有用户 Prompt 也必须归为内部系统线程"
+        )
+        expect(
+            SessionContinuityService.threadKind(
+                source: "exec",
+                hasUserMessage: true
+            ) == .system,
+            "非交互 codex exec 线程不得计入待恢复用户会话"
+        )
+    }
+
+    private static func recoveryResultsClassifyZeroPartialAndCompleteOutcomes() {
+        let backupURL = URL(fileURLWithPath: "/tmp/continuity-backup")
+        expect(
+            SessionRecoveryResult(
+                requestedCount: 1,
+                recoveredCount: 0,
+                projectBindingsAdded: 0,
+                backupURL: backupURL
+            ).completionState == .ineffective,
+            "0 / N 恢复结果必须标记为未生效"
+        )
+        expect(
+            SessionRecoveryResult(
+                requestedCount: 2,
+                recoveredCount: 1,
+                projectBindingsAdded: 1,
+                backupURL: backupURL
+            ).completionState == .partial,
+            "部分恢复必须显示警告而不是完整成功"
+        )
+        expect(
+            SessionRecoveryResult(
+                requestedCount: 2,
+                recoveredCount: 2,
+                projectBindingsAdded: 1,
+                backupURL: backupURL
+            ).completionState == .complete,
+            "N / N 恢复结果才允许标记为完整成功"
         )
     }
 
