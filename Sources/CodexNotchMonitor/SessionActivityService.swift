@@ -15,7 +15,11 @@ struct LocalSessionSnapshot: Equatable {
 final class SessionActivityService {
     private let queue = DispatchQueue(label: "CodexNotchMonitor.SessionActivity", qos: .utility)
     private let decoder = JSONDecoder()
-    private let maximumTailBytes: UInt64 = 32 * 1_024 * 1_024
+    /// Recent activity and completion markers live at the transcript tail.
+    /// Keeping this bounded prevents one growing Codex thread from producing a
+    /// large JSON parse spike on every fallback refresh; lifecycle Hooks remain
+    /// the primary real-time state source.
+    private let maximumTailBytes: UInt64 = 8 * 1_024 * 1_024
     private let maximumCandidateFiles = 24
     private let activeRecencyInterval: TimeInterval = 24 * 60 * 60
     private let discoveryInterval: TimeInterval = 5

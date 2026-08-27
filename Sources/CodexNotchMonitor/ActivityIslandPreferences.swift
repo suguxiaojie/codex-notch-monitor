@@ -4,6 +4,9 @@ extension Notification.Name {
     static let activityIslandPreferencesDidChange = Notification.Name(
         "CodexMonitor.activityIslandPreferencesDidChange"
     )
+    static let activitySettingsPreviewVisibilityDidChange = Notification.Name(
+        "CodexMonitor.activitySettingsPreviewVisibilityDidChange"
+    )
 }
 
 enum ActivityIslandPreferenceSignal {

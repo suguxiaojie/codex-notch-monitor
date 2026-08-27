@@ -154,6 +154,7 @@ struct QuotaStyleSettingsView: View {
     @State private var sliderFeedbackGeneration = 0
     @State private var animationStyleRevision = 0
     @State private var timeSettingsExpanded = true
+    @State private var previewIsVisible = true
     @FocusState private var focusedControl: ActivitySettingsFocus?
 
     var body: some View {
@@ -208,6 +209,13 @@ struct QuotaStyleSettingsView: View {
         .onChange(of: compactHide) { _ in notifyPreferenceChange() }
         .onChange(of: reduceMotion) { _ in notifyPreferenceChange() }
         .onChange(of: showCompletion) { _ in notifyPreferenceChange() }
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: .activitySettingsPreviewVisibilityDidChange
+            )
+        ) { notification in
+            previewIsVisible = notification.object as? Bool ?? true
+        }
     }
 
     private func previewPane(layoutMode: ActivitySettingsLayoutMode) -> some View {
@@ -330,7 +338,7 @@ struct QuotaStyleSettingsView: View {
             ActivityIslandPreview(
                 snapshot: snapshot,
                 style: selectedVisualStyle,
-                animated: !motionIsReduced,
+                animated: previewIsVisible && !motionIsReduced,
                 surfaceOpacity: surfaceOpacity,
                 surfaceScale: effectiveScale
             )
@@ -341,7 +349,7 @@ struct QuotaStyleSettingsView: View {
                 ActivityStateOrb(
                     style: selectedVisualStyle,
                     phase: nil,
-                    animated: !motionIsReduced
+                    animated: previewIsVisible && !motionIsReduced
                 )
                 .frame(width: 122, height: 122)
                 .accessibilityHidden(true)

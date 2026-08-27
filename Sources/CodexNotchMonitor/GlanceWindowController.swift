@@ -159,7 +159,12 @@ final class GlanceWindowController: NSObject {
         panel.alphaValue = 0
         panel.orderFrontRegardless()
         makePanelKeyForGlassPresentation()
-        installGlassSurface()
+        // The hosting hierarchy and glass surface are created once with the
+        // panel. Replacing panel.contentView here forces a complete SwiftUI
+        // layout pass on every status-item click and delays the first frame.
+        if hostingView.superview == nil {
+            installGlassSurface()
+        }
         DispatchQueue.main.async { [weak self] in
             guard let self, self.panel.isVisible else { return }
             NSAnimationContext.runAnimationGroup { context in

@@ -61,6 +61,40 @@ final class ActivitySettingsWindowController: NSObject, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         window.orderFrontRegardless()
+        publishPreviewVisibility(for: window)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        publishPreviewVisibility(false)
+    }
+
+    func windowDidMiniaturize(_ notification: Notification) {
+        publishPreviewVisibility(false)
+    }
+
+    func windowDidDeminiaturize(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        publishPreviewVisibility(for: window)
+    }
+
+    func windowDidChangeOcclusionState(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        publishPreviewVisibility(for: window)
+    }
+
+    private func publishPreviewVisibility(for window: NSWindow) {
+        publishPreviewVisibility(
+            window.isVisible
+                && !window.isMiniaturized
+                && window.occlusionState.contains(.visible)
+        )
+    }
+
+    private func publishPreviewVisibility(_ isVisible: Bool) {
+        NotificationCenter.default.post(
+            name: .activitySettingsPreviewVisibilityDidChange,
+            object: isVisible
+        )
     }
 
     private func installGlassSurface<Content: View>(

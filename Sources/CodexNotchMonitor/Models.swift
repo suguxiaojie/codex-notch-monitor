@@ -4,6 +4,10 @@ import SwiftUI
 enum MonitorRefreshCadence {
     static let quota: TimeInterval = 60
     static let cost: TimeInterval = 300
+    /// Hook events remain the sub-second source for live task state. The JSONL
+    /// reader is a fallback/detail source and must not continuously reparse a
+    /// growing transcript on battery power.
+    static let sessionActivity: TimeInterval = 5
 }
 
 enum IslandPanelLayout {

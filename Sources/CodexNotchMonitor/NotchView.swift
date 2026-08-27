@@ -450,7 +450,7 @@ struct NotchView: View {
                 active: hasLiveActivity,
                 color: statusColor,
                 refreshToken: compactStatusRefreshToken,
-                animated: !reduceMotion
+                animated: hasLiveActivity && !reduceMotion
             )
             Text(compactTopStatusText)
                 .font(.system(size: 11, weight: .semibold))

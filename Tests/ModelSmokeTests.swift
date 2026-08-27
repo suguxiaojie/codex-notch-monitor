@@ -7,6 +7,10 @@ enum ModelSmokeTests {
         check(MonitorRefreshCadence.quota == 60, "quota refreshes every minute")
         check(MonitorRefreshCadence.cost == 300, "cost scan remains five minutes")
         check(
+            MonitorRefreshCadence.sessionActivity == 5,
+            "session transcript fallback avoids battery-heavy rapid reparsing"
+        )
+        check(
             RateLimitWindow(usedPercent: 25, windowDurationMinutes: 300, resetsAt: nil).remainingPercent == 75,
             "remaining percentage"
         )

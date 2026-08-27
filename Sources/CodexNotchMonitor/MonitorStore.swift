@@ -335,7 +335,10 @@ final class MonitorStore: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor in self?.refreshQuota() }
         }
-        sessionTimer = Timer.scheduledTimer(withTimeInterval: 1.2, repeats: true) { [weak self] _ in
+        sessionTimer = Timer.scheduledTimer(
+            withTimeInterval: MonitorRefreshCadence.sessionActivity,
+            repeats: true
+        ) { [weak self] _ in
             Task { @MainActor in self?.refreshSessionActivity() }
         }
         costTimer = Timer.scheduledTimer(
