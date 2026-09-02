@@ -150,7 +150,12 @@ struct SessionContinuitySnapshot: Equatable {
 }
 
 final class CodexThreadService {
-    static let continuitySourceKinds = ["vscode", "subAgent"]
+    /// Codex 0.152+ desktop sessions can be persisted as `cli` / `codex-tui`
+    /// instead of the older `vscode` source. Inventory and recovery must query
+    /// both user-facing sources with the same filter, while transcript parsing
+    /// continues to classify Subagent and non-interactive exec records as
+    /// internal threads.
+    static let continuitySourceKinds = ["vscode", "cli", "subAgent"]
 
     typealias Request = (
         _ method: String,

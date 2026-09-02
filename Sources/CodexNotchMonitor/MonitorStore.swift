@@ -824,13 +824,13 @@ final class MonitorStore: ObservableObject {
                 self.lastContinuityBackupURL = recovery.backupURL
                 switch recovery.completionState {
                 case .complete:
-                    self.continuityStatusMessage = "恢复成功：\(recovery.recoveredCount) / \(recovery.requestedCount) 条会话，新增 \(recovery.projectBindingsAdded) 条项目绑定"
+                    self.continuityStatusMessage = "恢复成功：App Server 已确认 \(recovery.recoveredCount) / \(recovery.requestedCount) 条会话可见；新增 \(recovery.projectBindingsAdded) 条项目绑定。未新增绑定不影响会话恢复。"
                 case .partial:
                     self.continuityStatusMessage = nil
-                    self.continuityError = "仅部分恢复：\(recovery.recoveredCount) / \(recovery.requestedCount) 条会话；新增 \(recovery.projectBindingsAdded) 条项目绑定。操作前备份已保留。"
+                    self.continuityError = "仅部分恢复：App Server 已确认 \(recovery.recoveredCount) / \(recovery.requestedCount) 条会话可见；新增 \(recovery.projectBindingsAdded) 条项目绑定。操作前备份已保留。"
                 case .ineffective:
                     self.continuityStatusMessage = nil
-                    self.continuityError = "恢复未生效：App Server 未确认任何目标会话可见（0 / \(recovery.requestedCount)）；新增 \(recovery.projectBindingsAdded) 条项目绑定。操作前备份已保留。"
+                    self.continuityError = "恢复未生效：App Server 未确认任何目标会话可见（0 / \(recovery.requestedCount)）。项目绑定新增 \(recovery.projectBindingsAdded) 条；操作前备份已保留。"
                 }
                 self.refreshContinuity(forceInventory: true)
             }

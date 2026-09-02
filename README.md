@@ -15,7 +15,7 @@
 </div>
 
 > [!IMPORTANT]
-> 最新版本为 [`v1.6.3 (Build 17)`](https://github.com/suguxiaojie/codex-notch-monitor/releases/tag/v1.6.3)。Release 分别提供 Apple Silicon `arm64` 与 Intel `x86_64` 安装包，请按 Mac 处理器选择对应 DMG。
+> 最新版本为 [`v1.6.4 (Build 18)`](https://github.com/suguxiaojie/codex-notch-monitor/releases/tag/v1.6.4)。Release 分别提供 Apple Silicon `arm64` 与 Intel `x86_64` 安装包，请按 Mac 处理器选择对应 DMG。
 
 > [!TIP]
 > **赞助支持：CoverAI 自家代充服务** — [前往 CoverAI](https://www.coverai.store/)

@@ -88,8 +88,8 @@ enum ContinuityTests {
 
     private static func threadKindsFollowAppServerSourceSemantics() {
         expect(
-            CodexThreadService.continuitySourceKinds == ["vscode", "subAgent"],
-            "盘点和恢复必须查询用户会话与 Subagent"
+            CodexThreadService.continuitySourceKinds == ["vscode", "cli", "subAgent"],
+            "盘点和恢复必须使用一致口径查询旧版、新版用户会话与 Subagent"
         )
         expect(
             SessionContinuityService.threadKind(
@@ -105,6 +105,14 @@ enum ContinuityTests {
         expect(
             SessionContinuityService.threadKind(source: "vscode", hasUserMessage: true) == .userConversation,
             "有用户消息的 vscode 记录应归为用户会话"
+        )
+        expect(
+            SessionContinuityService.threadKind(
+                source: "cli",
+                originator: "codex-tui",
+                hasUserMessage: true
+            ) == .userConversation,
+            "新版 Codex Desktop 的 cli/codex-tui 记录应归为用户会话"
         )
         expect(
             SessionContinuityService.threadKind(
@@ -209,6 +217,7 @@ enum ContinuityTests {
 
     private static func threadIndexRepairRetriesUntilRequiredIDsVisible() {
         var listCallCount = 0
+        var listParameters: [[String: Any]] = []
         var completedIDs = Set<String>()
         let service = CodexThreadService { method, params, _, completion in
             guard method == "thread/list" else {
@@ -216,6 +225,7 @@ enum ContinuityTests {
                 return
             }
             listCallCount += 1
+            listParameters.append(params)
             let archived = params["archived"] as? Bool == true
             if listCallCount >= 3, !archived {
                 completion(.success(["data": [["id": "imported-thread"]]]))
@@ -232,6 +242,12 @@ enum ContinuityTests {
         }
         expect(completedIDs.contains("imported-thread"), "首轮扫描只修复元数据时应自动再扫描")
         expect(listCallCount == 4, "目标会话第二轮可见后应停止重试")
+        expect(
+            listParameters.allSatisfy {
+                $0["sourceKinds"] as? [String] == ["vscode", "cli", "subAgent"]
+            },
+            "索引重建的每次活动与归档查询都必须包含新版 cli 用户会话"
+        )
     }
 
     private static func accountObservationDoesNotGuessHistory() throws {
