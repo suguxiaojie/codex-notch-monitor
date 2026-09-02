@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import CoreGraphics
 import SwiftUI
 
 @MainActor
@@ -294,16 +295,26 @@ final class ActivityIslandWindowController: NSObject {
     }
 
     private func targetScreen() -> NSScreen? {
-        switch preferences.screen {
-        case .automatic:
-            return NSScreen.main ?? NSScreen.screens.first
-        case .main:
-            return NSScreen.main ?? NSScreen.screens.first
-        case .notched:
-            return NSScreen.screens.first(where: { $0.safeAreaInsets.top > 0 })
-                ?? NSScreen.main
-                ?? NSScreen.screens.first
-        }
+        let screens = NSScreen.screens
+        guard !screens.isEmpty else { return nil }
+        let availableDisplayIDs = screens.compactMap(displayID)
+        let notchedDisplayIDs = screens
+            .filter { $0.safeAreaInsets.top > 0 }
+            .compactMap(displayID)
+        let targetDisplayID = ActivityIslandScreenSelectionPolicy.targetDisplayID(
+            mode: preferences.screen,
+            activeDisplayID: NSScreen.main.flatMap(displayID),
+            primaryDisplayID: CGMainDisplayID(),
+            notchedDisplayIDs: notchedDisplayIDs,
+            availableDisplayIDs: availableDisplayIDs
+        )
+        return screens.first { displayID(for: $0) == targetDisplayID }
+            ?? screens.first
+    }
+
+    private func displayID(for screen: NSScreen) -> UInt32? {
+        (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?
+            .uint32Value
     }
 
     private func horizontalOrigin(for width: CGFloat, on screen: NSScreen) -> CGFloat {

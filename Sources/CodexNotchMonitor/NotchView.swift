@@ -482,7 +482,7 @@ struct NotchView: View {
     @ViewBuilder
     private var quotaWing: some View {
         HStack(spacing: 6) {
-            if let window = store.quotaState.primaryBucket?.headlineWindow {
+            if let window = store.quotaState.primaryBucket?.limitingWindow {
                 QuotaMiniGauge(
                     remainingPercent: window.remainingPercent,
                     color: quotaColor(for: window.remainingPercent)
@@ -5458,6 +5458,11 @@ private struct QuotaRow: View {
                                 .background(
                                     Capsule().fill(progressColor.opacity(0.10))
                                 )
+                            if window == bucket.limitingWindow {
+                                Text("当前瓶颈")
+                                    .font(.system(size: 8, weight: .semibold))
+                                    .foregroundStyle(.orange.opacity(0.82))
+                            }
                         }
                     }
                         .font(.system(size: 12, weight: .semibold))

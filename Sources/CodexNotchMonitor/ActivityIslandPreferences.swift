@@ -120,6 +120,38 @@ enum ActivityIslandPlacementPolicy {
     }
 }
 
+enum ActivityIslandScreenSelectionPolicy {
+    static func targetDisplayID(
+        mode: ActivityIslandScreenMode,
+        activeDisplayID: UInt32?,
+        primaryDisplayID: UInt32?,
+        notchedDisplayIDs: [UInt32],
+        availableDisplayIDs: [UInt32]
+    ) -> UInt32? {
+        let available = Set(availableDisplayIDs)
+        func connected(_ displayID: UInt32?) -> UInt32? {
+            guard let displayID, available.contains(displayID) else { return nil }
+            return displayID
+        }
+
+        switch mode {
+        case .automatic:
+            return connected(activeDisplayID)
+                ?? connected(primaryDisplayID)
+                ?? availableDisplayIDs.first
+        case .main:
+            return connected(primaryDisplayID)
+                ?? connected(activeDisplayID)
+                ?? availableDisplayIDs.first
+        case .notched:
+            return notchedDisplayIDs.first(where: available.contains)
+                ?? connected(primaryDisplayID)
+                ?? connected(activeDisplayID)
+                ?? availableDisplayIDs.first
+        }
+    }
+}
+
 enum ActivityIslandMotionPolicy {
     static func isReduced(
         systemPreference: Bool,

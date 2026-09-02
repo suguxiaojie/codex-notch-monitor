@@ -204,7 +204,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         statusItem?.length = NSStatusItem.variableLength
         button.imagePosition = .imageLeading
-        guard let window = store.quotaState.primaryBucket?.headlineWindow else {
+        let quotaBucket = store.quotaState.primaryBucket
+        guard let window = quotaBucket?.limitingWindow else {
             if let menuBarProject {
                 button.title = " " + MenuBarActivityFormatter.title(
                     phase: menuBarProject.task.phase,
@@ -239,6 +240,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             for: window,
             relativeTo: now
         )
+        let quotaDetails = MenuBarStatusFormatter.details(
+            for: quotaBucket,
+            relativeTo: now
+        )
         if let menuBarProject {
             button.title = " " + MenuBarActivityFormatter.title(
                 phase: menuBarProject.task.phase,
@@ -253,15 +258,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 actionSummary: menuBarProject.detailedActionSummary,
                 projectCount: store.activeProjects.count,
                 quotaTitle: quotaTitle
-            )
+            ) + "\n\(quotaDetails)"
             button.setAccessibilityLabel(
                 button.toolTip ?? "Codex \(menuBarProject.task.phase.title)，剩余 \(window.remainingPercent)%"
             )
         } else {
             button.title = " " + quotaTitle
-            button.toolTip = "Codex 剩余 \(window.remainingPercent)%\(reset.isEmpty ? "" : "，\(reset)后重置")"
+            button.toolTip = "Codex 当前瓶颈：\(window.windowLabel)\n\(quotaDetails)"
             button.setAccessibilityLabel(
-                "Codex 可用，剩余 \(window.remainingPercent)%\(reset.isEmpty ? "" : "，\(reset)后重置")"
+                "Codex 可用，\(window.windowLabel)剩余 \(window.remainingPercent)%\(reset.isEmpty ? "" : "，\(reset)后重置")"
             )
         }
     }
@@ -316,8 +321,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem?.length = NSStatusItem.squareLength
         button.imagePosition = .imageOnly
         button.title = ""
+        let quotaBucket = store.quotaState.primaryBucket
         let quotaTitle = MenuBarStatusFormatter.title(
-            for: store.quotaState.primaryBucket?.headlineWindow,
+            for: quotaBucket?.limitingWindow,
+            relativeTo: now
+        )
+        let quotaDetails = MenuBarStatusFormatter.details(
+            for: quotaBucket,
             relativeTo: now
         )
         if let project {
@@ -330,12 +340,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ) + (quotaViewIsRunning
                 ? "\nQuotaView 共存模式：菜单栏仅显示状态图标"
                 : "\n菜单栏空间不足：已自动切换为仅图标")
+                + "\n\(quotaDetails)"
             button.setAccessibilityLabel(
                 "Codex \(project.task.phase.title)，仅图标菜单栏模式"
             )
         } else {
             let reason = quotaViewIsRunning ? "QuotaView 共存模式" : "菜单栏空间不足"
-            button.toolTip = "Codex Monitor · \(reason)\n额度 \(quotaTitle)"
+            button.toolTip = "Codex Monitor · \(reason)\n\(quotaDetails)"
             button.setAccessibilityLabel("Codex Monitor，仅图标菜单栏模式")
         }
     }
@@ -347,7 +358,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ) {
         statusItem?.length = NSStatusItem.variableLength
         button.imagePosition = .imageLeading
-        let window = store.quotaState.primaryBucket?.headlineWindow
+        let quotaBucket = store.quotaState.primaryBucket
+        let window = quotaBucket?.limitingWindow
         let quota = window.map { "\($0.remainingPercent)%" } ?? "--"
         if let project {
             button.title = " \(project.task.phase.menuBarTitle) · \(quota)"
@@ -358,14 +370,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 actionSummary: project.detailedActionSummary,
                 projectCount: store.activeProjects.count,
                 quotaTitle: fullQuota
-            ) + "\n菜单栏精简模式"
+            ) + "\n菜单栏精简模式\n" + MenuBarStatusFormatter.details(
+                for: quotaBucket,
+                relativeTo: now
+            )
             button.setAccessibilityLabel(
                 "Codex \(project.task.phase.title)，剩余 \(quota)"
             )
         } else {
             button.title = " \(quota)"
-            let fullQuota = MenuBarStatusFormatter.title(for: window, relativeTo: now)
-            button.toolTip = "Codex Monitor · 菜单栏精简模式\n额度 \(fullQuota)"
+            button.toolTip = "Codex Monitor · 菜单栏精简模式\n" + MenuBarStatusFormatter.details(
+                for: quotaBucket,
+                relativeTo: now
+            )
             button.setAccessibilityLabel("Codex 剩余 \(quota)")
         }
     }

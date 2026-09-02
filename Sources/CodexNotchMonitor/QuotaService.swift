@@ -125,12 +125,12 @@ final class QuotaService {
 
     private static func parseWindow(_ value: Any?) -> RateLimitWindow? {
         guard let dictionary = value as? [String: Any],
-              let used = dictionary["usedPercent"] as? Int
+              let used = integer(dictionary["usedPercent"])
         else { return nil }
-        let resetTimestamp = dictionary["resetsAt"] as? TimeInterval
+        let resetTimestamp = timestamp(dictionary["resetsAt"])
         return RateLimitWindow(
             usedPercent: used,
-            windowDurationMinutes: dictionary["windowDurationMins"] as? Int,
+            windowDurationMinutes: integer(dictionary["windowDurationMins"]),
             resetsAt: resetTimestamp.map(Date.init(timeIntervalSince1970:))
         )
     }

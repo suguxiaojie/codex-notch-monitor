@@ -326,7 +326,8 @@ struct GlanceView: View {
         switch page {
         case .summary:
             var height = contentPreferences.preferredHeight(
-                hasSupportingQuota: supportingBucket != nil
+                primaryQuotaWindowCount: primaryBucket?.windows.count ?? 0,
+                supportingQuotaWindowCount: supportingBucket?.windows.count ?? 0
             )
             height -= 6 // Static current-account row replaces the former two-line picker.
             if !hasCurrentAccountHistory {
@@ -404,32 +405,63 @@ struct GlanceView: View {
     }
 
     private var primaryQuota: some View {
-        VStack(alignment: .leading, spacing: 11) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(primaryWindow?.windowLabel ?? "周期剩余")
-                    .font(AstaSans.regular(10.5))
-                    .foregroundStyle(secondaryText)
-                Spacer()
-            }
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Codex 额度")
+                .font(AstaSans.semiBold(10.5))
+                .foregroundStyle(secondaryText)
+                .padding(.top, 9)
+                .padding(.bottom, 5)
 
-            HStack(alignment: .firstTextBaseline, spacing: 5) {
-                Text("\(primaryRemaining)%")
-                    .font(AstaSans.semiBold(21))
-                    .tracking(-0.21)
+            if let windows = primaryBucket?.windows, !windows.isEmpty {
+                ForEach(Array(windows.enumerated()), id: \.offset) { index, window in
+                    if index > 0 {
+                        Divider().overlay(hairlineColor)
+                    }
+                    primaryQuotaWindow(window)
+                }
+            } else {
+                HStack(spacing: 7) {
+                    ProgressView().controlSize(.small).tint(primaryText)
+                    Text("正在同步额度窗口…")
+                        .font(AstaSans.regular(9.5))
+                        .foregroundStyle(tertiaryText)
+                }
+                .frame(height: 48)
+            }
+        }
+    }
+
+    private func primaryQuotaWindow(_ window: RateLimitWindow) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(compactWindowTitle(window))
+                    .font(AstaSans.semiBold(10))
+                    .foregroundStyle(primaryText)
+                if primaryBucket?.windows.count ?? 0 > 1,
+                   window == primaryBucket?.limitingWindow {
+                    Text("当前瓶颈")
+                        .font(AstaSans.semiBold(8))
+                        .foregroundStyle(Color.orange.opacity(0.92))
+                        .padding(.horizontal, 5)
+                        .frame(height: 15)
+                        .background(Color.orange.opacity(0.10), in: Capsule())
+                }
+                Spacer()
+                Text("\(window.remainingPercent)%")
+                    .font(AstaSans.semiBold(12))
                     .monospacedDigit()
                     .contentTransition(.numericText())
                 Text("剩余")
-                    .font(AstaSans.regular(10.5))
+                    .font(AstaSans.regular(9))
                     .foregroundStyle(tertiaryText)
-                Spacer()
             }
 
             GeometryReader { proxy in
                 ZStack(alignment: .leading) {
                     Capsule().fill(trackColor)
                     Capsule()
-                        .fill(quotaColor)
-                        .frame(width: proxy.size.width * CGFloat(primaryRemaining) / 100)
+                        .fill(quotaColor(for: window.remainingPercent))
+                        .frame(width: proxy.size.width * CGFloat(window.remainingPercent) / 100)
                 }
             }
             .frame(height: 7)
@@ -437,63 +469,60 @@ struct GlanceView: View {
             HStack(spacing: 5) {
                 Image(systemName: "clock")
                     .font(.system(size: 8, weight: .semibold))
-                Text(resetText(primaryWindow))
+                Text(resetText(window))
                 Spacer()
-                Text(primaryWindow.map { "已使用 \($0.usedPercent)%" } ?? "额度未知")
             }
-            .font(AstaSans.regular(10.5))
+            .font(AstaSans.regular(9))
             .foregroundStyle(tertiaryText)
-        }
-        .padding(.vertical, 9)
-    }
-
-    private func supportingQuota(_ bucket: RateLimitBucket) -> some View {
-        VStack(spacing: 9) {
-            if let window = bucket.headlineWindow {
-                HStack(alignment: .firstTextBaseline, spacing: 4) {
-                    Text(supportingQuotaTitle(bucket))
-                        .font(AstaSans.regular(10.5))
-                        .foregroundStyle(secondaryText)
-                    Text("\(window.remainingPercent)%")
-                        .font(AstaSans.semiBold(10.5))
-                        .foregroundStyle(primaryText)
-                        .monospacedDigit()
-                        .contentTransition(.numericText())
-                        .lineLimit(1)
-                    Spacer(minLength: 6)
-                }
-
-                GeometryReader { proxy in
-                    let progress = CGFloat(window.remainingPercent) / 100
-                    ZStack(alignment: .leading) {
-                        Capsule().fill(trackColor)
-                        Capsule()
-                            .fill(neutralQuotaColor)
-                            .frame(width: proxy.size.width * progress)
-                    }
-                }
-                .frame(height: 7)
-
-                HStack(spacing: 6) {
-                    Text("下次重置 \(compactResetDuration(window))")
-                        .contentTransition(.numericText())
-                        .lineLimit(1)
-                    Spacer(minLength: 6)
-                    Text("已使用 \(window.usedPercent)%")
-                        .contentTransition(.numericText())
-                        .lineLimit(1)
-                }
-                .font(AstaSans.regular(10.5))
-                .foregroundStyle(secondaryText)
-            }
         }
         .padding(.vertical, 7)
     }
 
-    private func supportingQuotaTitle(_ bucket: RateLimitBucket) -> String {
-        bucket.name.localizedCaseInsensitiveContains("spark")
-            ? "Spark 周额度"
-            : "\(bucket.name) 额度"
+    private func supportingQuota(_ bucket: RateLimitBucket) -> some View {
+        HStack(spacing: 6) {
+            if let window = bucket.limitingWindow {
+                Text(supportingBucketTitle(bucket))
+                    .font(AstaSans.semiBold(10))
+                    .foregroundStyle(primaryText)
+                if bucket.windows.count > 1 {
+                    Text(compactWindowTitle(window))
+                        .font(AstaSans.semiBold(8))
+                        .foregroundStyle(secondaryText)
+                        .padding(.horizontal, 5)
+                        .frame(height: 15)
+                        .background(trackColor, in: Capsule())
+                }
+                Spacer(minLength: 4)
+                Text("\(window.remainingPercent)%")
+                    .font(AstaSans.semiBold(10.5))
+                    .foregroundStyle(quotaColor(for: window.remainingPercent))
+                    .monospacedDigit()
+                    .contentTransition(.numericText())
+                    .lineLimit(1)
+                Text("·")
+                    .foregroundStyle(tertiaryText)
+                Text("\(compactResetDuration(window))后重置")
+                    .font(AstaSans.regular(9))
+                    .foregroundStyle(secondaryText)
+                    .contentTransition(.numericText())
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            }
+        }
+        .frame(height: 41)
+        .help(MenuBarStatusFormatter.details(for: bucket, relativeTo: Date()))
+    }
+
+    private func supportingBucketTitle(_ bucket: RateLimitBucket) -> String {
+        bucket.name.localizedCaseInsensitiveContains("spark") ? "Spark" : bucket.name
+    }
+
+    private func compactWindowTitle(_ window: RateLimitWindow) -> String {
+        switch window.kind {
+        case .fiveHour: return "5 小时"
+        case .weekly: return "每周"
+        case .custom, .unknown: return window.windowLabel
+        }
     }
 
     private func compactResetDuration(_ window: RateLimitWindow) -> String {
@@ -1021,7 +1050,7 @@ struct GlanceView: View {
     }
 
     private var primaryWindow: RateLimitWindow? {
-        primaryBucket?.headlineWindow
+        primaryBucket?.limitingWindow
     }
 
     private var currentAccountIndicatorColor: Color {
@@ -1047,9 +1076,9 @@ struct GlanceView: View {
         return store.quotaState.buckets.first { $0.id != primaryID }
     }
 
-    private var quotaColor: Color {
-        if primaryRemaining < 20 { return .red }
-        if primaryRemaining < 50 { return .orange }
+    private func quotaColor(for remaining: Int) -> Color {
+        if remaining < 20 { return .red }
+        if remaining < 50 { return .orange }
         return Color(red: 0.35, green: 0.93, blue: 0.38)
     }
 
@@ -1108,10 +1137,6 @@ struct GlanceView: View {
 
     private var trackColor: Color {
         colorScheme == .dark ? .white.opacity(0.13) : .black.opacity(0.12)
-    }
-
-    private var neutralQuotaColor: Color {
-        colorScheme == .dark ? .white.opacity(0.66) : .black.opacity(0.70)
     }
 
     private var panelTint: Color {

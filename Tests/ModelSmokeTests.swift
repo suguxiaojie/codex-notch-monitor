@@ -18,6 +18,18 @@ enum ModelSmokeTests {
             RateLimitWindow(usedPercent: 120, windowDurationMinutes: nil, resetsAt: nil).remainingPercent == 0,
             "remaining percentage clamp"
         )
+        check(
+            RateLimitWindow(usedPercent: 0, windowDurationMinutes: 300, resetsAt: nil).kind == .fiveHour,
+            "five-hour window classification"
+        )
+        check(
+            RateLimitWindow(usedPercent: 0, windowDurationMinutes: 10_080, resetsAt: nil).kind == .weekly,
+            "weekly window classification"
+        )
+        check(
+            RateLimitWindow(usedPercent: 0, windowDurationMinutes: 1_440, resetsAt: nil).windowLabel == "1 天额度",
+            "custom window label"
+        )
 
         let countdownNow = Date(timeIntervalSince1970: 1_800_000_000)
         check(
@@ -90,6 +102,9 @@ enum ModelSmokeTests {
         check(buckets.first?.headlineWindow?.remainingPercent == 60, "short window becomes compact headline")
         check(buckets.first?.headlineWindow?.windowDurationMinutes == 300, "five-hour window priority")
         check(buckets.first?.windows.map(\.windowDurationMinutes) == [300, 10_080], "all windows sorted shortest first")
+        check(buckets.first?.fiveHourWindow?.remainingPercent == 60, "five-hour window lookup")
+        check(buckets.first?.weeklyWindow?.remainingPercent == 77, "weekly window lookup")
+        check(buckets.first?.limitingWindow?.windowDurationMinutes == 300, "lower remaining window becomes bottleneck")
         check(buckets.first?.planType == "plus", "plan type")
         check(buckets.first?.hasCredits == true, "Credits availability")
         check(buckets.first?.creditBalance == "12.5", "Credits balance")
@@ -181,6 +196,28 @@ enum ModelSmokeTests {
             secondary: nil,
             creditBalance: nil,
             hasCredits: false
+        )
+        let weeklyBottleneckBucket = RateLimitBucket(
+            id: "codex",
+            name: "Codex",
+            planType: "plus",
+            primary: RateLimitWindow(usedPercent: 14, windowDurationMinutes: 300, resetsAt: nil),
+            secondary: RateLimitWindow(usedPercent: 96, windowDurationMinutes: 10_080, resetsAt: nil),
+            creditBalance: nil,
+            hasCredits: false
+        )
+        check(
+            weeklyBottleneckBucket.limitingWindow?.windowDurationMinutes == 10_080,
+            "weekly limit becomes bottleneck when it has less remaining capacity"
+        )
+        check(
+            MenuBarQuotaIconModel.state(for: .loaded([weeklyBottleneckBucket], statusNow)) == .ready(4),
+            "menu bar ring follows the actual bottleneck"
+        )
+        check(
+            MenuBarStatusFormatter.details(for: weeklyBottleneckBucket, relativeTo: statusNow)
+                == "5 小时额度：86% 剩余\n每周额度：4% 剩余",
+            "menu bar details retain both quota windows"
         )
         check(
             MenuBarQuotaIconModel.state(for: .loaded([menuBarBucket], statusNow)) == .ready(96),

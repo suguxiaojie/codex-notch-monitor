@@ -97,6 +97,56 @@ struct ActivityIslandPreferencesTests {
             ),
             "app reduce motion disables activity-island movement"
         )
+        expect(
+            ActivityIslandScreenSelectionPolicy.targetDisplayID(
+                mode: .automatic,
+                activeDisplayID: 2,
+                primaryDisplayID: 1,
+                notchedDisplayIDs: [1],
+                availableDisplayIDs: [1, 2]
+            ) == 2,
+            "automatic screen follows the active display"
+        )
+        expect(
+            ActivityIslandScreenSelectionPolicy.targetDisplayID(
+                mode: .main,
+                activeDisplayID: 2,
+                primaryDisplayID: 1,
+                notchedDisplayIDs: [1],
+                availableDisplayIDs: [1, 2]
+            ) == 1,
+            "main screen stays on the system primary display"
+        )
+        expect(
+            ActivityIslandScreenSelectionPolicy.targetDisplayID(
+                mode: .notched,
+                activeDisplayID: 2,
+                primaryDisplayID: 2,
+                notchedDisplayIDs: [1],
+                availableDisplayIDs: [1, 2]
+            ) == 1,
+            "notched screen ignores the active secondary display"
+        )
+        expect(
+            ActivityIslandScreenSelectionPolicy.targetDisplayID(
+                mode: .main,
+                activeDisplayID: 2,
+                primaryDisplayID: 1,
+                notchedDisplayIDs: [],
+                availableDisplayIDs: [2]
+            ) == 2,
+            "main screen falls back when the primary display disconnects"
+        )
+        expect(
+            ActivityIslandScreenSelectionPolicy.targetDisplayID(
+                mode: .notched,
+                activeDisplayID: 2,
+                primaryDisplayID: 1,
+                notchedDisplayIDs: [],
+                availableDisplayIDs: [1, 2]
+            ) == 1,
+            "missing notched screen falls back to the system primary display"
+        )
 
         if failed > 0 {
             fputs("Activity Island preference tests failed: \(failed), passed: \(passed)\n", stderr)

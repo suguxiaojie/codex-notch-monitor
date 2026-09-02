@@ -27,12 +27,41 @@ struct RateLimitWindow: Equatable {
 
     var remainingPercent: Int { max(0, min(100, 100 - usedPercent)) }
 
+    var kind: RateLimitWindowKind {
+        guard let minutes = windowDurationMinutes else { return .unknown }
+        switch minutes {
+        case 300: return .fiveHour
+        case 10_080: return .weekly
+        default: return .custom(minutes: minutes)
+        }
+    }
+
     var windowLabel: String {
-        guard let minutes = windowDurationMinutes else { return "额度窗口" }
-        if minutes >= 10_080 { return "每周额度" }
-        if minutes >= 1_440 { return "\(minutes / 1_440) 天额度" }
-        if minutes >= 60 { return "\(minutes / 60) 小时额度" }
-        return "\(minutes) 分钟额度"
+        kind.label
+    }
+}
+
+enum RateLimitWindowKind: Equatable {
+    case fiveHour
+    case weekly
+    case custom(minutes: Int)
+    case unknown
+
+    var label: String {
+        switch self {
+        case .fiveHour:
+            return "5 小时额度"
+        case .weekly:
+            return "每周额度"
+        case let .custom(minutes) where minutes >= 1_440 && minutes.isMultiple(of: 1_440):
+            return "\(minutes / 1_440) 天额度"
+        case let .custom(minutes) where minutes >= 60 && minutes.isMultiple(of: 60):
+            return "\(minutes / 60) 小时额度"
+        case let .custom(minutes):
+            return "\(minutes) 分钟额度"
+        case .unknown:
+            return "额度窗口"
+        }
     }
 }
 
@@ -84,6 +113,18 @@ enum MenuBarStatusFormatter {
         if hours > 0 { return "\(hours)小时" }
         return "\(max(1, minutes))分"
     }
+
+    static func details(
+        for bucket: RateLimitBucket?,
+        relativeTo now: Date
+    ) -> String {
+        guard let bucket else { return "额度同步中" }
+        return bucket.windows.map { window in
+            let reset = resetText(window.resetsAt, relativeTo: now)
+            let resetDetail = reset.isEmpty ? "" : " · \(reset)后重置"
+            return "\(window.windowLabel)：\(window.remainingPercent)% 剩余\(resetDetail)"
+        }.joined(separator: "\n")
+    }
 }
 
 enum MenuBarQuotaIconState: Equatable {
@@ -99,11 +140,11 @@ enum MenuBarQuotaIconModel {
             return .loading
         case let .loaded(buckets, _):
             let bucket = buckets.first(where: { $0.id == "codex" }) ?? buckets.first
-            guard let remaining = bucket?.headlineWindow?.remainingPercent else { return .loading }
+            guard let remaining = bucket?.limitingWindow?.remainingPercent else { return .loading }
             return .ready(clamp(remaining))
         case let .failed(_, previous):
             let bucket = previous.first(where: { $0.id == "codex" }) ?? previous.first
-            guard let remaining = bucket?.headlineWindow?.remainingPercent else { return .failed }
+            guard let remaining = bucket?.limitingWindow?.remainingPercent else { return .failed }
             return .ready(clamp(remaining))
         }
     }
@@ -253,9 +294,34 @@ struct RateLimitBucket: Identifiable, Equatable {
         }
     }
 
-    /// The compact island prioritizes the fastest-resetting constraint; the
-    /// expanded panel still shows every window independently.
+    /// Shortest server-provided period, used where chronological window order
+    /// matters. Status surfaces should use `limitingWindow` instead.
     var headlineWindow: RateLimitWindow? { windows.first }
+
+    var fiveHourWindow: RateLimitWindow? {
+        windows.first { $0.kind == .fiveHour }
+    }
+
+    var weeklyWindow: RateLimitWindow? {
+        windows.first { $0.kind == .weekly }
+    }
+
+    /// Either window can block new work. Compact status surfaces therefore
+    /// present the window with the least remaining capacity, using the shorter
+    /// period only as a deterministic tie-breaker.
+    var limitingWindow: RateLimitWindow? {
+        windows.min { lhs, rhs in
+            if lhs.remainingPercent != rhs.remainingPercent {
+                return lhs.remainingPercent < rhs.remainingPercent
+            }
+            switch (lhs.windowDurationMinutes, rhs.windowDurationMinutes) {
+            case let (left?, right?): return left < right
+            case (_?, nil): return true
+            case (nil, _?): return false
+            case (nil, nil): return false
+            }
+        }
+    }
 }
 
 struct QuotaResetCredit: Identifiable, Equatable {

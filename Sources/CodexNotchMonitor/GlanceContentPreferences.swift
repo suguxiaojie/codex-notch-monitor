@@ -72,10 +72,17 @@ struct GlanceContentPreferences: Equatable {
         )
     }
 
-    func preferredHeight(hasSupportingQuota: Bool) -> CGFloat {
+    func preferredHeight(
+        primaryQuotaWindowCount: Int,
+        supportingQuotaWindowCount: Int
+    ) -> CGFloat {
         var height: CGFloat = 161
-        if showPrimaryQuota { height += 94 }
-        if showSparkQuota && hasSupportingQuota { height += 68 }
+        if showPrimaryQuota {
+            height += 24 + CGFloat(max(1, primaryQuotaWindowCount)) * 55
+        }
+        if showSparkQuota && supportingQuotaWindowCount > 0 {
+            height += 42
+        }
         if showCostEstimate { height += 139 }
         if showCreditBalance { height += 31 }
         if showDailyTokens { height += 31 }
@@ -198,14 +205,14 @@ struct GlanceContentSettingsView: View {
         VStack(spacing: 14) {
             settingsGroup(title: "额度") {
                 contentRow(
-                    title: "周期用量概览",
-                    detail: "显示当前周期的已用量、剩余量和重置时间。",
+                    title: "Codex 额度窗口",
+                    detail: "分别显示 5 小时、每周及服务端返回的其他额度窗口。",
                     isOn: $showPrimaryQuota
                 )
                 divider
                 contentRow(
-                    title: "Spark 周额度",
-                    detail: "有可用数据时，在周期额度下方显示 Spark 周额度。",
+                    title: "其他模型额度",
+                    detail: "有可用数据时，显示 Spark 等独立模型的全部额度窗口。",
                     isOn: $showSparkQuota
                 )
                 divider
