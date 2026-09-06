@@ -12,6 +12,11 @@ struct ActivityIslandPreferencesTests {
 
         let initial = ActivityIslandPreferences.load(from: defaults)
         expect(initial == .defaults, "missing values use product defaults")
+        expect(initial.menuBarOverflow == .rotate, "overflow defaults to rotation")
+        defaults.set("compact", forKey: MenuBarOverflow.preferenceKey)
+        expect(ActivityIslandPreferences.load(from: defaults).menuBarOverflow == .compact, "static overflow persists")
+        defaults.set("invalid", forKey: MenuBarOverflow.preferenceKey)
+        expect(ActivityIslandPreferences.load(from: defaults).menuBarOverflow == .rotate, "unknown overflow falls back to rotation")
         expect(initial.surfaceOpacity == 0.38, "surface opacity keeps the approved default")
         expect(initial.showsFloatingIsland, "default mode shows the floating island")
         expect(!initial.routesTaskStateToMenuBar, "default mode leaves task state out of the menu bar")

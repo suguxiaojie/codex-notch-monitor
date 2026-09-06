@@ -8,6 +8,7 @@ struct LocalSessionSnapshot: Equatable {
     let isActive: Bool
     let updatedAt: Date
     let activities: [SessionActivityItem]
+    var turnTokenUsage: TurnTokenUsage? = nil
 }
 
 /// Reads only structural fields from Codex's local JSONL transcript. Prompt,
@@ -38,7 +39,7 @@ final class SessionActivityService {
             let urls = recentSessionFiles()
             let now = Date()
             let snapshots = urls.compactMap(cachedSnapshot).filter {
-                $0.isActive && now.timeIntervalSince($0.updatedAt) < activeRecencyInterval
+                now.timeIntervalSince($0.updatedAt) < activeRecencyInterval
             }
             let retained = Set(urls)
             cache = cache.filter { retained.contains($0.key) }
@@ -118,12 +119,15 @@ final class SessionActivityService {
         var latestTimestamp = modificationDate(of: url)
         var activities: [SessionActivityItem] = []
         var activityIndices: [String: Int] = [:]
+        var tokenState = TurnTokenState()
 
         for line in data.split(separator: 0x0A) {
             guard let object = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
                   let type = object["type"] as? String,
                   let payload = object["payload"] as? [String: Any]
             else { continue }
+
+            tokenState.consume(type: type, payload: payload)
 
             var eventTimestamp = latestTimestamp
             if let timestamp = object["timestamp"] as? String,
@@ -142,8 +146,12 @@ final class SessionActivityService {
                 if let value = payload["model"] as? String { model = value }
             case "event_msg":
                 switch payload["type"] as? String {
-                case "task_started": isActive = true
-                case "task_complete", "turn_aborted": isActive = false
+                case "task_started":
+                    isActive = true
+                    if let value = payload["turn_id"] as? String { turnID = value }
+                case "task_complete", "turn_aborted":
+                    let completedTurn = payload["turn_id"] as? String
+                    if completedTurn == nil || completedTurn == turnID { isActive = false }
                 case "agent_message":
                     guard payload["phase"] as? String == "commentary",
                           let message = payload["message"] as? String,
@@ -208,6 +216,10 @@ final class SessionActivityService {
             activities: Array(activities.suffix(6)).sorted {
                 if $0.updatedAt != $1.updatedAt { return $0.updatedAt > $1.updatedAt }
                 return $0.isRunning && !$1.isRunning
+            },
+            turnTokenUsage: tokenState.turnID.map {
+                TurnTokenUsage(sessionID: sessionID, turnID: $0, total: tokenState.total,
+                               isCompleted: tokenState.isCompleted)
             }
         )
     }
@@ -421,6 +433,10 @@ enum ProjectActivityAggregator {
 
         // Hooks bridge the short interval before a new transcript is visible.
         for hook in latestHooks.values where hook.phase.isActive && now.timeIntervalSince(hook.updatedAt) < 120 {
+            if snapshots.contains(where: {
+                $0.sessionID == hook.id && !$0.isActive && $0.turnID != nil
+                    && $0.turnID == hook.turnID && $0.updatedAt >= hook.updatedAt
+            }) { continue }
             if let existing = sessions[hook.id] {
                 var task = existing.task
                 // session_meta.cwd is immutable history. A lifecycle hook can

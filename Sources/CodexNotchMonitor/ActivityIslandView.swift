@@ -8,16 +8,21 @@ struct ActivityIslandSnapshot: Equatable {
     let sessionCount: Int
     let projectCount: Int
     let updatedAt: Date
+    var sessionID: String? = nil
+    var turnID: String? = nil
+    var turnTokenUsage: TurnTokenUsage? = nil
 
     var fingerprint: String {
-        [
+        let components: [String] = [
             projectID,
             phase.rawValue,
             actionText,
             String(sessionCount),
             String(projectCount),
-            String(updatedAt.timeIntervalSinceReferenceDate)
-        ].joined(separator: "|")
+            sessionID ?? "",
+            turnID ?? ""
+        ]
+        return components.joined(separator: "|")
     }
 
     func completed(at date: Date = Date()) -> ActivityIslandSnapshot {
@@ -28,7 +33,10 @@ struct ActivityIslandSnapshot: Equatable {
             actionText: "本轮工作已完成",
             sessionCount: sessionCount,
             projectCount: projectCount,
-            updatedAt: date
+            updatedAt: date,
+            sessionID: sessionID,
+            turnID: turnID,
+            turnTokenUsage: turnTokenUsage
         )
     }
 }
@@ -113,11 +121,19 @@ struct ActivityIslandView: View {
             .frame(width: 52, height: 52)
             .accessibilityHidden(true)
 
-            Text(snapshot.phase.title)
-                .font(AstaSans.semiBold(14))
-                .foregroundStyle(.white)
-                .lineLimit(1)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(snapshot.phase.title)
+                    .font(AstaSans.semiBold(14))
+                    .foregroundStyle(.white)
+                if let usage = snapshot.turnTokenUsage {
+                    Text(usage.label)
+                        .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.72))
+                        .minimumScaleFactor(0.8)
+                }
+            }
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.trailing, 18)
         .frame(
@@ -148,7 +164,7 @@ struct ActivityIslandView: View {
 
     private var accessibilityLabel: String {
         guard let snapshot = model.snapshot else { return "Codex Activity Island" }
-        return "\(snapshot.projectName)，\(snapshot.phase.title)，\(snapshot.actionText)"
+        return "\(snapshot.projectName)，\(snapshot.phase.title)，\(snapshot.actionText)，\(snapshot.turnTokenUsage?.label ?? "本轮 Token 等待统计")"
     }
 }
 
@@ -187,6 +203,15 @@ struct ActivityIslandExpandedContent: View {
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
                     .truncationMode(.tail)
+
+                if let usage = snapshot.turnTokenUsage {
+                    Text(usage.label)
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.72))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .help("当前会话本轮的本地 Token 统计；包含缓存输入，不等于账号额度或账单。")
+                }
             }
         }
         .padding(.leading, 4)

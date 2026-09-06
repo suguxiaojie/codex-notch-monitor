@@ -4466,6 +4466,13 @@ struct NotchView: View {
                     .minimumScaleFactor(0.85)
                 }
             }
+            Label(
+                "Astra／GPT-5.6 使用 OpenAI 官方标准费率 · 核验于 \(ModelPricing.officialRateVerifiedAt)",
+                systemImage: "checkmark.shield"
+            )
+            .font(MonitorDesktopTypography.metadata)
+            .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+            .help("其他已知模型由每日公开价格目录与 App 后备表补充；这里展示 API 等价估值，不是订阅账单。")
             if !selectedCostScope.unknownModels.isEmpty {
                 HStack(alignment: .top, spacing: 6) {
                     Image(systemName: "exclamationmark.triangle.fill")

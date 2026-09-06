@@ -133,6 +133,7 @@ final class MonitorStore: ObservableObject {
 
     private let quotaService = QuotaService()
     private let sessionActivityService = SessionActivityService()
+    @Published private(set) var turnTokenUsages: [String: TurnTokenUsage] = [:]
     private let costService = CostService()
     private let tiboRadarService = CodexResetRadarService()
     private let quotaResetMonitor = QuotaResetMonitor()
@@ -2390,6 +2391,10 @@ final class MonitorStore: ObservableObject {
                 return
             }
             self.isReadingSession = false
+            let usages = snapshots.reduce(into: [String: TurnTokenUsage]()) { result, snapshot in
+                if let usage = snapshot.turnTokenUsage { result[snapshot.sessionID] = usage }
+            }
+            if self.turnTokenUsages != usages { self.turnTokenUsages = usages }
             let catalog = CodexProjectCatalog.loadState()
             let catalogChanged = self.lastProjectCatalogState.map { $0 != catalog } ?? false
             self.lastProjectCatalogState = catalog

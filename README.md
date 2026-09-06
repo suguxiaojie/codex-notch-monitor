@@ -15,7 +15,7 @@
 </div>
 
 > [!IMPORTANT]
-> 最新版本为 [`v1.6.5 (Build 19)`](https://github.com/suguxiaojie/codex-notch-monitor/releases/tag/v1.6.5)。Release 分别提供 Apple Silicon `arm64` 与 Intel `x86_64` 安装包，请按 Mac 处理器选择对应 DMG。
+> 最新版本为 [`v1.6.6 (Build 20)`](https://github.com/suguxiaojie/codex-notch-monitor/releases/tag/v1.6.6)。Release 分别提供 Apple Silicon `arm64` 与 Intel `x86_64` 安装包，请按 Mac 处理器选择对应 DMG。
 
 > [!TIP]
 > **赞助支持：CoverAI 自家代充服务** — [前往 CoverAI](https://www.coverai.store/)
@@ -100,7 +100,7 @@ Usage 与 Cost 共享账号范围、桌面系统字体和卡片语言，但使�
   <img src="docs/images/menu-bar-quota-rings.png" alt="Codex Monitor 菜单栏额度环不同状态" width="58%">
 </p>
 
-运行态菜单栏会在一个紧凑区域中显示运行图标与状态点、当前阶段、最近动作和额度百分比。上面的真实截图表示任务处于“思考”阶段，最近动作是“检查图片／本地图片”，当前额度为 `94%`。额度环则显示当前账号最需要关注的额度窗口。带刘海的 MacBook 会把可读信息放在摄像头左右安全翼；无刘海屏幕和外接显示器会自动使用顶部胶囊布局。
+运行态菜单栏会显示当前阶段、项目、本轮 Token 和额度；本轮数值使用 K／M／B 缩写。空间不足时可选择按优先级逐级精简，或在固定宽度内轮换项目、Token 与额度，等待确认、失败、完成和低额度提示保持固定。项目名按实际文字宽度省略，多项目的 Token 始终按会话独立展示。额度环显示当前账号最需要关注的额度窗口。
 
 ## 功能详解
 
@@ -147,8 +147,9 @@ Cost 与 Usage 复用同一次本地结构化日志扫描，并保持相同的�
 - 日志来源卡紧跟趋势，并显示“跟随趋势 · 当前周期”。
 - 分开计算输入、输出、缓存写入和缓存读取 Token。
 - 显示 Token 吞吐量、每小时或每日成本趋势及本地日志来源。
-- 模型价格每天从公开的 [CodexIsland Model Catalog](https://ericjypark.github.io/codex-island-model-catalog/v1/models.json) 刷新，并保留随应用打包的后备价格表。
+- 已核验的 OpenAI 官方模型单价优先；公开的 [CodexIsland Model Catalog](https://ericjypark.github.io/codex-island-model-catalog/v1/models.json) 每天刷新并补充其他模型，App 同时保留后备价格表。
 - 远程价格目录有 schema、大小、数值范围和缓存校验；刷新失败时继续使用上一次有效缓存或内置后备表。
+- GPT-6 Astra 与 GPT-5.6 家族按 OpenAI 官方标准费率估算；单次输入超过 272K Token 时应用官方长上下文倍率。
 - 未知模型不会猜价格：界面会列出该模型，并按 `$0` 计入估算。
 - Codex 内部自动路由模型只在有本地时间线证据时映射到当时的主模型，映射关系会在界面说明。
 
@@ -203,6 +204,8 @@ https://codex-reset.com/api/forecast?locale=zh
 - 可区分读取、搜索、修改、验证、图片检查和普通命令等动作类型。
 - 命令摘要会截断并遮盖常见 Token、密钥和密码参数。
 - 菜单栏可选择自动、详细、精简或仅图标密度。
+- 菜单栏空间不足时可轮换项目、本轮 Token 与额度，或按状态优先级逐级精简；悬停查看各项目与会话的完整说明。
+- 当前 turn Token 从本机结构化会话事件投影，按会话与 turn 隔离；缺少完整起点时明确显示统计不完整，不把会话总量冒充本轮用量。
 - 浮动灵动岛支持显示／隐藏、缩放、透明度、位置、内容密度和动画设置。
 - 等待批准时使用高优先级状态；普通运行和空闲采用不同颜色与呼吸节奏。
 - 浮动岛不适合当前工作流时，可切换为“仅菜单栏”。
@@ -562,6 +565,8 @@ docs/images/                          README 当前真实界面截图
 ### Cost 中某个模型显示未知或 `$0`
 
 模型名称可能尚未进入公开价格目录，也可能是没有可验证公开价格的内部路由。应用不会给未知模型编造单价，因此按 `$0` 计入，并在来源卡中列出。
+
+GPT-6 Astra 与 GPT-5.6 家族优先使用 App 内已经核验的 OpenAI 官方费率，第三方目录不能覆盖这些价格。单次输入超过 272K Token 时，输入与缓存按 2 倍、输出按 1.5 倍估算；其他工具费用、Fast mode 和 Batch／Flex 折扣未纳入标准估值。
 
 ### Hook 是必需的吗
 

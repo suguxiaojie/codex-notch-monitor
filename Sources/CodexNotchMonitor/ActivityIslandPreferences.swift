@@ -64,6 +64,13 @@ enum MenuBarInformationDensity: String, CaseIterable, Identifiable {
     }
 }
 
+enum MenuBarOverflow: String, CaseIterable, Identifiable {
+    case rotate, compact
+    var id: String { rawValue }
+    var title: String { self == .rotate ? "轮换信息" : "逐级精简" }
+    static let preferenceKey = "activityIsland.menuBarOverflow"
+}
+
 enum ActivityIslandScreenMode: String, CaseIterable, Identifiable {
     case automatic
     case main
@@ -174,6 +181,7 @@ struct ActivityIslandPreferences: Equatable {
     var compactHide: TimeInterval
     var reduceMotion: Bool
     var showCompletion: Bool
+    var menuBarOverflow: MenuBarOverflow = .rotate
 
     var showsFloatingIsland: Bool {
         enabled && mode == .floating
@@ -245,7 +253,8 @@ struct ActivityIslandPreferences: Equatable {
             reduceMotion: defaults.object(forKey: ActivityIslandPreferenceKey.reduceMotion) as? Bool
                 ?? registered.reduceMotion,
             showCompletion: defaults.object(forKey: ActivityIslandPreferenceKey.showCompletion) as? Bool
-                ?? registered.showCompletion
+                ?? registered.showCompletion,
+            menuBarOverflow: MenuBarOverflow(rawValue: defaults.string(forKey: MenuBarOverflow.preferenceKey) ?? "") ?? .rotate
         )
     }
 

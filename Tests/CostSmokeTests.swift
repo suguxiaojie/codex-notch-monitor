@@ -10,6 +10,7 @@ enum CostSmokeTests {
         verifyCurrentAccountSelection()
         verifyRollingWindowsAndAccountScopes()
         verifyAccountTimelineSplitsExistingSession()
+        verifyAstraOfficialPricing()
         let service = CostService()
         let fetchStartedAt = Date()
         var immediateSnapshotSeconds: TimeInterval = 0
@@ -38,6 +39,7 @@ enum CostSmokeTests {
             )
             check(snapshot.month.tokens > 0, "local Codex token events")
             check(snapshot.month.dollars > 0 || !snapshot.unknownModels.isEmpty, "priced or reported unknown models")
+            check(!snapshot.unknownModels.contains("gpt-6-astra"), "runtime Astra events use official pricing")
             check(
                 snapshot.estimatedModelAliases["codex-auto-review"] == nil ||
                 !snapshot.unknownModels.contains("codex-auto-review"),
@@ -73,6 +75,63 @@ enum CostSmokeTests {
             exit(0)
         }
         RunLoop.main.run()
+    }
+
+    private static func verifyAstraOfficialPricing() {
+        let now = Date()
+        let context = UsageAccountContext(
+            accounts: [],
+            accountIDByThread: [:],
+            accountTimeline: []
+        )
+        func snapshot(
+            sessionID: String,
+            input: Int,
+            output: Int,
+            cacheCreate: Int = 0,
+            cacheRead: Int = 0
+        ) -> CostSnapshot {
+            CostService.summarize(
+                [TokenUsageEvent(
+                    provider: .codex,
+                    timestamp: now,
+                    model: "gpt-6-astra",
+                    sessionID: sessionID,
+                    projectPath: "/tmp/Astra",
+                    input: input,
+                    output: output,
+                    cacheCreate: cacheCreate,
+                    cacheRead: cacheRead
+                )],
+                projectNames: [:],
+                accountContext: context,
+                now: now
+            )
+        }
+
+        let standard = snapshot(
+            sessionID: "astra-standard",
+            input: 100_000,
+            output: 100_000,
+            cacheCreate: 100_000,
+            cacheRead: 100_000
+        )
+        check(abs(standard.today.dollars - 7.35) < 0.000_001, "Astra standard four-part cost")
+        check(!standard.unknownModels.contains("gpt-6-astra"), "Astra is no longer unpriced")
+
+        let threshold = snapshot(
+            sessionID: "astra-threshold",
+            input: 272_000,
+            output: 100_000
+        )
+        check(abs(threshold.today.dollars - 7.72) < 0.000_001, "Astra threshold keeps standard rates")
+
+        let longContext = snapshot(
+            sessionID: "astra-long-context",
+            input: 300_000,
+            output: 100_000
+        )
+        check(abs(longContext.today.dollars - 13.5) < 0.000_001, "Astra long-context multipliers")
     }
 
     private static func verifyTokenActivityGridGeometry() {

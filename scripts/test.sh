@@ -28,6 +28,7 @@ swiftc \
   Sources/CodexNotchMonitor/RippleGlowStyle.swift \
   Sources/CodexNotchMonitor/QuotaService.swift \
   Sources/CodexNotchMonitor/SessionActivityService.swift \
+  Sources/CodexNotchMonitor/TurnTokenState.swift \
   Tests/ModelSmokeTests.swift \
   -o "$test_binary"
 "$test_binary"
@@ -49,6 +50,18 @@ swiftc \
   -parse-as-library \
   Sources/CodexNotchMonitor/ActivityIslandLifecycle.swift \
   Tests/ActivityIslandLifecycleTests.swift \
+  -o "$activity_island_test_binary"
+"$activity_island_test_binary"
+
+swiftc -swift-version 5 -parse-as-library \
+  Sources/CodexNotchMonitor/StatusItemLayout.swift \
+  Tests/StatusItemLayoutTests.swift \
+  -o "$activity_island_test_binary"
+"$activity_island_test_binary"
+
+swiftc -swift-version 5 -parse-as-library \
+  Sources/CodexNotchMonitor/TurnTokenState.swift \
+  Tests/TurnTokenStateTests.swift \
   -o "$activity_island_test_binary"
 "$activity_island_test_binary"
 

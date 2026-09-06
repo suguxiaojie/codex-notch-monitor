@@ -3,6 +3,36 @@ import Foundation
 enum ModelPricing {
     typealias Rates = CatalogRates
 
+    struct Multipliers: Equatable {
+        let inputAndCache: Double
+        let output: Double
+
+        static let standard = Multipliers(inputAndCache: 1, output: 1)
+    }
+
+    /// OpenAI Docs prices verified on 2026-09-06. These entries take
+    /// precedence over the community catalog so an older third-party value
+    /// cannot override a current first-party rate. The catalog still fills in
+    /// models that are not represented in this official snapshot.
+    private static let official: [String: Rates] = [
+        "gpt-6-astra": rates(10, 50, 12.5, 1),
+        "gpt-5.6": rates(4, 20, 5, 0.4),
+        "gpt-5.6-sol": rates(4, 20, 5, 0.4),
+        "gpt-5.6-terra": rates(2, 12, 2.5, 0.2),
+        "gpt-5.6-luna": rates(0.2, 1.2, 0.25, 0.02),
+    ]
+
+    private static let longContextModels: Set<String> = [
+        "gpt-6-astra",
+        "gpt-5.6",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+    ]
+
+    static let longContextThreshold = 272_000
+    static let officialRateVerifiedAt = "2026-09-06"
+
     /// Codex-only build-time fallback. The daily catalog takes precedence and
     /// can add or update models without requiring an app release.
     private static let seed: [String: Rates] = [
@@ -33,7 +63,15 @@ enum ModelPricing {
 
     static func resolvedRates(for rawModel: String) -> Rates? {
         let canonical = canonicalModelName(rawModel)
-        return PricingCatalog.rates(for: canonical) ?? seed[canonical]
+        return official[canonical] ?? PricingCatalog.rates(for: canonical) ?? seed[canonical]
+    }
+
+    static func multipliers(for rawModel: String, totalInputTokens: Int) -> Multipliers {
+        let canonical = canonicalModelName(rawModel)
+        guard totalInputTokens > longContextThreshold,
+              longContextModels.contains(canonical)
+        else { return .standard }
+        return Multipliers(inputAndCache: 2, output: 1.5)
     }
 
     static func isInternalAutomaticModel(_ rawModel: String) -> Bool {

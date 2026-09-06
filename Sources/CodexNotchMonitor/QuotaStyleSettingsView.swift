@@ -88,6 +88,7 @@ struct QuotaStyleSettingsView: View {
     @AppStorage(ActivityIslandPreferenceKey.enabled) private var islandEnabled = true
     @AppStorage(ActivityIslandPreferenceKey.mode) private var modeRawValue = ActivityIslandMode.floating.rawValue
     @AppStorage(ActivityIslandPreferenceKey.menuBarDensity) private var menuBarDensityRawValue = MenuBarInformationDensity.automatic.rawValue
+    @AppStorage(MenuBarOverflow.preferenceKey) private var overflowRawValue = MenuBarOverflow.rotate.rawValue
     @AppStorage(ActivityIslandPreferenceKey.screen) private var screenRawValue = ActivityIslandScreenMode.automatic.rawValue
     @AppStorage(ActivityIslandPreferenceKey.position) private var positionRawValue = ActivityIslandPosition.center.rawValue
     @AppStorage(ActivityIslandPreferenceKey.visualStyle) private var visualStyleRawValue = ActivityIslandVisualStyle.rippleGlow.rawValue
@@ -152,6 +153,7 @@ struct QuotaStyleSettingsView: View {
             notifyPreferenceChange()
         }
         .onChange(of: menuBarDensityRawValue) { _ in notifyPreferenceChange() }
+        .onChange(of: overflowRawValue) { _ in notifyPreferenceChange() }
         .onChange(of: screenRawValue) { _ in notifyPreferenceChange() }
         .onChange(of: positionRawValue) { _ in notifyPreferenceChange() }
         .onChange(of: visualStyleRawValue) { _ in
@@ -243,14 +245,14 @@ struct QuotaStyleSettingsView: View {
                         if !islandEnabled {
                             previewEmptyState(
                                 symbol: "eye.slash",
-                                title: "灵动岛已关闭",
+                                title: "任务状态已关闭",
                                 detail: "菜单栏额度与本地监控仍会继续运行。"
                             )
                         } else if selectedMode == .menuBar {
                             previewEmptyState(
                                 symbol: "menubar.rectangle",
                                 title: "仅菜单栏",
-                                detail: "实时任务状态将显示在顶部菜单栏。"
+                                detail: "任务状态与本轮 Token 显示在菜单栏，悬停查看各项目与会话。"
                             )
                         } else {
                             floatingIslandPreview(scaleFactor: layoutMode.previewScaleFactor)
@@ -440,15 +442,15 @@ struct QuotaStyleSettingsView: View {
         VStack(alignment: .leading, spacing: 0) {
             inspectorHeading(
                 "显示",
-                detail: "控制灵动岛是否显示，以及任务状态出现的位置。"
+                detail: "控制任务状态与本轮 Token 是否显示，以及它们出现的位置。"
             )
 
             preferenceRow(
-                title: "显示灵动岛",
-                detail: "关闭后仍保留菜单栏额度与本地监控。"
+                title: "显示任务状态",
+                detail: "在浮动灵动岛或菜单栏中显示当前任务与本轮 Token。"
             ) {
-                Toggle("显示灵动岛", isOn: $islandEnabled)
-                    .labelsHidden()
+                TaskStateNativeSwitch(isOn: $islandEnabled)
+                    .frame(width: 42, height: 26)
                     .focused($focusedControl, equals: .enabled)
             }
 
@@ -456,11 +458,11 @@ struct QuotaStyleSettingsView: View {
 
             VStack(spacing: 0) {
                 preferenceRow(
-                    title: "显示方式",
+                    title: "显示位置",
                     detail: displayModeDetail,
                     controlsDisabled: !islandEnabled
                 ) {
-                    Picker("显示方式", selection: $modeRawValue) {
+                    Picker("显示位置", selection: $modeRawValue) {
                         ForEach(ActivityIslandMode.allCases) { mode in
                             Text(mode.title).tag(mode.rawValue)
                         }
@@ -510,7 +512,7 @@ struct QuotaStyleSettingsView: View {
                         inspectorDivider
                         preferenceRow(
                             title: "信息密度",
-                            detail: "自动模式会在菜单栏空间不足时逐级收短。",
+                            detail: "详细优先保留项目与用量，使用更宽的有限空间；自动与精简更紧凑。",
                             controlsDisabled: !islandEnabled
                         ) {
                             Picker("信息密度", selection: $menuBarDensityRawValue) {
@@ -522,6 +524,21 @@ struct QuotaStyleSettingsView: View {
                             .pickerStyle(.segmented)
                             .frame(width: 240)
                             .focused($focusedControl, equals: .density)
+                        }
+                        inspectorDivider
+                        preferenceRow(
+                            title: "空间不足时",
+                            detail: "每 4 秒轮换一项信息，状态保持可见；悬停暂停，待确认与完成提示固定显示。",
+                            controlsDisabled: !islandEnabled
+                        ) {
+                            Picker("空间不足时", selection: $overflowRawValue) {
+                                ForEach(MenuBarOverflow.allCases) { option in
+                                    Text(option.title).tag(option.rawValue)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.segmented)
+                            .frame(width: 210)
                         }
                     }
                 }
@@ -829,14 +846,14 @@ struct QuotaStyleSettingsView: View {
 
     private var disabledExplanation: some View {
         Label(
-            "灵动岛已关闭。设置已保留，重新开启后可继续调整。",
+            "任务状态展示已关闭，仍保留菜单栏额度与本地统计。",
             systemImage: "info.circle"
         )
         .font(MonitorDesktopTypography.body)
         .foregroundStyle(MonitorDesktopTheme.secondaryText)
         .fixedSize(horizontal: false, vertical: true)
         .padding(.top, 12)
-        .accessibilityHint("重新开启显示灵动岛后，这些设置会恢复可用")
+        .accessibilityHint("重新开启显示任务状态后，这些设置会恢复可用")
     }
 
     private var floatingScopeExplanation: some View {
@@ -845,7 +862,7 @@ struct QuotaStyleSettingsView: View {
                 .accessibilityHidden(true)
             Text(islandEnabled
                 ? "这些设置用于浮动灵动岛。当前为仅菜单栏模式，原有设置已保留。"
-                : "灵动岛已关闭。原有设置已保留，可在“显示”中重新开启。")
+                : "任务状态展示已关闭。原有设置已保留，可在“显示”中重新开启。")
                 .fixedSize(horizontal: false, vertical: true)
         }
         .font(MonitorDesktopTypography.body)
@@ -955,14 +972,19 @@ struct QuotaStyleSettingsView: View {
             updatedAt: max(
                 project.task.updatedAt,
                 project.latestDisplayActivity?.updatedAt ?? .distantPast
-            )
+            ),
+            turnTokenUsage: project.sessions.first.flatMap { session in
+                guard let usage = store.turnTokenUsages[session.task.id],
+                      usage.turnID == session.task.turnID else { return nil }
+                return usage
+            }
         )
     }
 
     private var displayModeDetail: String {
         selectedMode == .floating
             ? "独立显示实时任务灵动岛，同时保留菜单栏额度。"
-            : "隐藏浮动灵动岛，把实时任务状态收进菜单栏。"
+            : "菜单栏显示任务与本轮 Token；多项目时优先显示需要处理的任务，悬停查看全部。"
     }
 
     private var animationStyleDetail: String {
@@ -978,13 +1000,17 @@ struct QuotaStyleSettingsView: View {
 
     private var menuBarPreviewTitle: String {
         guard let snapshot = liveSnapshot else { return "等待真实任务状态" }
-        return "\(snapshot.phase.menuBarTitle) · \(snapshot.projectName)"
+        return MenuBarTokenFormatter.title(
+            status: snapshot.phase.menuBarTitle, project: snapshot.projectName,
+            usage: snapshot.turnTokenUsage,
+            quota: store.quotaState.primaryBucket?.limitingWindow?.remainingPercent,
+            projectCount: store.activeProjects.count)
     }
 
     private var previewSummary: String {
         let state: String
         if !islandEnabled {
-            state = "灵动岛关闭"
+            state = "任务状态展示关闭"
         } else if selectedMode == .menuBar {
             let density = MenuBarInformationDensity(rawValue: menuBarDensityRawValue)?.title ?? "自动"
             state = "仅菜单栏，信息密度：\(density)"

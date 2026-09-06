@@ -865,10 +865,14 @@ final class CostService {
 
     private static func estimatedCost(_ event: TokenUsageEvent, billingModel: String) -> Double? {
         guard let rate = ModelPricing.resolvedRates(for: billingModel) else { return nil }
-        return (Double(event.input) * rate.inputPerMillion +
-                Double(event.output) * rate.outputPerMillion +
-                Double(event.cacheCreate) * rate.cacheCreationPerMillion +
-                Double(event.cacheRead) * rate.cacheReadPerMillion) / 1_000_000
+        let multipliers = ModelPricing.multipliers(
+            for: billingModel,
+            totalInputTokens: event.input + event.cacheRead
+        )
+        return (Double(event.input) * rate.inputPerMillion * multipliers.inputAndCache +
+                Double(event.output) * rate.outputPerMillion * multipliers.output +
+                Double(event.cacheCreate) * rate.cacheCreationPerMillion * multipliers.inputAndCache +
+                Double(event.cacheRead) * rate.cacheReadPerMillion * multipliers.inputAndCache) / 1_000_000
     }
 
     private static func integer(_ value: Any?) -> Int {

@@ -374,12 +374,15 @@ enum ModelSmokeTests {
         let fixture = """
         {"timestamp":"2026-08-12T06:00:00.000Z","type":"event_msg","payload":{"type":"task_started"}}
         {"timestamp":"2026-08-12T06:00:00.100Z","type":"turn_context","payload":{"turn_id":"turn-1","cwd":"/tmp/DemoProject","model":"gpt-test"}}
+        {"timestamp":"2026-08-12T06:00:00.200Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":1234},"last_token_usage":{"total_tokens":1234}}}}
         {"timestamp":"2026-08-12T06:00:01.000Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"call-1","input":"const r = await tools.exec_command({ cmd: \\"sed -n '1,80p' Sources/App.swift\\" });"}}
         """
         try? fixture.data(using: .utf8)?.write(to: fixtureURL)
         let activityService = SessionActivityService()
         let activeSnapshot = activityService.readSnapshot(from: fixtureURL)
         check(activeSnapshot?.isActive == true, "active task boundary")
+        check(activeSnapshot?.turnTokenUsage?.total == 1234, "rollout token projection reaches snapshot")
+        check(activeSnapshot?.turnTokenUsage?.turnID == "turn-1", "rollout tokens belong to exact turn")
         check(activeSnapshot?.cwd == "/tmp/DemoProject", "session working directory")
         check(activeSnapshot?.activities.first?.title == "读取 App.swift", "live read activity")
         check(activeSnapshot?.activities.first?.isRunning == true, "running tool state")
@@ -388,6 +391,7 @@ enum ModelSmokeTests {
 
         {"timestamp":"2026-08-12T06:00:02.000Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call-1"}}
         {"timestamp":"2026-08-12T06:00:03.000Z","type":"event_msg","payload":{"type":"task_complete"}}
+        {"timestamp":"2026-08-12T06:00:03.100Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":1500},"last_token_usage":{"total_tokens":266}}}}
         """
         if let handle = try? FileHandle(forWritingTo: fixtureURL) {
             _ = try? handle.seekToEnd()
@@ -396,6 +400,7 @@ enum ModelSmokeTests {
         }
         let completedSnapshot = activityService.readSnapshot(from: fixtureURL)
         check(completedSnapshot?.isActive == false, "completed task boundary")
+        check(completedSnapshot?.turnTokenUsage?.total == 1500, "completed snapshot retains late final tokens")
         check(completedSnapshot?.activities.first?.isRunning == false, "completed tool state")
         check(
             completedSnapshot?.activities.first?.updatedAt
@@ -615,7 +620,7 @@ enum ModelSmokeTests {
         )
         try? FileManager.default.removeItem(at: fixtureURL)
 
-        print("Model smoke tests passed (101 checks).")
+        print("Model smoke tests passed (104 checks).")
     }
 
     private static func check(_ condition: @autoclosure () -> Bool, _ label: String) {

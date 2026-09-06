@@ -13,7 +13,11 @@ enum PricingCatalogTests {
         let payload = CatalogPayload(
             schemaVersion: 1,
             generatedAt: "2026-08-12T00:00:00Z",
-            models: ["test-model": rates]
+            models: [
+                "test-model": rates,
+                "gpt-6-astra": rates,
+                "gpt-5.6-sol": rates,
+            ]
         )
         let data = try! JSONEncoder().encode(payload)
 
@@ -22,7 +26,32 @@ enum PricingCatalogTests {
         check(PricingCatalog.interpret(status: 500, data: data) == .rejected("HTTP 500"), "reject HTTP error")
         check(PricingCatalog.interpret(status: 200, data: Data("{}".utf8)) == .rejected("malformed JSON"), "reject malformed schema")
         check(ModelPricing.canonicalModelName("GPT-5.3-Codex-20260812") == "gpt-5.3-codex", "strip date suffix")
-        check(ModelPricing.resolvedRates(for: "gpt-5.6-sol") != nil, "embedded fallback")
+        check(
+            ModelPricing.resolvedRates(for: "gpt-6-astra")
+                == CatalogRates(
+                    displayName: nil,
+                    inputPerMillion: 10,
+                    outputPerMillion: 50,
+                    cacheCreationPerMillion: 12.5,
+                    cacheReadPerMillion: 1
+                ),
+            "Astra uses verified official rates"
+        )
+        check(
+            ModelPricing.resolvedRates(for: "gpt-5.6-sol")?.inputPerMillion == 4
+                && ModelPricing.resolvedRates(for: "gpt-5.6-sol")?.outputPerMillion == 20,
+            "Sol uses current official promotional rates"
+        )
+        check(
+            ModelPricing.resolvedRates(for: "gpt-5.6-terra")?.inputPerMillion == 2
+                && ModelPricing.resolvedRates(for: "gpt-5.6-terra")?.outputPerMillion == 12,
+            "Terra uses current official rates"
+        )
+        check(
+            ModelPricing.resolvedRates(for: "gpt-5.6-luna")?.inputPerMillion == 0.2
+                && ModelPricing.resolvedRates(for: "gpt-5.6-luna")?.outputPerMillion == 1.2,
+            "Luna uses current official rates"
+        )
         check(ModelPricing.resolvedRates(for: "codex-auto-review") == nil, "do not invent unknown price")
         check(
             ModelPricing.billingModel(
@@ -52,9 +81,35 @@ enum PricingCatalogTests {
         )
         check(firstRefresh == .updated, "install downloaded catalog")
         check(FileManager.default.fileExists(atPath: temporaryCache.path), "persist catalog cache")
-        check(ModelPricing.resolvedRates(for: "test-model") == rates, "remote catalog takes precedence")
+        check(ModelPricing.resolvedRates(for: "test-model") == rates, "remote catalog supplies other models")
+        check(
+            ModelPricing.resolvedRates(for: "gpt-6-astra")?.inputPerMillion == 10,
+            "community catalog cannot override official Astra rates"
+        )
+        check(
+            ModelPricing.resolvedRates(for: "gpt-5.6-sol")?.outputPerMillion == 20,
+            "community catalog cannot override official Sol rates"
+        )
+        check(
+            ModelPricing.multipliers(
+                for: "gpt-6-astra",
+                totalInputTokens: ModelPricing.longContextThreshold
+            ) == .standard,
+            "long-context surcharge starts above the threshold"
+        )
+        check(
+            ModelPricing.multipliers(
+                for: "gpt-6-astra",
+                totalInputTokens: ModelPricing.longContextThreshold + 1
+            ) == ModelPricing.Multipliers(inputAndCache: 2, output: 1.5),
+            "Astra applies official long-context multipliers"
+        )
+        check(
+            ModelPricing.multipliers(for: "test-model", totalInputTokens: 1_000_000) == .standard,
+            "catalog models do not inherit an undocumented surcharge"
+        )
 
-        print("Pricing catalog tests passed (12 checks).")
+        print("Pricing catalog tests passed (20 checks).")
     }
 
     private static func check(_ condition: @autoclosure () -> Bool, _ label: String) {

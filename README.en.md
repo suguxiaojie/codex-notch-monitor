@@ -15,7 +15,7 @@
 </div>
 
 > [!IMPORTANT]
-> The latest version is [`v1.6.5 (Build 19)`](https://github.com/suguxiaojie/codex-notch-monitor/releases/tag/v1.6.5). The Release provides separate DMGs for Apple Silicon `arm64` and Intel `x86_64`; choose the package that matches your Mac.
+> The latest version is [`v1.6.6 (Build 20)`](https://github.com/suguxiaojie/codex-notch-monitor/releases/tag/v1.6.6). The Release provides separate DMGs for Apple Silicon `arm64` and Intel `x86_64`; choose the package that matches your Mac.
 
 > [!TIP]
 > **Sponsor: CoverAI top-up service** — [Visit CoverAI](https://www.coverai.store/)
@@ -100,7 +100,7 @@ Panel Settings controls which quota, Credits, reset, token, and cost modules app
   <img src="docs/images/menu-bar-quota-rings.png" alt="Codex Monitor menu bar quota ring states" width="58%">
 </p>
 
-While a task is running, the compact menu bar area shows the running icon and status dot, current phase, latest action, and quota percentage. The real screenshot above shows the task in the Thinking phase, with Inspect Image / Local Image as the latest activity and `94%` quota remaining. The quota ring shows the quota window that needs the most attention for the current account. On notched MacBooks, readable content stays in the safe wings to the left and right of the camera. On notchless displays and external monitors, the app automatically falls back to a top capsule layout.
+While a task is running, the menu bar can show its phase, project, current-turn tokens, and quota, with K/M/B token abbreviations. When space is limited, it can progressively compact by priority or rotate project, token, and quota pages inside a fixed width. Approval waits, failures, completion receipts, and low-quota warnings remain fixed. Project names truncate by measured width, and multi-project token counts remain isolated by session. The quota ring shows the quota window that needs the most attention for the current account.
 
 ## Feature details
 
@@ -147,8 +147,9 @@ Cost reuses the same local structured-log scan as Usage and keeps the same perio
 - Places Log Sources directly after Trend with a `Follows Trend · Period` context label.
 - Calculates input, output, cache-write, and cache-read tokens separately.
 - Displays token throughput, hourly or daily cost trends, and local log sources.
-- Refreshes model prices daily from the public [CodexIsland Model Catalog](https://ericjypark.github.io/codex-island-model-catalog/v1/models.json) and ships with an embedded fallback table.
+- Verified official OpenAI rates take precedence. The public [CodexIsland Model Catalog](https://ericjypark.github.io/codex-island-model-catalog/v1/models.json) refreshes daily to fill in other models, with a bundled fallback table.
 - Validates the remote catalog's schema, size, numeric ranges, and cache. If refresh fails, the app continues with the latest verified cache or embedded fallback.
+- GPT-6 Astra and the GPT-5.6 family use official OpenAI standard rates, including the documented long-context multipliers above 272K input tokens.
 - Unknown models are never assigned a guessed price. They are listed in the UI and counted as `$0` in the estimate.
 - Internal Codex auto-routing models are mapped to the primary model only when the local timeline provides evidence for the model used at that time; the UI discloses the mapping.
 
@@ -203,6 +204,8 @@ The app combines local structured session activity with optional lifecycle Hooks
 - Distinguishes reading, searching, editing, validation, image inspection, and ordinary commands.
 - Truncates command summaries and masks common token, key, and password arguments.
 - Offers Automatic, Detailed, Compact, or Icon-only menu bar density.
+- When space is limited, rotates project, current-turn token, and quota pages or progressively compacts them by status priority; hover retains complete per-project and per-session context.
+- Projects current-turn tokens from local structured session events and isolates them by session and turn. An incomplete local boundary stays explicitly incomplete instead of presenting session totals as turn usage.
 - The floating Activity Island supports show/hide, scale, opacity, position, content density, and animation settings.
 - Approval waits use a high-priority state; normal work and idle states use different colors and breathing rhythms.
 - When a floating island does not fit the workflow, the app can run in menu-bar-only mode.
@@ -562,6 +565,8 @@ Dynamic Center depends on the third-party `codex-reset.com` service. If the netw
 ### A model appears as unknown or `$0` in Cost
 
 The model may not yet exist in the public price catalog, or it may be an internal route without a verifiable public price. The app does not invent a price for unknown models, so they contribute `$0` and remain listed in the source card.
+
+GPT-6 Astra and the GPT-5.6 family prefer verified official OpenAI rates embedded in the app; the third-party catalog cannot override them. Above 272K input tokens, input and cache rates use a 2x multiplier and output uses 1.5x. Tool fees, Fast mode, and Batch/Flex discounts are outside this standard estimate.
 
 ### Are Hooks required?
 

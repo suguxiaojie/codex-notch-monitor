@@ -60,6 +60,14 @@ final class ActivityIslandWindowController: NSObject {
     }
 
     private func observeStore() {
+        store.$turnTokenUsages
+            .removeDuplicates()
+            .sink { [weak self] usages in
+                guard let self else { return }
+                self.updateTokens(usages)
+            }
+            .store(in: &cancellables)
+
         store.$activeProjects
             .removeDuplicates()
             .sink { [weak self] projects in
@@ -290,8 +298,35 @@ final class ActivityIslandWindowController: NSObject {
             actionText: project.detailedActionSummary,
             sessionCount: project.sessionCount,
             projectCount: projectCount,
-            updatedAt: max(project.task.updatedAt, project.latestDisplayActivity?.updatedAt ?? .distantPast)
+            updatedAt: max(project.task.updatedAt, project.latestDisplayActivity?.updatedAt ?? .distantPast),
+            sessionID: project.sessions.first?.task.id,
+            turnID: project.sessions.first?.task.turnID,
+            turnTokenUsage: matchingUsage(
+                sessionID: project.sessions.first?.task.id,
+                turnID: project.sessions.first?.task.turnID,
+                usages: store.turnTokenUsages
+            )
         )
+    }
+
+    private func matchingUsage(sessionID: String?, turnID: String?,
+                               usages: [String: TurnTokenUsage]) -> TurnTokenUsage? {
+        guard let sessionID, let turnID, let usage = usages[sessionID],
+              usage.turnID == turnID else { return nil }
+        return usage
+    }
+
+    private func updateTokens(_ usages: [String: TurnTokenUsage]) {
+        if var snapshot = model.snapshot,
+           let usage = matchingUsage(sessionID: snapshot.sessionID, turnID: snapshot.turnID, usages: usages) {
+            snapshot.turnTokenUsage = usage
+            model.snapshot = snapshot
+        }
+        if var snapshot = lastLiveSnapshot,
+           let usage = matchingUsage(sessionID: snapshot.sessionID, turnID: snapshot.turnID, usages: usages) {
+            snapshot.turnTokenUsage = usage
+            lastLiveSnapshot = snapshot
+        }
     }
 
     private func targetScreen() -> NSScreen? {
