@@ -126,9 +126,11 @@ struct GlanceContentSettingsView: View {
             .labelsHidden()
             .pickerStyle(.segmented)
             .accessibilityLabel("面板设置分组")
-            .padding(.horizontal, 18)
-            .padding(.top, 12)
-            .padding(.bottom, 10)
+            .controlSize(.regular)
+            .frame(maxWidth: 320)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 16)
 
             divider
 
@@ -141,19 +143,19 @@ struct GlanceContentSettingsView: View {
                     }
                 }
                 .id(selectedSection)
-                .transition(
-                    reduceMotion
-                        ? .opacity
-                        : .opacity.combined(with: .offset(x: 0, y: 4))
-                )
-                .padding(.horizontal, 18)
-                .padding(.top, 14)
-                .padding(.bottom, 24)
+                .transition(.opacity)
+                .frame(maxWidth: 780)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 24)
+                .padding(.top, 20)
+                .padding(.bottom, 28)
             }
             .scrollDisabled(isAdjustingOpacity)
         }
+        .font(MonitorDesktopTypography.body)
+        .foregroundStyle(MonitorDesktopTheme.primaryText)
         .animation(
-            reduceMotion ? nil : .easeOut(duration: 0.16),
+            reduceMotion ? .easeOut(duration: 0.16) : .spring(response: 0.3, dampingFraction: 1),
             value: selectedSection
         )
         .onDisappear { isAdjustingOpacity = false }
@@ -169,65 +171,67 @@ struct GlanceContentSettingsView: View {
         HStack(spacing: 10) {
             Image(systemName: "rectangle.on.rectangle")
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(MonitorTheme.cyanAccent)
-                .frame(width: 28, height: 28)
+                .foregroundStyle(MonitorDesktopTheme.cyanAccent)
+                .frame(width: 36, height: 36)
                 .background(
-                    MonitorTheme.cyanAccent.opacity(0.10),
+                    MonitorDesktopTheme.cyanAccent.opacity(0.10),
                     in: RoundedRectangle(cornerRadius: 8, style: .continuous)
                 )
                 .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("实时 Glance 预览")
-                    .font(MonitorTypography.cardTitle)
-                    .foregroundStyle(MonitorTheme.primaryText)
-                Text("预览已固定在菜单栏旁；更改会立即生效。")
-                    .font(MonitorTypography.body)
-                    .foregroundStyle(MonitorTheme.tertiaryText)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("菜单栏面板预览")
+                    .font(MonitorDesktopTypography.cardTitle)
+                    .foregroundStyle(MonitorDesktopTheme.primaryText)
+                Text("预览显示在菜单栏旁，设置会立即生效。")
+                    .font(MonitorDesktopTypography.body)
+                    .foregroundStyle(MonitorDesktopTheme.tertiaryText)
             }
             Spacer(minLength: 10)
-            Text("\(visibleContentCount) / 8 项显示")
-                .font(MonitorTypography.control)
-                .foregroundStyle(MonitorTheme.secondaryText)
+            Text("已启用 \(visibleContentCount) / 8 项")
+                .font(MonitorDesktopTypography.control)
+                .foregroundStyle(MonitorDesktopTheme.secondaryText)
                 .monospacedDigit()
+                .fixedSize()
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 12)
-        .background(MonitorTheme.subtleCardFill)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 18)
+        .background(MonitorDesktopTheme.subtleCardFill)
         .overlay(alignment: .bottom) {
             divider
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("实时 Glance 预览")
-        .accessibilityValue("\(visibleContentCount) 项内容正在显示")
+        .accessibilityLabel("菜单栏面板实时预览")
+        .accessibilityValue("已启用 \(visibleContentCount) 项内容；有对应数据时显示")
     }
 
     private var contentSettings: some View {
-        VStack(spacing: 14) {
+        VStack(spacing: 20) {
             settingsGroup(title: "额度") {
                 contentRow(
                     title: "Codex 额度窗口",
-                    detail: "分别显示 5 小时、每周及服务端返回的其他额度窗口。",
+                    detail: "显示 5 小时、每周及其他可用额度窗口。",
                     isOn: $showPrimaryQuota
                 )
                 divider
                 contentRow(
                     title: "其他模型额度",
-                    detail: "有可用数据时，显示 Spark 等独立模型的全部额度窗口。",
+                    detail: "有数据时显示 Spark 等模型剩余额度最少的窗口摘要。",
                     isOn: $showSparkQuota
                 )
                 divider
                 contentRow(
                     title: "Credits 余额",
-                    detail: "显示当前登录账号由 App Server 返回的 Credits 余额。",
+                    detail: "显示当前登录账号的可用 Credits 余额。",
                     isOn: $showCreditBalance
                 )
                 divider
                 contentRow(
                     title: "额度重置入口",
-                    detail: "显示额度卡次数、到期时间和真实重置入口。",
+                    detail: "显示额度卡剩余次数、到期时间和重置入口。",
                     isOn: $showResetEntry
                 )
             }
+            .modifier(MonitorDesktopReveal())
 
             settingsGroup(title: "用量") {
                 contentRow(
@@ -244,29 +248,33 @@ struct GlanceContentSettingsView: View {
                 divider
                 contentRow(
                     title: "Token 活动图表",
-                    detail: "显示 Token 活动，并支持周、月、三月和半年。",
+                    detail: "查看最近一周、一个月、三个月或半年的 Token 活动。",
                     isOn: $showTokenActivity
                 )
             }
+            .modifier(MonitorDesktopReveal(delay: 0.04))
 
             settingsGroup(title: "成本") {
                 contentRow(
                     title: "成本估算图表",
-                    detail: "显示可切换周、月、三月和半年的成本估算。",
+                    detail: "按参考 API 价格估算用量成本，支持切换统计周期。",
                     isOn: $showCostEstimate
                 )
             }
+            .modifier(MonitorDesktopReveal(delay: 0.08))
         }
     }
 
     private var appearanceSettings: some View {
         VStack(spacing: 14) {
             opacityCard
-            Text("透明度只影响 Glance 黑色背景，不增加磨砂或额外模糊。")
-                .font(MonitorTypography.body)
-                .foregroundStyle(MonitorTheme.tertiaryText)
+                .modifier(MonitorDesktopReveal())
+            Text("背景不透明度只影响菜单栏面板。调整时可在顶部菜单栏旁查看效果。")
+                .font(MonitorDesktopTypography.body)
+                .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 2)
+                .modifier(MonitorDesktopReveal(delay: 0.04))
         }
     }
 
@@ -289,21 +297,20 @@ struct GlanceContentSettingsView: View {
     ) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             Text(title)
-                .font(MonitorTypography.metadataMedium)
-                .foregroundStyle(MonitorTheme.secondaryText)
-                .padding(.top, 12)
-                .padding(.bottom, 8)
+                .font(MonitorDesktopTypography.cardTitle)
+                .foregroundStyle(MonitorDesktopTheme.primaryText)
+                .padding(.vertical, 16)
             divider
             content()
         }
         .padding(.horizontal, 18)
         .background(
-            MonitorTheme.cardFill,
+            MonitorDesktopTheme.cardFill,
             in: RoundedRectangle(cornerRadius: 12, style: .continuous)
         )
         .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.055), lineWidth: 0.7)
+                .strokeBorder(MonitorDesktopTheme.separator, lineWidth: 1)
         }
     }
 
@@ -313,44 +320,44 @@ struct GlanceContentSettingsView: View {
         isOn: Binding<Bool>
     ) -> some View {
         HStack(spacing: 18) {
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 5) {
                 Text(title)
-                    .font(MonitorTypography.cardTitle)
-                    .foregroundStyle(MonitorTheme.primaryText)
+                    .font(MonitorDesktopTypography.rowTitle)
+                    .foregroundStyle(MonitorDesktopTheme.primaryText)
                 Text(detail)
-                    .font(MonitorTypography.body)
-                    .foregroundStyle(MonitorTheme.tertiaryText)
+                    .font(MonitorDesktopTypography.body)
+                    .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Spacer(minLength: 18)
-            Toggle("", isOn: isOn)
+            Spacer(minLength: 8)
+            Toggle(title, isOn: isOn)
                 .labelsHidden()
-                .toggleStyle(SwitchToggleStyle(tint: MonitorTheme.selection))
-                .controlSize(.small)
+                .toggleStyle(SwitchToggleStyle(tint: MonitorDesktopTheme.selection))
+                .controlSize(.regular)
                 .accessibilityLabel(title)
                 .accessibilityValue(isOn.wrappedValue ? "显示" : "隐藏")
         }
-        .padding(.vertical, 10)
-        .frame(minHeight: MonitorGeometry.settingsRowHeight)
+        .padding(.vertical, 14)
+        .frame(minHeight: 68)
     }
 
     private var divider: some View {
-        Divider().overlay(MonitorTheme.separator)
+        Divider().overlay(MonitorDesktopTheme.separator)
     }
 
     private var opacityCard: some View {
-        VStack(alignment: .leading, spacing: 9) {
+        VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("面板透明度")
-                        .font(MonitorTypography.cardTitle)
-                    Text("数值越低越透明；只调整黑色背景，不增加磨砂。")
-                        .font(MonitorTypography.body)
-                        .foregroundStyle(MonitorTheme.tertiaryText)
+                    Text("背景不透明度")
+                        .font(MonitorDesktopTypography.cardTitle)
+                    Text("数值越高，黑色背景越深。")
+                        .font(MonitorDesktopTypography.body)
+                        .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                 }
                 Spacer()
                 Text("\(Int((surfaceOpacity * 100).rounded()))%")
-                    .font(MonitorTypography.rowTitle)
+                    .font(MonitorDesktopTypography.rowTitle)
                     .monospacedDigit()
             }
             Slider(
@@ -359,18 +366,26 @@ struct GlanceContentSettingsView: View {
                 step: 0.01,
                 onEditingChanged: { isAdjustingOpacity = $0 }
             )
-            .tint(MonitorTheme.selection)
-            .accessibilityLabel("面板透明度")
+            .tint(MonitorDesktopTheme.selection)
+            .accessibilityLabel("背景不透明度")
             .accessibilityValue("\(Int((surfaceOpacity * 100).rounded()))%")
+            HStack {
+                Text("更透明")
+                Spacer()
+                Text("更深")
+            }
+            .font(MonitorDesktopTypography.metadata)
+            .foregroundStyle(MonitorDesktopTheme.secondaryText)
+            .accessibilityHidden(true)
         }
-        .padding(16)
+        .padding(20)
         .background(
-            MonitorTheme.cardFill,
+            MonitorDesktopTheme.cardFill,
             in: RoundedRectangle(cornerRadius: 12, style: .continuous)
         )
         .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.055), lineWidth: 0.7)
+                .strokeBorder(MonitorDesktopTheme.separator, lineWidth: 1)
         }
     }
 }

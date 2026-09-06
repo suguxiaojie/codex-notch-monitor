@@ -15,7 +15,7 @@
 </div>
 
 > [!IMPORTANT]
-> 最新版本为 [`v1.6.4 (Build 18)`](https://github.com/suguxiaojie/codex-notch-monitor/releases/tag/v1.6.4)。Release 分别提供 Apple Silicon `arm64` 与 Intel `x86_64` 安装包，请按 Mac 处理器选择对应 DMG。
+> 最新版本为 [`v1.6.5 (Build 19)`](https://github.com/suguxiaojie/codex-notch-monitor/releases/tag/v1.6.5)。Release 分别提供 Apple Silicon `arm64` 与 Intel `x86_64` 安装包，请按 Mac 处理器选择对应 DMG。
 
 > [!TIP]
 > **赞助支持：CoverAI 自家代充服务** — [前往 CoverAI](https://www.coverai.store/)
@@ -63,7 +63,7 @@ Glance 只聚焦当前账号，把周额度、Spark 额度、Credits、额度重
   <img src="docs/images/monitor-center-cost-retina.png" alt="Codex Monitor Cost 页面" width="49%">
 </p>
 
-Usage 与 Cost 共享账号范围、字体层级和卡片语言，但使用各自适合的数据周期。两个页面都把独立的活动卡放在第一张，使用“30 日／90 日／半年”并承载全页账号范围。Usage 的“周／月／三月”趋势与项目用量联动；Cost 的“日／周／月”趋势与日志来源联动。剩余额度也使用同一套图标、标题、badge 和右侧说明。
+Usage 与 Cost 共享账号范围、桌面系统字体和卡片语言，但使用各自适合的数据周期。核心指标和趋势优先展示，再呈现活动热力图与明细；窗口可以调整大小，并适配 macOS 的减少动态、减少透明度和增强对比度设置。
 
 ### 动态中心
 
@@ -71,7 +71,7 @@ Usage 与 Cost 共享账号范围、字体层级和卡片语言，但使用各�
   <img src="docs/images/dynamic-center-retina.png" alt="Codex Monitor 动态中心" width="82%">
 </p>
 
-动态中心把官方额度状态与第三方社区雷达分开呈现：额度百分比来自 Codex App Server；Tibo 动态、重置时间轴与概率预测来自 `codex-reset.com`，不是 OpenAI 官方接口。
+动态中心把当前账号官方额度、第三方社区预测和本机恢复记录分开呈现。额度百分比来自 Codex App Server；Tibo 动态、重置时间轴与实验性概率预测来自 `codex-reset.com`，不是 OpenAI 官方接口。失效信号不会继续置顶，回复上下文、验证状态与完整正文会保留。
 
 ### 会话管理
 
@@ -79,7 +79,7 @@ Usage 与 Cost 共享账号范围、字体层级和卡片语言，但使用各�
   <img src="docs/images/session-management-retina.png" alt="Codex Monitor 会话管理页面" width="82%">
 </p>
 
-会话管理展示当前账号、本地项目与会话数量、已归档和待恢复状态，并提供会话包／完整项目迁移包导入。项目与会话操作收在省略号菜单中；基线前无法可靠归属的历史明确保留为“归属未知”。
+会话管理以本机全部用户会话为范围，提供项目／会话／路径搜索、状态筛选、原生可选择列表、独立项目展开和所选会话详情。当前登录账号与统计范围分开说明；基线前无法可靠归属的历史继续保留为“归属未知”。导入、导出、恢复结果与备份集中在按需展开的操作区域。
 
 ### 面板设置与灵动岛设置
 

@@ -114,6 +114,27 @@ struct QuotaResetEvaluation {
     let needsFeedRefresh: Bool
 }
 
+enum QuotaResetHistoryPresentation {
+    static func historyExcludingCandidates(
+        events: [QuotaResetEvent],
+        candidates: [QuotaResetConfirmationCandidate]
+    ) -> [QuotaResetEvent] {
+        events.filter { event in
+            event.reason != .unverified || !candidates.contains { candidate in
+                candidate.detectedAt == event.detectedAt && candidate.changes == event.changes
+            }
+        }
+    }
+
+    static func uniqueCount(
+        events: [QuotaResetEvent],
+        candidates: [QuotaResetConfirmationCandidate]
+    ) -> Int {
+        Set(candidates.map(\.id)).count
+            + historyExcludingCandidates(events: events, candidates: candidates).count
+    }
+}
+
 /// Detects quota recovery from consecutive server snapshots. A jump to 100%
 /// is only notification-worthy when the old reset deadline or a recent Tibo
 /// post corroborates it. Unverified jumps are retained briefly for a delayed

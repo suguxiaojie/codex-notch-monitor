@@ -149,6 +149,80 @@ struct SessionContinuitySnapshot: Equatable {
     }
 }
 
+enum SessionLibraryFilter: String, CaseIterable, Identifiable {
+    case all = "全部"
+    case recoverable = "待恢复"
+    case archived = "已归档"
+    case missingPath = "路径缺失"
+
+    var id: Self { self }
+}
+
+enum SessionLibraryCheckStatus: Equatable {
+    case checking
+    case notChecked
+    case failed
+    case attention
+    case ready
+
+    var title: String {
+        switch self {
+        case .checking: return "正在检查"
+        case .notChecked: return "尚未检查"
+        case .failed: return "检查失败"
+        case .attention: return "有项目需要处理"
+        case .ready: return "未发现待恢复会话"
+        }
+    }
+}
+
+enum SessionLibraryPresentation {
+    static func groups(
+        snapshot: SessionContinuitySnapshot,
+        query: String,
+        filter: SessionLibraryFilter
+    ) -> [ContinuityProjectGroup] {
+        let search = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return snapshot.projectGroups.compactMap { project in
+            let projectMatches = search.isEmpty
+                || project.name.localizedCaseInsensitiveContains(search)
+                || project.id.localizedCaseInsensitiveContains(search)
+            let threads = project.threads.filter { thread in
+                let matchesFilter: Bool
+                switch filter {
+                case .all: matchesFilter = true
+                case .recoverable: matchesFilter = thread.canRecover
+                case .archived: matchesFilter = thread.isArchived
+                case .missingPath: matchesFilter = thread.visibility == .projectPathMissing
+                }
+                return matchesFilter && (projectMatches
+                    || thread.title.localizedCaseInsensitiveContains(search)
+                    || thread.projectName.localizedCaseInsensitiveContains(search)
+                    || thread.projectPath.localizedCaseInsensitiveContains(search))
+            }
+            guard !threads.isEmpty else { return nil }
+            return ContinuityProjectGroup(id: project.id, name: project.name, threads: threads)
+        }
+    }
+
+    static func checkStatus(
+        snapshot: SessionContinuitySnapshot,
+        isLoading: Bool,
+        error: String?
+    ) -> SessionLibraryCheckStatus {
+        if isLoading { return .checking }
+        if let error, !error.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return .failed
+        }
+        if snapshot.checkedAt == .distantPast { return .notChecked }
+        if snapshot.missingPathCount > 0 || snapshot.unreadableFileCount > 0
+            || !snapshot.recoverableThreads.isEmpty {
+            return .attention
+        }
+        return .ready
+    }
+}
+
 final class CodexThreadService {
     /// Codex 0.152+ desktop sessions can be persisted as `cli` / `codex-tui`
     /// instead of the older `vscode` source. Inventory and recovery must query

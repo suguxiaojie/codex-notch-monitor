@@ -20,33 +20,34 @@ final class ActivitySettingsWindowController: NSObject, NSWindowDelegate {
         let window = NSWindow(
             contentRect: NSRect(
                 origin: .zero,
-                size: NSSize(width: 880, height: 620)
+                size: NSSize(width: 1000, height: 720)
             ),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
-        window.title = "Codex Monitor 设置"
+        window.title = "灵动岛设置"
         window.titlebarAppearsTransparent = false
         window.titlebarSeparatorStyle = .line
-        window.backgroundColor = NSColor(calibratedWhite: 0.09, alpha: 0.98)
+        window.backgroundColor = NSColor(calibratedWhite: 0.105, alpha: 1)
         window.isOpaque = false
         window.appearance = NSAppearance(named: .darkAqua)
         window.isReleasedWhenClosed = false
         window.collectionBehavior = [.moveToActiveSpace]
-        window.minSize = NSSize(width: 620, height: 620)
+        window.contentMinSize = NSSize(width: 620, height: 620)
+        window.setFrameAutosaveName("ActivitySettingsWindow")
         window.delegate = self
 
         let rootView = MonitorSettingsView(store: store)
             .frame(
                 minWidth: 620,
-                idealWidth: 880,
+                idealWidth: 1000,
                 maxWidth: .infinity,
                 minHeight: 620,
-                idealHeight: 620,
+                idealHeight: 720,
                 maxHeight: .infinity
             )
-            .background(MonitorTheme.windowBackground.opacity(0.82))
+            .background(MonitorDesktopTheme.windowBackground)
             .preferredColorScheme(.dark)
         let hostingView = NSHostingView(rootView: rootView)
         hostingView.layer?.backgroundColor = NSColor.clear.cgColor

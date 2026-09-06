@@ -9,6 +9,45 @@ enum CodexResetContentTag: String, Equatable {
 }
 
 enum CodexResetRadarPresentation {
+    static func shouldPinSignal(
+        signal: CodexResetRadarSignal,
+        resolution: CodexResetPinnedSignalResolution
+    ) -> Bool {
+        signal.active && resolution.state != .expired
+    }
+
+    static func matchesResetFilter(
+        tweet: CodexResetRadarTweet,
+        event: CodexResetTimelineEvent?
+    ) -> Bool {
+        tweet.explicitResetClaim == true
+            || tweet.tiboLane == "reset_announcement"
+            || tweet.kind == "signal"
+            || tweet.kind == "candidate"
+            || event?.type == "reset"
+            || event?.type == "credits"
+            || event?.preview == true
+    }
+
+    static func matchesQuotaFilter(
+        tweet: CodexResetRadarTweet,
+        event: CodexResetTimelineEvent?
+    ) -> Bool {
+        tweet.kind == "limits"
+            || (tweet.tiboLane == "reset_related" && tweet.explicitResetClaim != true)
+            || event?.type == "credits"
+            || event?.type == "promo"
+            || event?.type == "boost"
+    }
+
+    static func forecastIsStale(
+        forecast: CodexResetForecast?,
+        now: Date = Date()
+    ) -> Bool {
+        guard let updatedAt = forecast?.updatedDate else { return true }
+        return now.timeIntervalSince(updatedAt) > CodexResetRadarService.staleInterval
+    }
+
     static func contentTag(
         tweetKind: String,
         explicitResetClaim: Bool,

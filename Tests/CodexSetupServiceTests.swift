@@ -3,6 +3,9 @@ import Foundation
 @main
 enum CodexSetupServiceTests {
     static func main() throws {
+        verifiesOptionalHookPresentation()
+        verifiesHookEvidenceTitles()
+        verifiesConfigurationAssessmentBoundaries()
         verifiesHooksStepActions()
         try installsHooksWithoutOverwritingThirdPartyHandlers()
         try refusesInvalidHooksFile()
@@ -13,7 +16,83 @@ enum CodexSetupServiceTests {
         try preservesNativeStartupReviewInteraction()
         try matchesThinAndUniversalHelpersByCurrentArchitectureIdentity()
         try uninstallsOnlyMonitorHooks()
-        print("Codex setup tests: 10/10 passed")
+        print("Codex setup tests: 13/13 passed")
+    }
+
+    static func verifiesOptionalHookPresentation() {
+        let neutralStates: [CodexSetupHookState?] = [
+            nil, .checking, .notInstalled, .connected, .waitingForFirstEvent,
+        ]
+        for state in neutralStates {
+            expect(
+                !CodexSetupPresentation.hookNeedsAttention(for: state),
+                "unknown, optional, or verified Hook states must not create an overall warning: \(String(describing: state))"
+            )
+        }
+        let actionRequiredStates: [CodexSetupHookState] = [
+            .codexUnavailable, .helperUnavailable, .invalidHooksFile,
+            .updateRequired, .trustStatusUnknown, .securityReviewRequired,
+        ]
+        for state in actionRequiredStates {
+            expect(
+                CodexSetupPresentation.hookNeedsAttention(for: state),
+                "environment, configuration, update, and trust issues must retain their action signal: \(state)"
+            )
+        }
+    }
+
+    static func verifiesHookEvidenceTitles() {
+        let expected: [(CodexSetupHookState?, String)] = [
+            (nil, "正在检查"),
+            (.checking, "正在检查"),
+            (.notInstalled, "未启用"),
+            (.connected, "已通过事件验证"),
+            (.waitingForFirstEvent, "等待真实任务事件"),
+            (.codexUnavailable, "未找到 Codex"),
+            (.helperUnavailable, "Hook Helper 不可用"),
+            (.invalidHooksFile, "Hooks 配置无法解析"),
+            (.updateRequired, "需要更新 Hook"),
+            (.trustStatusUnknown, "待确认 Hooks 状态"),
+            (.securityReviewRequired, "需要安全审核"),
+        ]
+        for (state, title) in expected {
+            expect(
+                CodexSetupPresentation.hookTitle(for: state) == title,
+                "Hook title must distinguish optional setup, saved event evidence, and actual failures: \(String(describing: state))"
+            )
+        }
+        expect(
+            CodexSetupHookState.connected.onboardingStepMode == .advance
+                && CodexSetupHookState.notInstalled.onboardingStepMode == .install,
+            "presentation wording must not change onboarding actions"
+        )
+    }
+
+    static func verifiesConfigurationAssessmentBoundaries() {
+        let expected: [(CodexSetupHookState?, CodexSetupConfigurationAssessment)] = [
+            (nil, .checking),
+            (.checking, .checking),
+            (.codexUnavailable, .blocked),
+            (.helperUnavailable, .blocked),
+            (.invalidHooksFile, .invalid),
+            (.notInstalled, .notConfigured),
+            (.updateRequired, .readable),
+            (.trustStatusUnknown, .readable),
+            (.securityReviewRequired, .readable),
+            (.waitingForFirstEvent, .readable),
+            (.connected, .readable),
+        ]
+        for (state, assessment) in expected {
+            expect(
+                CodexSetupPresentation.configurationAssessment(for: state) == assessment,
+                "configuration evidence must not claim missing or valid configuration when inspection is blocked: \(String(describing: state))"
+            )
+        }
+        expect(CodexSetupConfigurationAssessment.checking.title == "正在检查配置", "unknown configuration must remain checking")
+        expect(CodexSetupConfigurationAssessment.blocked.title == "尚未检查配置", "environment failures must leave configuration unassessed")
+        expect(CodexSetupConfigurationAssessment.invalid.title == "配置无法解析", "invalid configuration must retain its parsing failure")
+        expect(CodexSetupConfigurationAssessment.notConfigured.title == "尚未配置此插件", "an optional plugin not configured is not a missing global Hooks file")
+        expect(CodexSetupConfigurationAssessment.readable.title == "配置可解析", "parseable configuration must not imply complete setup or live connectivity")
     }
 
     static func verifiesHooksStepActions() {

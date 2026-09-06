@@ -11,16 +11,16 @@ struct CodexNotchMonitorApp: App {
             MonitorSettingsView(store: appDelegate.store)
                 .frame(
                     minWidth: 620,
-                    idealWidth: 880,
+                    idealWidth: 1000,
                     maxWidth: .infinity,
                     minHeight: 620,
-                    idealHeight: 620,
+                    idealHeight: 720,
                     maxHeight: .infinity
                 )
-                .background(MonitorTheme.windowBackground)
+                .background(MonitorDesktopTheme.windowBackground)
                 .preferredColorScheme(.dark)
         }
-        .defaultSize(width: 880, height: 620)
+        .defaultSize(width: 1000, height: 720)
         .windowResizability(.contentSize)
         .commands {
             CommandGroup(replacing: .appSettings) {

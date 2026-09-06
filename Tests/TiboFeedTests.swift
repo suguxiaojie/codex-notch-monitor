@@ -2,6 +2,8 @@ import Foundation
 
 @main
 enum TiboFeedTests {
+    private static var checkCount = 0
+
     static func main() {
         let valid = Data("""
         {
@@ -121,8 +123,127 @@ enum TiboFeedTests {
         radarSnapshotRejectsInvalidForecast()
         pinnedSignalResolutionTracksPreviewFulfillment()
         contentTagPolicySeparatesTypeFromEvidenceState()
+        inactiveReplySignalStaysInOrdinaryFeed()
+        radarFiltersIncludeBankedQuotaEvents()
+        forecastFreshnessUsesItsOwnTimestamp()
 
-        print("Tibo feed tests passed (36 checks).")
+        print("Tibo feed tests passed (\(checkCount) checks).")
+    }
+
+    private static func inactiveReplySignalStaysInOrdinaryFeed() {
+        let signal = CodexResetRadarSignal(
+            tweetId: "2094143054039183573",
+            summary: "Yes",
+            at: "2026-08-30T19:19:46.000Z",
+            url: "https://x.com/thsottiaux/status/2094143054039183573",
+            kind: "signal",
+            active: false,
+            localizedSummary: "是",
+            translationStatus: "translated"
+        )
+        let resolved = CodexResetRadarService.resolvePinnedSignal(
+            signal,
+            timelineEvents: [],
+            now: TiboFeedDate.parse("2026-09-06T12:00:00.000Z")!
+        )
+        check(!CodexResetRadarPresentation.shouldPinSignal(signal: signal, resolution: resolved), "inactive short reply is not pinned")
+        let confirmed = CodexResetPinnedSignalResolution(
+            state: .confirmed,
+            signalEvent: nil,
+            evidenceEvent: nil,
+            isLocallyConfirmed: true
+        )
+        check(!CodexResetRadarPresentation.shouldPinSignal(signal: signal, resolution: confirmed), "historical confirmation does not reactivate an inactive signal")
+        let active = CodexResetRadarSignal(
+            tweetId: signal.tweetId,
+            summary: signal.summary,
+            at: signal.at,
+            url: signal.url,
+            kind: signal.kind,
+            active: true,
+            localizedSummary: nil,
+            translationStatus: nil
+        )
+        check(CodexResetRadarPresentation.shouldPinSignal(signal: active, resolution: confirmed), "active confirmed signal remains pinnable")
+        check(!CodexResetRadarPresentation.shouldPinSignal(signal: active, resolution: resolved), "expired resolution is not pinned even when source active flag remains true")
+        let reply = CodexResetRadarTweet(
+            id: signal.tweetId,
+            url: signal.url,
+            text: signal.summary,
+            at: signal.at,
+            isReply: true,
+            replyingTo: "example",
+            kind: "signal",
+            replies: nil,
+            reposts: nil,
+            likes: nil,
+            tiboLane: "reset_related",
+            explicitResetClaim: false,
+            resetVerificationStatus: "pending",
+            localizedText: "是",
+            translationStatus: "translated"
+        )
+        check(CodexResetRadarPresentation.matchesResetFilter(tweet: reply, event: nil), "inactive reply remains available as a signal in the ordinary feed")
+    }
+
+    private static func radarFiltersIncludeBankedQuotaEvents() {
+        let fixture = radarFixture()
+        guard let snapshot = try? CodexResetRadarService.makeSnapshot(
+            feedData: fixture.feed,
+            timelineData: fixture.timeline,
+            forecastData: fixture.forecast
+        ), let credits = snapshot.timelineEvents.first(where: { $0.type == "credits" }) else {
+            fail("decode banked quota filter fixture")
+        }
+        let ordinary = CodexResetRadarTweet(
+            id: credits.id,
+            url: credits.url,
+            text: credits.summary,
+            at: credits.announcedAt,
+            isReply: nil,
+            replyingTo: nil,
+            kind: "other",
+            replies: nil,
+            reposts: nil,
+            likes: nil,
+            tiboLane: nil,
+            explicitResetClaim: nil,
+            resetVerificationStatus: nil,
+            localizedText: nil,
+            translationStatus: nil
+        )
+        check(CodexResetRadarPresentation.matchesResetFilter(tweet: ordinary, event: credits), "banked reset does not disappear when tweet kind lacks reset metadata")
+        check(CodexResetRadarPresentation.matchesQuotaFilter(tweet: ordinary, event: credits), "banked credits remain available in quota updates")
+        check(!CodexResetRadarPresentation.matchesResetFilter(tweet: ordinary, event: nil), "ordinary update without reset evidence is excluded from reset signals")
+        check(!CodexResetRadarPresentation.matchesQuotaFilter(tweet: ordinary, event: nil), "ordinary update without quota evidence is excluded from quota updates")
+        let limit = snapshot.tweets[0]
+        check(CodexResetRadarPresentation.matchesQuotaFilter(tweet: limit, event: nil), "limit update remains in quota updates")
+        check(!CodexResetRadarPresentation.matchesResetFilter(tweet: limit, event: nil), "limit update is not mislabeled as reset")
+        let announcement = snapshot.tweets[1]
+        check(CodexResetRadarPresentation.matchesResetFilter(tweet: announcement, event: nil), "explicit announcement remains a reset signal")
+        check(!CodexResetRadarPresentation.matchesQuotaFilter(tweet: announcement, event: nil), "explicit reset announcement alone does not become a related quota update")
+    }
+
+    private static func forecastFreshnessUsesItsOwnTimestamp() {
+        let fixture = radarFixture()
+        let forecastWithMissingProbability = Data(String(decoding: fixture.forecast, as: UTF8.self)
+            .replacingOccurrences(of: #""rounded_24h":20"#, with: #""rounded_24h":null"#)
+            .replacingOccurrences(of: "2026-08-25T10:38:17.778Z", with: "2026-08-25T10:00:00.000Z")
+            .utf8)
+        guard let snapshot = try? CodexResetRadarService.makeSnapshot(
+            feedData: fixture.feed,
+            timelineData: fixture.timeline,
+            forecastData: forecastWithMissingProbability
+        ) else { fail("decode missing forecast probability") }
+        let now = TiboFeedDate.parse("2026-08-25T10:40:00.000Z")!
+        check(snapshot.forecast.probabilities.rounded24H == nil, "unavailable forecast is preserved as nil rather than zero")
+        check(snapshot.forecast.probabilities.rounded48H == 40, "available forecast remains intact alongside missing probability")
+        check(now.timeIntervalSince(snapshot.fetchedDate!) < CodexResetRadarService.staleInterval, "feed is fresh in stale-forecast regression fixture")
+        check(CodexResetRadarPresentation.forecastIsStale(forecast: snapshot.forecast, now: now), "old forecast is stale even when feed just refreshed")
+        let boundary = snapshot.forecast.updatedDate!.addingTimeInterval(CodexResetRadarService.staleInterval)
+        check(!CodexResetRadarPresentation.forecastIsStale(forecast: snapshot.forecast, now: boundary), "forecast remains fresh at the refresh-age boundary")
+        check(CodexResetRadarPresentation.forecastIsStale(forecast: snapshot.forecast, now: boundary.addingTimeInterval(1)), "forecast is stale immediately beyond refresh-age boundary")
+        check(CodexResetRadarPresentation.forecastIsStale(forecast: nil, now: now), "missing forecast cannot be presented as fresh")
     }
 
     private static func contentTagPolicySeparatesTypeFromEvidenceState() {
@@ -429,6 +550,7 @@ enum TiboFeedTests {
 
     private static func check(_ condition: @autoclosure () -> Bool, _ label: String) {
         guard condition() else { fail(label) }
+        checkCount += 1
     }
 
     private static func fail(_ label: String) -> Never {

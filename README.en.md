@@ -15,7 +15,7 @@
 </div>
 
 > [!IMPORTANT]
-> The latest version is [`v1.6.4 (Build 18)`](https://github.com/suguxiaojie/codex-notch-monitor/releases/tag/v1.6.4). The Release provides separate DMGs for Apple Silicon `arm64` and Intel `x86_64`; choose the package that matches your Mac.
+> The latest version is [`v1.6.5 (Build 19)`](https://github.com/suguxiaojie/codex-notch-monitor/releases/tag/v1.6.5). The Release provides separate DMGs for Apple Silicon `arm64` and Intel `x86_64`; choose the package that matches your Mac.
 
 > [!TIP]
 > **Sponsor: CoverAI top-up service** — [Visit CoverAI](https://www.coverai.store/)
@@ -63,7 +63,7 @@ Glance focuses on the current account. It combines weekly quota, Spark quota, Cr
   <img src="docs/images/monitor-center-cost-retina.png" alt="Codex Monitor Cost page" width="49%">
 </p>
 
-Usage and Cost share account scope, typography, and card language while using periods suited to each dataset. Both pages keep an independent Activity card first with 30 Days / 90 Days / Six Months and the page-wide account scope. Usage links Week / Month / Three Months Trend to Project Usage; Cost links Day / Week / Month Trend to Log Sources. Remaining Quota now uses the same icon, title, badge, and trailing-detail header.
+Usage and Cost share account scope, desktop system typography, and card language while using periods suited to each dataset. Core metrics and trends appear before activity heatmaps and details. The resizable window also responds to macOS Reduce Motion, Reduce Transparency, and Increase Contrast settings.
 
 ### Dynamic Center
 
@@ -71,7 +71,7 @@ Usage and Cost share account scope, typography, and card language while using pe
   <img src="docs/images/dynamic-center-retina.png" alt="Codex Monitor Dynamic Center" width="82%">
 </p>
 
-Dynamic Center presents official quota status separately from the third-party community radar. Quota percentages come from Codex App Server; Tibo posts, the reset timeline, and probability forecasts come from `codex-reset.com`, which is not an official OpenAI API.
+Dynamic Center separates current-account quota, third-party community forecasts, and locally observed recovery records. Quota percentages come from Codex App Server; Tibo posts, the reset timeline, and experimental probability forecasts come from `codex-reset.com`, which is not an official OpenAI API. Expired signals are no longer pinned, and reply context, verification status, and complete expandable text remain visible.
 
 ### Session Management
 
@@ -79,7 +79,7 @@ Dynamic Center presents official quota status separately from the third-party co
   <img src="docs/images/session-management-retina.png" alt="Codex Monitor Session Management page" width="82%">
 </p>
 
-Session Management shows the current account, local project and session counts, archived sessions, and recovery status, and accepts both session bundles and full project transfer bundles. Project and session operations live in ellipsis menus. Historical sessions that predate reliable attribution remain explicitly labeled as “Unattributed.”
+Session Management treats all local user sessions as a searchable library with project/session/path search, status filters, a native selectable list, independently expandable projects, and selected-session details. The current login is shown separately from the library scope; historical sessions that predate reliable attribution remain explicitly labeled as “Unattributed.” Import, export, recovery results, and backups live in an on-demand operations area.
 
 ### Panel Settings and Activity Island Settings
 

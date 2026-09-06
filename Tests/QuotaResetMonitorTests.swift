@@ -13,7 +13,12 @@ struct QuotaResetMonitorTests {
         try confirmsPendingAsUserReset()
         try confirmsExpiredUnverifiedReset()
         try changesDisplayTypeWithoutOverwritingEvidence()
-        print("Quota reset tests: 10/10 passed")
+        try presentsExpiredUnverifiedRecoveryOnlyOnce()
+        excludesDuplicateUnverifiedHistory()
+        preservesConfirmedHistoryWithMatchingTimestamp()
+        preservesHistoryWithoutCandidates()
+        preservesHistoryWithDifferentChangesOrTimestamp()
+        print("Quota reset tests: 15/15 passed")
     }
 
     static func firstSnapshotDoesNotNotify() throws {
@@ -222,6 +227,126 @@ struct QuotaResetMonitorTests {
             includingPropertiesForKeys: nil
         )
         expect(backups.count >= 2, "每次类型修改前都应保留可恢复备份")
+    }
+
+    static func presentsExpiredUnverifiedRecoveryOnlyOnce() throws {
+        let monitor = makeMonitor("history-presentation")
+        let start = Date(timeIntervalSince1970: 2_000_800_000)
+        _ = monitor.evaluate(buckets: [bucket(remaining: 20)], feed: nil, now: start)
+        _ = monitor.evaluate(
+            buckets: [bucket(remaining: 100)],
+            feed: nil,
+            now: start.addingTimeInterval(60)
+        )
+        _ = monitor.evaluate(
+            buckets: [bucket(remaining: 100)],
+            feed: nil,
+            now: start.addingTimeInterval(3 * 60 * 60 + 120)
+        )
+
+        expect(monitor.history.count == 1, "过期恢复应保留一条原始历史")
+        expect(monitor.confirmableRecoveries.count == 1, "过期恢复应保留一个确认入口")
+        let displayedCount = QuotaResetHistoryPresentation.uniqueCount(
+            events: monitor.history,
+            candidates: monitor.confirmableRecoveries
+        )
+        expect(displayedCount == 1, "同一次恢复不能同时按候选和历史计算两条")
+        expect(monitor.history.count == 1, "展示去重不得修改原始历史")
+        expect(monitor.confirmableRecoveries.count == 1, "展示去重不得移除确认入口")
+    }
+
+    static func excludesDuplicateUnverifiedHistory() {
+        let event = presentationEvent(reason: .unverified)
+        let candidate = presentationCandidate(for: event)
+        let candidates = [candidate, candidate]
+        let history = QuotaResetHistoryPresentation.historyExcludingCandidates(
+            events: [event], candidates: candidates
+        )
+        expect(history.isEmpty, "同时间且同 changes 的未确认历史应只通过候选呈现")
+        expect(
+            QuotaResetHistoryPresentation.uniqueCount(events: [event], candidates: candidates) == 1,
+            "重复候选 ID 只能计数一次"
+        )
+    }
+
+    static func preservesConfirmedHistoryWithMatchingTimestamp() {
+        let candidate = presentationCandidate(for: presentationEvent(reason: .unverified))
+        let events = [
+            QuotaResetReason.officialCompleted, .officialScheduled, .natural,
+            .mixed, .manualCredit, .userConfirmed
+        ].map { presentationEvent(reason: $0) }
+        let history = QuotaResetHistoryPresentation.historyExcludingCandidates(
+            events: events, candidates: [candidate]
+        )
+        expect(history == events, "已确认历史即使时间和 changes 相同也不能被候选遮蔽")
+        expect(
+            QuotaResetHistoryPresentation.uniqueCount(events: events, candidates: [candidate]) == 7,
+            "已确认历史与待确认候选应分别计数"
+        )
+    }
+
+    static func preservesHistoryWithoutCandidates() {
+        let events = [presentationEvent(reason: .unverified), presentationEvent(reason: .natural)]
+        let history = QuotaResetHistoryPresentation.historyExcludingCandidates(
+            events: events, candidates: []
+        )
+        expect(history == events, "无候选时应保留全部历史和原有顺序")
+        expect(
+            QuotaResetHistoryPresentation.uniqueCount(events: events, candidates: []) == 2,
+            "无候选时应使用历史数量"
+        )
+        expect(
+            QuotaResetHistoryPresentation.uniqueCount(events: [], candidates: []) == 0,
+            "空记录应显示零条"
+        )
+    }
+
+    static func preservesHistoryWithDifferentChangesOrTimestamp() {
+        let original = presentationEvent(reason: .unverified)
+        let candidate = presentationCandidate(for: original)
+        let differentChanges = presentationEvent(reason: .unverified, previousRemaining: 35)
+        let differentTime = presentationEvent(
+            reason: .unverified,
+            detectedAt: original.detectedAt.addingTimeInterval(1)
+        )
+        let events = [differentChanges, original, differentTime]
+        let history = QuotaResetHistoryPresentation.historyExcludingCandidates(
+            events: events, candidates: [candidate]
+        )
+        expect(history == [differentChanges, differentTime], "去重必须同时匹配检测时间和完整 changes")
+        expect(
+            QuotaResetHistoryPresentation.uniqueCount(events: events, candidates: [candidate]) == 3,
+            "不同恢复记录不能因时间或变化之一相同而少计"
+        )
+    }
+
+    static func presentationEvent(
+        reason: QuotaResetReason,
+        previousRemaining: Int = 20,
+        detectedAt: Date = Date(timeIntervalSince1970: 2_000_900_000)
+    ) -> QuotaResetEvent {
+        QuotaResetEvent(
+            id: "\(reason.rawValue)-\(previousRemaining)-\(detectedAt.timeIntervalSince1970)",
+            detectedAt: detectedAt,
+            reason: reason,
+            changes: [QuotaResetChange(
+                bucketID: "codex",
+                bucketName: "Codex",
+                windowDurationMinutes: 300,
+                previousRemainingPercent: previousRemaining,
+                currentRemainingPercent: 100
+            )],
+            sourcePostID: nil,
+            sourceURL: nil
+        )
+    }
+
+    static func presentationCandidate(for event: QuotaResetEvent) -> QuotaResetConfirmationCandidate {
+        QuotaResetConfirmationCandidate(
+            id: "candidate-\(event.id)",
+            detectedAt: event.detectedAt,
+            changes: event.changes
+        )
     }
 
     static func makeMonitor(_ name: String) -> QuotaResetMonitor {

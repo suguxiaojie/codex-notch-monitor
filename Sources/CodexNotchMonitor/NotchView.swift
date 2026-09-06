@@ -40,11 +40,18 @@ enum MonitorCenterSection: String, CaseIterable, Identifiable {
         switch self {
         case .usage: return "Token 与项目用量"
         case .cost: return "API 等价成本"
-        case .tibo: return "额度信号、实时动态与已验证时间轴"
+        case .tibo: return "官方额度、社区动态与本机恢复记录"
         case .continuity: return "本地会话连续性"
         case .panelSettings: return "管理概览卡片中的数据与操作"
         case .setup: return "首次引导、通知权限与 Codex Hooks"
         case .settings: return "Activity Island"
+        }
+    }
+
+    var isSettings: Bool {
+        switch self {
+        case .panelSettings, .setup, .settings: return true
+        case .usage, .cost, .tibo, .continuity: return false
         }
     }
 }
@@ -71,10 +78,11 @@ private struct AnalysisPageShell<Content: View>: View {
     }
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(spacing: MonitorGeometry.pageGap) {
+        ScrollView(.vertical, showsIndicators: true) {
+            VStack(spacing: 18) {
                 content
             }
+            .padding(.bottom, 8)
         }
     }
 }
@@ -98,17 +106,17 @@ private struct AnalysisActivityRangeMenu: View {
         } label: {
             HStack(spacing: 5) {
                 Text("活动范围")
-                    .foregroundStyle(MonitorTheme.tertiaryText)
+                    .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                 Text(selection.rawValue)
-                    .foregroundStyle(MonitorTheme.primaryText)
+                    .foregroundStyle(MonitorDesktopTheme.primaryText)
             }
-            .font(MonitorTypography.metadataMedium)
+            .font(MonitorDesktopTypography.metadataMedium)
             .padding(.horizontal, 8)
-            .frame(height: 24)
+            .frame(height: 30)
             .background(
-                MonitorTheme.controlFill,
+                MonitorDesktopTheme.controlFill,
                 in: RoundedRectangle(
-                    cornerRadius: MonitorTheme.controlCornerRadius,
+                    cornerRadius: MonitorDesktopTheme.controlCornerRadius,
                     style: .continuous
                 )
             )
@@ -121,9 +129,52 @@ private struct AnalysisActivityRangeMenu: View {
     }
 }
 
+private struct MonitorCenterPressStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.opacity(isEnabled ? (configuration.isPressed ? 0.65 : 1) : 0.45)
+            .scaleEffect(!reduceMotion && configuration.isPressed ? 0.985 : 1)
+            .animation(reduceMotion || configuration.isPressed ? nil : .easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+
+private struct MonitorCenterEmptyState: View {
+    let symbol: String
+    let title: String
+    let detail: String
+    var isLoading = false
+
+    var body: some View {
+        VStack(spacing: 9) {
+            if isLoading {
+                ProgressView().controlSize(.small)
+            } else {
+                Image(systemName: symbol)
+                    .font(.system(size: 25, weight: .light))
+                    .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+                    .accessibilityHidden(true)
+            }
+            Text(title)
+                .font(MonitorDesktopTypography.rowTitle)
+                .foregroundStyle(MonitorDesktopTheme.primaryText)
+            Text(detail)
+                .font(MonitorDesktopTypography.metadata)
+                .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(22)
+        .frame(maxWidth: .infinity, minHeight: 126)
+        .accessibilityElement(children: .combine)
+    }
+}
+
 private enum TiboRadarMode: String, CaseIterable, Identifiable {
     case live = "实时动态"
     case timeline = "重置时间轴"
+    case history = "本机恢复"
 
     var id: String { rawValue }
 }
@@ -151,6 +202,9 @@ struct NotchView: View {
     let onOpenCenter: (MonitorCenterSection) -> Void
     let surface: MonitorViewSurface
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+    @Namespace private var centerNavigationNamespace
     @State private var expandedPage: MonitorCenterSection
     @State private var usagePeriod: UsageTrendPeriod = .week
     @State private var usageActivityPeriod: ActivityPeriod = .month
@@ -174,10 +228,17 @@ struct NotchView: View {
     @State private var tiboContentOpacity = 1.0
     @State private var tiboContentOffset: CGFloat = 0
     @State private var tiboTransitionGeneration = 0
-    @State private var showsTiboQuotaHistory = false
+    @State private var expandedTiboTexts: Set<String> = []
     @State private var quotaHistoryFilter: QuotaHistoryFilter = .all
-    @State private var expandedContinuityProjectID: String?
-    @State private var shouldCenterExpandedContinuityProject = false
+    @State private var expandedContinuityProjectIDs: Set<String> = []
+    @State private var continuityUnfilteredExpansionIDs: Set<String>?
+    @State private var continuitySearchText = ""
+    @State private var continuityFilter: SessionLibraryFilter = .all
+    @State private var selectedContinuityThreadID: String?
+    @State private var showsContinuityDetails = false
+    @State private var showsContinuityOperations = false
+    @State private var didSeedContinuityExpansion = false
+    @State private var continuityRecoveryFocusGeneration = 0
     @State private var pendingContinuityThreadDeletion: LocalThreadRecord?
     @State private var pendingContinuityProjectDeletion: ContinuityProjectGroup?
 
@@ -204,9 +265,9 @@ struct NotchView: View {
             }
         }
         .frame(
-            width: surface == .center ? MonitorCenterLayout.width : IslandPanelLayout.hostWidth,
+            width: surface == .center ? nil : IslandPanelLayout.hostWidth,
             height: surface == .center
-                ? MonitorCenterLayout.height
+                ? nil
                 : IslandPanelLayout.expandedContentHeight + store.compactMenuBarHeight,
             alignment: .top
         )
@@ -227,14 +288,14 @@ struct NotchView: View {
                 radius: 0
             )
             .frame(
-                width: surface == .center ? MonitorCenterLayout.width : store.visibleIslandWidth,
-                height: surface == .center ? MonitorCenterLayout.height : store.visibleIslandHeight
+                width: surface == .center ? nil : store.visibleIslandWidth,
+                height: surface == .center ? nil : store.visibleIslandHeight
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
         .mask(alignment: .top) {
             if surface == .center {
-                Rectangle().frame(width: MonitorCenterLayout.width, height: MonitorCenterLayout.height)
+                Rectangle()
             } else {
                 RoundedRectangle(
                     cornerRadius: MonitorTheme.compactCornerRadius,
@@ -256,7 +317,7 @@ struct NotchView: View {
         .overlay {
             if surface == .center, let draft = store.sessionExportDraft {
                 sessionExportConfigurationOverlay(draft)
-                    .transition(.opacity.combined(with: .scale(scale: 0.97)))
+                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.97)))
             }
         }
         .animation(
@@ -733,88 +794,48 @@ struct NotchView: View {
                     CodexMark(size: 27)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Codex Monitor")
-                            .font(AstaSans.semiBold(15))
+                            .font(.system(size: 17, weight: .semibold))
                             .tracking(-0.15)
                         Text("本地用量与会话")
-                            .font(AstaSans.regular(9))
-                            .foregroundStyle(MonitorTheme.tertiaryText)
+                            .font(MonitorDesktopTypography.metadata)
+                            .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                     }
                 }
                 .padding(.horizontal, 26)
                 .padding(.top, 34)
                 .padding(.bottom, 22)
 
-                VStack(spacing: 3) {
-                    ForEach(MonitorCenterSection.allCases) { section in
-                        Button { showPage(section) } label: {
-                            HStack(spacing: 10) {
-                                Image(systemName: section.symbol)
-                                    .font(.system(size: 12, weight: .medium))
-                                    .frame(width: 19)
-                                    .accessibilityHidden(true)
-                        Text(section.rawValue)
-                                    .font(MonitorTypography.controlLarge)
-                                Spacer(minLength: 0)
-                                if section == .continuity,
-                                   !store.continuitySnapshot.recoverableThreads.isEmpty {
-                                    Text("\(store.continuitySnapshot.recoverableThreads.count)")
-                                        .font(AstaSans.semiBold(9))
-                                        .foregroundStyle(.orange)
-                                }
-                            }
-                            .foregroundStyle(expandedPage == section ? .white.opacity(0.96) : MonitorTheme.secondaryText)
-                            .padding(.horizontal, 12)
-                            .frame(maxWidth: .infinity, minHeight: 39)
-                            .background(
-                                expandedPage == section ? MonitorTheme.selection : Color.clear,
-                                in: RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            )
-                            .animation(
-                                reduceMotion ? nil : .easeOut(duration: 0.12),
-                                value: expandedPage
-                            )
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(section.rawValue)
-                        .accessibilityValue(
-                            expandedPage == section ? "当前页面" : ""
-                        )
-                        .accessibilityAddTraits(
-                            expandedPage == section ? .isSelected : []
-                        )
-                        .accessibilityRemoveTraits(
-                            expandedPage == section ? [] : .isSelected
-                        )
-                    }
+                VStack(spacing: 24) {
+                    monitorCenterNavigationGroup("监控", settings: false)
+                    monitorCenterNavigationGroup("设置", settings: true)
                 }
                 .padding(.horizontal, 17)
 
                 Spacer()
 
                 VStack(alignment: .leading, spacing: 5) {
-                    Label("所有数据仅在本机处理", systemImage: "lock.fill")
+                    Label("会话与用量在本机处理", systemImage: "lock.fill")
                     Text(store.continuityAccountSubtitle ?? store.continuityAccountTitle)
                         .lineLimit(2)
                 }
-                .font(AstaSans.regular(9))
-                .foregroundStyle(MonitorTheme.faintText)
+                .font(MonitorDesktopTypography.metadata)
+                .foregroundStyle(MonitorDesktopTheme.faintText)
                 .padding(24)
             }
             .frame(width: MonitorCenterLayout.sidebarWidth)
-            .background(Color.black.opacity(0.08))
+            .background(MonitorDesktopTheme.sidebarBackground.opacity(reduceTransparency ? 1 : 0.55))
 
-            Divider().overlay(MonitorTheme.separator)
+            Divider().overlay(MonitorDesktopTheme.separator)
 
             VStack(spacing: 0) {
                 HStack {
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: 5) {
                         Text(expandedPage.rawValue)
-                            .font(MonitorTypography.pageTitle)
+                            .font(MonitorDesktopTypography.pageTitle)
                             .tracking(-0.21)
                         Text(expandedPage.subtitle)
-                            .font(MonitorTypography.pageSubtitle)
-                            .foregroundStyle(MonitorTheme.tertiaryText)
+                            .font(MonitorDesktopTypography.pageSubtitle)
+                            .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                     }
                     Spacer()
                     if monitorCenterPageIsRefreshing {
@@ -828,25 +849,97 @@ struct NotchView: View {
                             )
                         }
                         .buttonStyle(.bordered)
-                        .controlSize(.small)
+                        .controlSize(.regular)
+                        .disabled(monitorCenterPageIsRefreshing)
+                    } else if expandedPage == .panelSettings {
+                        Label("更改即时生效", systemImage: "checkmark.circle")
+                            .font(MonitorDesktopTypography.metadata)
+                            .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                     }
                 }
                 .padding(.horizontal, 26)
                 .padding(.top, 31)
                 .padding(.bottom, 17)
 
-                Divider().overlay(MonitorTheme.separator)
+                Divider().overlay(MonitorDesktopTheme.separator)
 
                 monitorCenterDetail
                     .opacity(monitorCenterContentOpacity)
                     .offset(y: monitorCenterContentOffset)
                     .padding(.horizontal, 22)
                     .padding(.vertical, 16)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
         }
-        .font(AstaSans.regular(10.5))
-        .frame(width: MonitorCenterLayout.width, height: MonitorCenterLayout.height)
-        .background(Color.clear)
+        .font(MonitorDesktopTypography.body)
+        .foregroundStyle(MonitorDesktopTheme.primaryText)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(reduceTransparency || colorSchemeContrast == .increased ? MonitorDesktopTheme.windowBackground : Color.clear)
+        .overlay {
+            if colorSchemeContrast == .increased {
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.45), lineWidth: 1)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+
+    private func monitorCenterNavigationGroup(_ title: String, settings: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title)
+                .font(MonitorDesktopTypography.metadataMedium)
+                .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+                .padding(.horizontal, 12)
+                .padding(.bottom, 3)
+            ForEach(MonitorCenterSection.allCases.filter { $0.isSettings == settings }) { section in
+                Button { showPage(section) } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: section.symbol)
+                            .font(.system(size: 15, weight: .medium))
+                            .frame(width: 21)
+                            .accessibilityHidden(true)
+                        Text(section.rawValue)
+                            .font(MonitorDesktopTypography.controlLarge)
+                        Spacer(minLength: 0)
+                        if section == .continuity,
+                           !store.continuitySnapshot.recoverableThreads.isEmpty {
+                            Text("\(store.continuitySnapshot.recoverableThreads.count)")
+                                .font(MonitorDesktopTypography.metadataMedium)
+                                .monospacedDigit()
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.orange.opacity(0.18), in: Capsule())
+                        } else if section == .settings {
+                            Image(systemName: "arrow.up.forward.square")
+                                .font(.system(size: 11))
+                                .accessibilityHidden(true)
+                        }
+                    }
+                    .foregroundStyle(expandedPage == section ? .white : MonitorDesktopTheme.secondaryText)
+                    .padding(.horizontal, 12)
+                    .frame(maxWidth: .infinity, minHeight: 40)
+                    .background {
+                        if expandedPage == section {
+                            if reduceMotion {
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(MonitorDesktopTheme.selection)
+                            } else {
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(MonitorDesktopTheme.selection)
+                                    .matchedGeometryEffect(id: "center-navigation-selection", in: centerNavigationNamespace)
+                            }
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(MonitorCenterPressStyle())
+                .accessibilityLabel(section.rawValue)
+                .accessibilityValue(expandedPage == section ? "当前页面" : "")
+                .accessibilityAddTraits(expandedPage == section ? .isSelected : [])
+                .help(section == .settings ? "在独立窗口中打开灵动岛设置" : section.subtitle)
+            }
+        }
+        .animation(reduceMotion ? .easeOut(duration: 0.12) : .spring(response: 0.34, dampingFraction: 1), value: expandedPage)
     }
 
     private func sessionExportConfigurationOverlay(_ draft: SessionExportDraft) -> some View {
@@ -865,19 +958,19 @@ struct NotchView: View {
                         .background(Color.cyan.opacity(0.10), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
                     VStack(alignment: .leading, spacing: 3) {
                         Text(draft.title)
-                            .font(AstaSans.semiBold(18))
+                            .font(.system(size: 20, weight: .semibold))
                         Text(sessionExportOverlaySubtitle)
-                            .font(AstaSans.regular(9.5))
-                            .foregroundStyle(MonitorTheme.tertiaryText)
+                            .font(MonitorDesktopTypography.body)
+                            .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                     }
                     Spacer()
                     Button { store.cancelSessionExportDraft() } label: {
                         Image(systemName: "xmark")
                             .font(.system(size: 11, weight: .semibold))
                             .frame(width: 30, height: 30)
-                            .background(MonitorTheme.controlFill, in: Circle())
+                            .background(MonitorDesktopTheme.controlFill, in: Circle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(MonitorCenterPressStyle())
                     .disabled(store.isSessionExporting)
                     .opacity(store.isSessionExporting ? 0.35 : 1)
                     .help(store.isSessionExporting ? "导出进行中" : "关闭导出面板")
@@ -885,9 +978,9 @@ struct NotchView: View {
                 .padding(.horizontal, 20)
                 .padding(.vertical, 16)
 
-                Divider().overlay(MonitorTheme.separator)
+                Divider().overlay(MonitorDesktopTheme.separator)
 
-                ScrollView(.vertical, showsIndicators: false) {
+                ScrollView(.vertical, showsIndicators: true) {
                     VStack(alignment: .leading, spacing: 14) {
                         if store.isSessionExporting || store.lastSessionExportURL != nil {
                             sessionExportOperationSection(draft)
@@ -905,14 +998,14 @@ struct NotchView: View {
                     .padding(18)
                 }
 
-                Divider().overlay(MonitorTheme.separator)
+                Divider().overlay(MonitorDesktopTheme.separator)
 
                 if store.isSessionExporting {
                     HStack(spacing: 9) {
                         ProgressView().controlSize(.small).tint(.cyan)
                         Text("如果 macOS 请求项目目录权限，请先完成系统提示。")
-                            .font(AstaSans.regular(8.8))
-                            .foregroundStyle(MonitorTheme.tertiaryText)
+                            .font(MonitorDesktopTypography.metadata)
+                            .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                         Spacer()
                     }
                     .padding(.horizontal, 18)
@@ -920,18 +1013,18 @@ struct NotchView: View {
                 } else if store.lastSessionExportURL != nil {
                     HStack(spacing: 10) {
                         Label("导出文件已安全写入所选位置。", systemImage: "checkmark.circle.fill")
-                            .font(AstaSans.regular(8.8))
+                            .font(MonitorDesktopTypography.metadata)
                             .foregroundStyle(.green)
                         Spacer(minLength: 10)
                         Button("在 Finder 中显示") { store.revealLastSessionExport() }
-                            .buttonStyle(.plain)
-                            .font(AstaSans.semiBold(9.5))
+                            .buttonStyle(MonitorCenterPressStyle())
+                            .font(MonitorDesktopTypography.rowTitle)
                             .foregroundStyle(.cyan)
                         Button("完成") { store.cancelSessionExportDraft() }
-                            .font(AstaSans.semiBold(10))
+                            .font(MonitorDesktopTypography.rowTitle)
                             .frame(width: 72, height: 32)
-                            .background(MonitorTheme.selection, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                            .buttonStyle(.plain)
+                            .background(MonitorDesktopTheme.selection, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .buttonStyle(MonitorCenterPressStyle())
                     }
                     .padding(.horizontal, 18)
                     .padding(.vertical, 14)
@@ -943,25 +1036,25 @@ struct NotchView: View {
                                 : "可读副本会隐藏平台注入配置和内部元数据。",
                             systemImage: "lock.shield"
                         )
-                        .font(AstaSans.regular(8.8))
-                        .foregroundStyle(MonitorTheme.tertiaryText)
+                        .font(MonitorDesktopTypography.metadata)
+                        .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                         .lineLimit(2)
                         Spacer(minLength: 10)
                         Button("取消") { store.cancelSessionExportDraft() }
-                            .buttonStyle(.plain)
-                            .font(AstaSans.semiBold(10))
-                            .foregroundStyle(MonitorTheme.secondaryText)
+                            .buttonStyle(MonitorCenterPressStyle())
+                            .font(MonitorDesktopTypography.rowTitle)
+                            .foregroundStyle(MonitorDesktopTheme.secondaryText)
                             .frame(width: 72, height: 32)
-                            .background(MonitorTheme.controlFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .background(MonitorDesktopTheme.controlFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                         Button {
                             store.confirmSessionExport()
                         } label: {
                             Label("开始导出", systemImage: "arrow.up.doc.fill")
-                                .font(AstaSans.semiBold(10))
+                                .font(MonitorDesktopTypography.rowTitle)
                                 .frame(width: 108, height: 32)
-                                .background(MonitorTheme.selection, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                .background(MonitorDesktopTheme.selection, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(MonitorCenterPressStyle())
                         .disabled(draft.filenameStem.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         .opacity(draft.filenameStem.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.45 : 1)
                     }
@@ -969,7 +1062,7 @@ struct NotchView: View {
                     .padding(.vertical, 14)
                 }
             }
-            .frame(width: 570, height: draft.selectedFormat == .projectBundle ? 548 : 430)
+            .frame(maxWidth: 680, maxHeight: draft.selectedFormat == .projectBundle ? 640 : 520)
             .background(
                 Color(red: 0.075, green: 0.075, blue: 0.082).opacity(0.92),
                 in: RoundedRectangle(cornerRadius: 20, style: .continuous)
@@ -979,8 +1072,9 @@ struct NotchView: View {
                     .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.8)
             }
             .shadow(color: .black.opacity(0.5), radius: 28, y: 14)
+            .padding(28)
         }
-        .frame(width: MonitorCenterLayout.width, height: MonitorCenterLayout.height)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var sessionExportOverlaySubtitle: String {
@@ -1010,17 +1104,17 @@ struct NotchView: View {
                         .foregroundStyle(.cyan)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(sessionExportOverlaySubtitle)
-                            .font(AstaSans.semiBold(10.5))
+                            .font(MonitorDesktopTypography.cardTitle)
                         Text(draft.destinationDirectory.appendingPathComponent(draft.outputFilename).path)
-                            .font(AstaSans.regular(8.5))
-                            .foregroundStyle(MonitorTheme.tertiaryText)
+                            .font(MonitorDesktopTypography.metadata)
+                            .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                             .lineLimit(2)
                             .truncationMode(.middle)
                     }
                     Spacer(minLength: 0)
                 }
                 .padding(13)
-                .background(MonitorTheme.subtleCardFill, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                .background(MonitorDesktopTheme.subtleCardFill, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
             }
         }
     }
@@ -1028,7 +1122,7 @@ struct NotchView: View {
     private func sessionExportDestinationSection(_ draft: SessionExportDraft) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("文件与位置")
-                .font(AstaSans.semiBold(10.5))
+                .font(MonitorDesktopTypography.cardTitle)
 
             HStack(spacing: 0) {
                 TextField(
@@ -1039,15 +1133,15 @@ struct NotchView: View {
                     )
                 )
                 .textFieldStyle(.plain)
-                .font(AstaSans.medium(10.5))
+                .font(MonitorDesktopTypography.cardTitle)
                 .padding(.leading, 12)
                 Text(".\(draft.selectedFormat.fileExtension)")
-                    .font(AstaSans.medium(9.5))
-                    .foregroundStyle(MonitorTheme.tertiaryText)
+                    .font(MonitorDesktopTypography.rowTitle)
+                    .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                     .padding(.trailing, 12)
             }
             .frame(height: 36)
-            .background(MonitorTheme.controlFill, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .background(MonitorDesktopTheme.controlFill, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 9, style: .continuous)
                     .strokeBorder(Color.white.opacity(0.07), lineWidth: 0.7)
@@ -1058,32 +1152,32 @@ struct NotchView: View {
                     .foregroundStyle(.cyan)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(draft.destinationDirectory.lastPathComponent)
-                        .font(AstaSans.semiBold(9.5))
+                        .font(MonitorDesktopTypography.rowTitle)
                     Text(draft.destinationDirectory.path)
-                        .font(AstaSans.regular(8))
-                        .foregroundStyle(MonitorTheme.faintText)
+                        .font(MonitorDesktopTypography.metadata)
+                        .foregroundStyle(MonitorDesktopTheme.faintText)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
                 Spacer()
                 Button("更改") { store.chooseSessionExportDirectory() }
-                    .buttonStyle(.plain)
-                    .font(AstaSans.semiBold(9))
+                    .buttonStyle(MonitorCenterPressStyle())
+                    .font(MonitorDesktopTypography.rowTitle)
                     .foregroundStyle(.cyan)
                     .padding(.horizontal, 10)
-                    .frame(height: 27)
+                    .frame(height: 32)
                     .background(Color.cyan.opacity(0.08), in: Capsule())
             }
             .padding(.horizontal, 12)
             .frame(height: 45)
-            .background(MonitorTheme.subtleCardFill, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .background(MonitorDesktopTheme.subtleCardFill, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
         }
     }
 
     private func sessionExportFormatSection(_ draft: SessionExportDraft) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("导出格式")
-                .font(AstaSans.semiBold(10.5))
+                .font(MonitorDesktopTypography.cardTitle)
             LazyVGrid(
                 columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)],
                 spacing: 8
@@ -1093,28 +1187,28 @@ struct NotchView: View {
                         HStack(spacing: 9) {
                             Image(systemName: sessionExportFormatIcon(format))
                                 .font(.system(size: 12, weight: .semibold))
-                                .foregroundStyle(draft.selectedFormat == format ? .cyan : MonitorTheme.secondaryText)
+                                .foregroundStyle(draft.selectedFormat == format ? .cyan : MonitorDesktopTheme.secondaryText)
                                 .frame(width: 22)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(format.title)
-                                    .font(AstaSans.semiBold(9.5))
+                                    .font(MonitorDesktopTypography.rowTitle)
                                     .lineLimit(1)
                                 Text(sessionExportFormatSummary(format))
-                                    .font(AstaSans.regular(7.8))
-                                    .foregroundStyle(MonitorTheme.tertiaryText)
+                                    .font(MonitorDesktopTypography.metadata)
+                                    .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                                     .lineLimit(1)
                             }
                             Spacer(minLength: 3)
                             Image(systemName: draft.selectedFormat == format ? "checkmark.circle.fill" : "circle")
                                 .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(draft.selectedFormat == format ? .cyan : MonitorTheme.faintText)
+                                .foregroundStyle(draft.selectedFormat == format ? .cyan : MonitorDesktopTheme.faintText)
                         }
                         .padding(.horizontal, 11)
                         .frame(maxWidth: .infinity, minHeight: 48)
                         .background(
                             draft.selectedFormat == format
                                 ? Color.cyan.opacity(0.09)
-                                : MonitorTheme.subtleCardFill,
+                                : MonitorDesktopTheme.subtleCardFill,
                             in: RoundedRectangle(cornerRadius: 10, style: .continuous)
                         )
                         .overlay {
@@ -1127,7 +1221,7 @@ struct NotchView: View {
                                 )
                         }
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(MonitorCenterPressStyle())
                 }
             }
         }
@@ -1137,11 +1231,11 @@ struct NotchView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("完整项目迁移范围")
-                    .font(AstaSans.semiBold(10.5))
+                    .font(MonitorDesktopTypography.cardTitle)
                 Spacer()
                 if let estimate = draft.projectEstimate {
                     Text("默认 \(estimate.includedFileCount) 个文件 · \(ByteCountFormatter.string(fromByteCount: estimate.includedBytes, countStyle: .file))")
-                        .font(AstaSans.medium(8.5))
+                        .font(MonitorDesktopTypography.metadataMedium)
                         .foregroundStyle(.cyan.opacity(0.82))
                         .monospacedDigit()
                 }
@@ -1185,8 +1279,8 @@ struct NotchView: View {
 
             if let estimate = draft.projectEstimate {
                 Text("安全范围外另发现：\(estimate.excludedDeploymentCount) 个部署目录、\(estimate.excludedArchiveCount) 个归档、\(estimate.excludedLargeFileCount) 个大型文件。打开对应选项后才会纳入。")
-                    .font(AstaSans.regular(8.2))
-                    .foregroundStyle(MonitorTheme.faintText)
+                    .font(MonitorDesktopTypography.metadata)
+                    .foregroundStyle(MonitorDesktopTheme.faintText)
             }
         }
     }
@@ -1206,14 +1300,14 @@ struct NotchView: View {
             HStack(spacing: 9) {
                 Image(systemName: isEnabled ? "checkmark.square.fill" : "square")
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(isEnabled ? .cyan : MonitorTheme.faintText)
+                    .foregroundStyle(isEnabled ? .cyan : MonitorDesktopTheme.faintText)
                     .frame(width: 17)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
-                        .font(AstaSans.semiBold(9))
+                        .font(MonitorDesktopTypography.rowTitle)
                     Text(subtitle)
-                        .font(AstaSans.regular(7.6))
-                        .foregroundStyle(MonitorTheme.tertiaryText)
+                        .font(MonitorDesktopTypography.metadata)
+                        .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                         .lineLimit(1)
                 }
                 Spacer(minLength: 0)
@@ -1221,11 +1315,11 @@ struct NotchView: View {
             .padding(.horizontal, 10)
             .frame(maxWidth: .infinity, minHeight: 43)
             .background(
-                isEnabled ? Color.cyan.opacity(0.055) : MonitorTheme.subtleCardFill,
+                isEnabled ? Color.cyan.opacity(0.055) : MonitorDesktopTheme.subtleCardFill,
                 in: RoundedRectangle(cornerRadius: 9, style: .continuous)
             )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(MonitorCenterPressStyle())
     }
 
     private func sessionExportFormatIcon(_ format: SessionExportFormat) -> String {
@@ -1252,19 +1346,25 @@ struct NotchView: View {
         case .usage:
             AnalysisPageShell {
                 analysisAccountScopeBar
-                usageActivityCard
                 analysisPeriodBar
                 usageOverviewCard
+                    .modifier(MonitorDesktopReveal(delay: 0))
+                usageActivityCard
+                    .modifier(MonitorDesktopReveal(delay: 0.04))
                 usageProjectCard
+                    .modifier(MonitorDesktopReveal(delay: 0.08))
                 quotaCard
             }
         case .cost:
             AnalysisPageShell {
                 analysisAccountScopeBar
-                costActivityCard
                 analysisPeriodBar
                 costOverviewCard
+                    .modifier(MonitorDesktopReveal(delay: 0))
+                costActivityCard
+                    .modifier(MonitorDesktopReveal(delay: 0.04))
                 providerCostCard
+                    .modifier(MonitorDesktopReveal(delay: 0.08))
             }
         case .tibo:
             tiboPage
@@ -1296,19 +1396,12 @@ struct NotchView: View {
     private func transitionMonitorCenter(to page: MonitorCenterSection) {
         monitorCenterTransitionGeneration += 1
         let generation = monitorCenterTransitionGeneration
-        if reduceMotion {
-            expandedPage = page
-            monitorCenterContentOpacity = 1
-            monitorCenterContentOffset = 0
-            return
-        }
-
-        monitorCenterContentOpacity = 0.35
-        monitorCenterContentOffset = 3
+        monitorCenterContentOpacity = reduceMotion ? 0.75 : 0.35
+        monitorCenterContentOffset = reduceMotion ? 0 : 9
         expandedPage = page
         DispatchQueue.main.async {
             guard monitorCenterTransitionGeneration == generation else { return }
-            withAnimation(.easeOut(duration: 0.16)) {
+            withAnimation(reduceMotion ? .easeOut(duration: 0.16) : .spring(response: 0.34, dampingFraction: 1)) {
                 monitorCenterContentOpacity = 1
                 monitorCenterContentOffset = 0
             }
@@ -1365,69 +1458,55 @@ struct NotchView: View {
     }
 
     private var continuityPage: some View {
-        ScrollViewReader { proxy in
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(spacing: 8) {
-                    continuityOverviewCard
-                    if store.pendingSidebarCleanupCount > 0 {
-                        sidebarCleanupPendingCard
-                    }
-                    if store.isSessionImportInspecting {
-                        sessionImportInspectionCard
-                    }
-                    if let preview = store.sessionImportPreview {
-                        sessionImportPreviewCard(preview)
-                    }
-                    if let preview = store.projectTransferPreview {
-                        projectTransferPreviewCard(preview)
-                    }
-                    if let progress = store.sessionImportProgress {
-                        sessionImportProgressCard(progress)
-                    }
-                    if let progress = store.sessionExportProgress {
-                        sessionExportProgressCard(progress)
-                    }
-                    if store.lastSessionExportURL != nil,
-                       store.sessionExportProgress == nil {
-                        sessionExportCompletedCard
-                    }
-                    if let message = store.continuityStatusMessage,
-                       !store.isSessionImportInspecting {
-                        continuityMessageCard(
-                            message,
-                            color: continuityStatusMessageColor(message)
-                        )
-                    }
-                    if let error = store.continuityError {
-                        continuityMessageCard(error, color: .orange)
-                    }
+        GeometryReader { geometry in
+            VStack(spacing: 12) {
+                continuityLibraryToolbar
+                continuityOverviewCard
+                if !store.continuitySnapshot.recoverableThreads.isEmpty {
+                    continuityRecoveryBar
+                }
+                ScrollViewReader { scrollProxy in
                     continuityThreadCard
-                    if store.lastContinuityBackupURL != nil {
-                        continuityBackupCard
-                    }
-                    if store.lastSessionImportBackupURL != nil {
-                        sessionImportBackupCard
-                    }
-                    if store.lastProjectImportBackupURL != nil {
-                        projectImportBackupCard
-                    }
-                    if let outcome = store.lastSessionImportOutcome {
-                        sessionImportOutcomeCard(outcome)
-                    }
+                        .onChange(of: continuityRecoveryFocusGeneration) { _ in
+                            guard let projectID = firstRecoverableProjectID else { return }
+                            DispatchQueue.main.async {
+                                withAnimation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 1)) {
+                                    scrollProxy.scrollTo(continuityProjectScrollID(projectID), anchor: .top)
+                                }
+                            }
+                        }
                 }
-            }
-            .onChange(of: expandedContinuityProjectID) { projectID in
-                guard shouldCenterExpandedContinuityProject,
-                      let projectID
-                else { return }
-                shouldCenterExpandedContinuityProject = false
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
-                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.24)) {
-                        proxy.scrollTo(continuityProjectScrollID(projectID), anchor: .center)
-                    }
-                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                continuityOperationsSection(maxHeight: max(100, min(
+                    240,
+                    geometry.size.height - (store.continuitySnapshot.recoverableThreads.isEmpty ? 320 : 360)
+                )))
             }
         }
+        .onAppear {
+            seedContinuityExpansion()
+            if continuityHasActiveOperation || store.continuityError != nil { showsContinuityOperations = true }
+        }
+        .onChange(of: continuitySearchText) { _ in revealFilteredContinuityProjects() }
+        .onChange(of: continuityFilter) { _ in revealFilteredContinuityProjects() }
+        .onChange(of: visibleContinuityThreadIDs) { ids in
+            if let selectedContinuityThreadID, !ids.contains(selectedContinuityThreadID) {
+                self.selectedContinuityThreadID = nil
+                showsContinuityDetails = false
+            }
+            seedContinuityExpansion()
+        }
+        .onChange(of: store.continuitySnapshot.projectGroups.map(\.id)) { ids in
+            expandedContinuityProjectIDs.formIntersection(ids)
+            seedContinuityExpansion()
+        }
+        .onChange(of: continuityOperationAttentionToken) { _ in
+            if continuityHasOperationContent { showsContinuityOperations = true }
+        }
+        .onChange(of: selectedContinuityThreadID) { _ in
+            if selectedContinuityThread == nil { showsContinuityDetails = false }
+        }
+
         .alert("备份并恢复本地会话", isPresented: $confirmsContinuityRecovery) {
             Button("取消", role: .cancel) { }
             Button("备份并恢复") { store.recoverHiddenThreads() }
@@ -1479,14 +1558,14 @@ struct NotchView: View {
             Button("取消", role: .cancel) {
                 pendingContinuityProjectDeletion = nil
             }
-            Button("仅移除 Codex 项目", role: .destructive) {
+            Button("删除会话，保留项目文件", role: .destructive) {
                 pendingContinuityProjectDeletion = nil
                 store.deleteContinuityProject(
                     project,
                     deleteProjectDirectory: false
                 )
             }
-            Button("同时移到废纸篓", role: .destructive) {
+            Button("删除会话并移走项目文件", role: .destructive) {
                 pendingContinuityProjectDeletion = nil
                 store.deleteContinuityProject(
                     project,
@@ -1512,55 +1591,179 @@ struct NotchView: View {
         }
     }
 
-    private var continuityOverviewCard: some View {
-        VStack(spacing: 0) {
-            continuityAccountCard
-            Divider().overlay(MonitorTheme.separator)
-            continuitySummaryCard
-        }
-        .background(
-            MonitorTheme.cardFill,
-            in: RoundedRectangle(
-                cornerRadius: MonitorGeometry.cardRadius,
-                style: .continuous
-            )
-        )
-        .overlay {
-            RoundedRectangle(
-                cornerRadius: MonitorGeometry.cardRadius,
-                style: .continuous
-            )
-            .strokeBorder(MonitorTheme.hairline, lineWidth: 0.5)
-        }
-    }
-
-    private var continuityAccountCard: some View {
-        HStack(spacing: 10) {
-            ZStack {
-                Circle().fill(Color.cyan.opacity(0.12)).frame(width: 36, height: 36)
-                Image(systemName: "person.crop.circle.badge.checkmark")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(.cyan)
-            }
-            VStack(alignment: .leading, spacing: 3) {
-                Text(store.continuityAccountTitle)
-                    .font(MonitorTypography.cardTitle)
-                if let subtitle = store.continuityAccountSubtitle, !subtitle.isEmpty {
-                    Text(subtitle)
-                        .font(MonitorTypography.body)
-                        .foregroundStyle(MonitorTheme.tertiaryText)
+    private var continuityLibraryToolbar: some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+                TextField("搜索会话、项目或路径", text: $continuitySearchText)
+                    .textFieldStyle(.plain)
+                    .onExitCommand { continuitySearchText = "" }
+                if !continuitySearchText.isEmpty {
+                    Button { continuitySearchText = "" } label: {
+                        Image(systemName: "xmark.circle.fill")
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+                    .accessibilityLabel("清除会话搜索")
                 }
             }
-            Spacer()
-            if store.isContinuityLoading {
-                ProgressView().controlSize(.small).tint(.cyan)
+            .font(MonitorDesktopTypography.control)
+            .padding(.horizontal, 9)
+            .frame(minWidth: 150, maxWidth: .infinity, minHeight: 32)
+            .background(MonitorDesktopTheme.controlFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            Picker("会话状态", selection: $continuityFilter) {
+                ForEach(SessionLibraryFilter.allCases) { filter in
+                    Text(filter.rawValue).tag(filter)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .frame(width: 100)
+            Button {
+                store.chooseSessionImportBundle()
+            } label: {
+                Label("导入", systemImage: "square.and.arrow.down")
+            }
+            .disabled(continuityActionsAreBusy)
+            .help("导入会话包或完整项目迁移包")
+            Button {
+                guard let thread = selectedContinuityThread else { return }
+                store.exportSession(thread)
+            } label: {
+                Label("导出所选", systemImage: "square.and.arrow.up")
+            }
+            .disabled(selectedContinuityThread == nil || continuityActionsAreBusy)
+            .help(selectedContinuityThread.map { "导出「\($0.title)」" } ?? "先在列表中选择一条会话")
+            Button {
+                showsContinuityDetails.toggle()
+            } label: {
+                Image(systemName: "info.circle")
+                    .frame(width: 18)
+            }
+            .disabled(selectedContinuityThread == nil)
+            .accessibilityLabel("所选会话详情")
+            .help("查看所选会话的项目、归属和可见性")
+            .popover(isPresented: $showsContinuityDetails, arrowEdge: .bottom) {
+                if let thread = selectedContinuityThread {
+                    continuityThreadDetail(thread)
+                }
             }
         }
-        .padding(MonitorGeometry.compactPadding)
-        .animation(
-            reduceMotion ? nil : .easeOut(duration: 0.18),
-            value: store.activeProjects.count
+        .buttonStyle(.bordered)
+        .controlSize(.regular)
+        .font(MonitorDesktopTypography.control)
+    }
+
+    private var continuityOverviewCard: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    Text("本机全部会话")
+                        .font(MonitorDesktopTypography.rowTitle)
+                        .fixedSize()
+                    continuityScopeCounts.fixedSize()
+                    Spacer(minLength: 4)
+                    continuityCheckLabel.fixedSize()
+                }
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack {
+                        Text("本机全部会话")
+                            .font(MonitorDesktopTypography.rowTitle)
+                        Spacer()
+                        continuityCheckLabel
+                    }
+                    continuityScopeCounts
+                }
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text("当前登录：\(store.continuityAccountTitle)")
+                    .lineLimit(1)
+                    .help(store.continuityAccountSubtitle ?? store.continuityAccountTitle)
+                if store.continuitySnapshot.checkedAt != .distantPast {
+                    Text("· \(store.continuitySnapshot.checkedAt.compactRelativeText)检查")
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 4)
+                if !continuityOwnershipSummary.isEmpty {
+                    Label(continuityOwnershipSummary, systemImage: "info.circle")
+                        .help("基线前会话无法反推创建账号；归属未知会话尚无足够观察证据。统计包含本机全部用户会话，不按当前登录账号推断归属。")
+                }
+            }
+            .font(MonitorDesktopTypography.metadata)
+            .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+        }
+        .padding(.horizontal, 2)
+    }
+
+    private var continuityScopeCounts: some View {
+        Text("\(store.continuitySnapshot.projectCount) 个项目 · \(store.continuitySnapshot.sessionCount) 条会话 · \(store.continuitySnapshot.archivedCount) 条归档")
+            .font(MonitorDesktopTypography.metadata)
+            .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+    }
+
+    private var continuityCheckLabel: some View {
+        HStack(spacing: 5) {
+            if store.isContinuityLoading { ProgressView().controlSize(.mini) }
+            Text(continuityCheckStatus.title)
+                .font(MonitorDesktopTypography.metadata)
+                .foregroundStyle(continuityCheckStatusColor)
+        }
+        .help(continuityCheckDetail)
+    }
+
+    private var continuityRecoveryBar: some View {
+        HStack(spacing: 10) {
+            Label("\(store.continuitySnapshot.recoverableThreads.count) 条会话待恢复", systemImage: "exclamationmark.circle")
+                .foregroundStyle(.orange)
+            Button("查看待恢复") { focusFirstRecoverableProject() }
+                .buttonStyle(.borderless)
+            Spacer(minLength: 0)
+            if store.isContinuityRecovering { ProgressView().controlSize(.mini) }
+            Button(store.isContinuityRecovering ? "正在恢复" : "备份并恢复") {
+                confirmsContinuityRecovery = true
+            }
+            .buttonStyle(.bordered)
+            .disabled(continuityActionsAreBusy)
+            .help("先完全退出 Codex／ChatGPT Desktop；插件会先备份索引，原始会话不变。")
+        }
+        .font(MonitorDesktopTypography.control)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(Color.orange.opacity(0.045), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private var continuityCheckStatus: SessionLibraryCheckStatus {
+        SessionLibraryPresentation.checkStatus(
+            snapshot: store.continuitySnapshot,
+            isLoading: store.isContinuityLoading,
+            error: store.continuityError
         )
+    }
+
+    private var continuityCheckStatusColor: Color {
+        continuityCheckStatus == .failed || continuityCheckStatus == .attention
+            ? .orange : MonitorDesktopTheme.tertiaryText
+    }
+
+    private var continuityCheckDetail: String {
+        if let error = store.continuityError { return error }
+        if let progress = store.continuityScanProgress, progress.total > 0 {
+            return "正在扫描 \(progress.completed)／\(progress.total)"
+        }
+        if store.continuitySnapshot.checkedAt == .distantPast { return "尚未完成首次会话检查" }
+        return "最近检查：\(store.continuitySnapshot.checkedAt.compactRelativeText)；路径缺失 \(store.continuitySnapshot.missingPathCount) 条，无法读取 \(store.continuitySnapshot.unreadableFileCount) 个文件。"
+    }
+
+    private var continuityOwnershipSummary: String {
+        var parts: [String] = []
+        if store.continuitySnapshot.baselineOwnershipCount > 0 {
+            parts.append("基线前 \(store.continuitySnapshot.baselineOwnershipCount) 条")
+        }
+        if store.continuitySnapshot.unknownOwnershipCount > 0 {
+            parts.append("归属未知 \(store.continuitySnapshot.unknownOwnershipCount) 条")
+        }
+        return parts.joined(separator: " · ")
     }
 
     private func sessionExportProgressCard(_ progress: SessionExportProgress) -> some View {
@@ -1576,14 +1779,14 @@ struct NotchView: View {
                         .tint(.cyan)
                 }
                 Text(progress.stage.rawValue)
-                    .font(AstaSans.semiBold(10.5))
+                    .font(MonitorDesktopTypography.cardTitle)
                 Spacer()
                 Text(
                     progress.total > 0
                         ? "\(Int((progress.fraction * 100).rounded()))% · \(progress.completed) / \(progress.total)"
                         : "\(Int((progress.fraction * 100).rounded()))% · 已扫描 \(progress.completed) 项"
                 )
-                    .font(AstaSans.semiBold(9.5))
+                    .font(MonitorDesktopTypography.rowTitle)
                     .foregroundStyle(.cyan)
                     .monospacedDigit()
             }
@@ -1602,8 +1805,8 @@ struct NotchView: View {
                         .fixedSize(horizontal: true, vertical: false)
                 }
             }
-            .font(AstaSans.regular(9))
-            .foregroundStyle(MonitorTheme.secondaryText)
+            .font(MonitorDesktopTypography.metadata)
+            .foregroundStyle(MonitorDesktopTheme.secondaryText)
         }
         .padding(12)
         .background(
@@ -1629,16 +1832,16 @@ struct NotchView: View {
                 .foregroundStyle(.green)
             VStack(alignment: .leading, spacing: 2) {
                 Text("导出完成")
-                    .font(.system(size: 9.5, weight: .semibold))
+                    .font(.system(size: 11, weight: .semibold))
                 Text(store.lastSessionExportURL?.lastPathComponent ?? "")
-                    .font(.system(size: 7.8, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.38))
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                     .lineLimit(1)
             }
             Spacer()
             Button("在 Finder 中显示") { store.revealLastSessionExport() }
-                .font(.system(size: 8.5, weight: .semibold))
-                .buttonStyle(.plain)
+                .font(.system(size: 11, weight: .semibold))
+                .buttonStyle(MonitorCenterPressStyle())
                 .foregroundStyle(.cyan)
         }
         .padding(11)
@@ -1654,10 +1857,10 @@ struct NotchView: View {
                 .background(Color.orange.opacity(0.10), in: Circle())
             VStack(alignment: .leading, spacing: 4) {
                 Text("侧栏残留等待清理")
-                    .font(AstaSans.semiBold(10.5))
+                    .font(MonitorDesktopTypography.cardTitle)
                 Text("\(store.pendingSidebarCleanupCount) 条已删除会话仍有 Codex 项目绑定。请使用 Cmd + Q 完全退出 Codex／ChatGPT Desktop，插件会在退出后自动备份并精确清理。")
-                    .font(AstaSans.regular(9))
-                    .foregroundStyle(MonitorTheme.secondaryText)
+                    .font(MonitorDesktopTypography.metadata)
+                    .foregroundStyle(MonitorDesktopTheme.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
@@ -1684,141 +1887,154 @@ struct NotchView: View {
         return "\(formatter.string(fromByteCount: processed)) / \(formatter.string(fromByteCount: total))"
     }
 
-    private var continuitySummaryCard: some View {
-        VStack(alignment: .leading, spacing: 11) {
-            HStack {
-                Text("本地连续性")
-                    .font(MonitorTypography.cardTitle)
-                Spacer()
-                if store.continuitySnapshot.recoverableThreads.isEmpty {
-                    Text(continuitySummaryStatus)
-                        .font(MonitorTypography.control)
-                        .foregroundStyle(continuitySummaryStatusColor)
-                } else {
-                    Button {
-                        focusFirstRecoverableProject()
-                    } label: {
-                        HStack(spacing: 5) {
-                            Text(continuitySummaryStatus)
-                            Image(systemName: "arrow.down.to.line")
-                                .font(.system(size: 8, weight: .bold))
-                        }
-                        .font(MonitorTypography.control)
-                        .foregroundStyle(continuitySummaryStatusColor)
-                        .padding(.horizontal, 8)
-                        .frame(height: 24)
-                        .background(
-                            Color.orange.opacity(0.08),
-                            in: RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .help("定位到第一个包含待恢复会话的项目")
-                    .accessibilityHint("展开并滚动到待恢复会话所在项目")
-                }
-            }
-            HStack(spacing: 0) {
-                continuityMetric(store.continuitySnapshot.projectCount, "项目")
-                continuityMetric(store.continuitySnapshot.sessionCount, "会话")
-                continuityMetric(store.continuitySnapshot.archivedCount, "已归档")
-                continuityMetric(store.continuitySnapshot.recoverableThreads.count, "待恢复")
-            }
-            if !store.continuitySnapshot.recoverableThreads.isEmpty {
-                Button {
-                    confirmsContinuityRecovery = true
-                } label: {
-                    HStack(spacing: 9) {
-                        Image(systemName: "externaldrive.badge.plus")
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(
-                                "备份并恢复 \(store.continuitySnapshot.recoverableThreads.count) 条待处理会话"
-                            )
-                                .font(MonitorTypography.rowTitle)
-                            Text("需先完全退出 Codex／ChatGPT；写前备份，不改原始 JSONL，可回滚。")
-                                .font(MonitorTypography.metadata)
-                                .foregroundStyle(MonitorTheme.secondaryText)
-                                .lineLimit(2)
-                        }
-                        Spacer()
-                        if store.isContinuityRecovering { ProgressView().controlSize(.mini).tint(.cyan) }
-                    }
-                    .foregroundStyle(.cyan)
-                    .padding(.horizontal, 11)
-                    .frame(minHeight: 46)
-                    .background(Color.cyan.opacity(0.09), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .disabled(store.isContinuityRecovering)
-                .accessibilityHint("操作前需完全退出 Codex 或 ChatGPT；插件会先备份本地索引")
-            }
-            HStack(spacing: 10) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("导入与迁移")
-                        .font(MonitorTypography.rowTitle)
-                    Text("支持会话包和完整项目迁移包")
-                        .font(MonitorTypography.metadata)
-                        .foregroundStyle(MonitorTheme.tertiaryText)
-                }
-                Spacer(minLength: 8)
-                Button {
-                    store.chooseSessionImportBundle()
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: "square.and.arrow.down")
-                        Text("导入")
-                        if store.isSessionImporting {
-                            ProgressView().controlSize(.mini).tint(.cyan)
-                        }
-                    }
-                    .font(MonitorTypography.control)
-                    .foregroundStyle(.cyan)
-                    .padding(.horizontal, 11)
-                    .frame(height: 30)
-                    .background(Color.cyan.opacity(0.09), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .disabled(store.isSessionImporting)
-                .help("选择并校验 .codexmonitorbundle 或 .codexprojectbundle")
-            }
-        }
-        .padding(MonitorGeometry.cardPadding)
+    private var filteredContinuityProjects: [ContinuityProjectGroup] {
+        SessionLibraryPresentation.groups(
+            snapshot: store.continuitySnapshot,
+            query: continuitySearchText,
+            filter: continuityFilter
+        )
     }
 
-    private var continuitySummaryStatus: String {
-        if let progress = store.continuityScanProgress, progress.total > 0 {
-            return "正在扫描 \(progress.completed)/\(progress.total)"
-        }
-        if store.isContinuityLoading { return "正在确认" }
-        return store.continuitySnapshot.recoverableThreads.isEmpty ? "记录完整" : "需要处理"
+    private var visibleContinuityThreadIDs: [String] {
+        filteredContinuityProjects.flatMap { $0.threads.map(\.id) }
+    }
+
+    private var selectedContinuityThread: LocalThreadRecord? {
+        guard let selectedContinuityThreadID,
+              visibleContinuityThreadIDs.contains(selectedContinuityThreadID) else { return nil }
+        return store.continuitySnapshot.userThreads.first { $0.id == selectedContinuityThreadID }
     }
 
     private var firstRecoverableProjectID: String? {
-        let recoverableIDs = Set(
-            store.continuitySnapshot.recoverableThreads.map(\.id)
-        )
-        return store.continuitySnapshot.projectGroups.first { project in
-            project.threads.contains { recoverableIDs.contains($0.id) }
-        }?.id
+        store.continuitySnapshot.projectGroups.first { $0.threads.contains(where: \.canRecover) }?.id
     }
 
-    private func recoverableCount(in project: ContinuityProjectGroup) -> Int {
-        project.threads.filter(\.canRecover).count
+    private func seedContinuityExpansion() {
+        guard !didSeedContinuityExpansion,
+              let first = firstRecoverableProjectID ?? filteredContinuityProjects.first?.id else { return }
+        expandedContinuityProjectIDs.insert(first)
+        didSeedContinuityExpansion = true
+    }
+
+    private func revealFilteredContinuityProjects() {
+        if !continuitySearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || continuityFilter != .all {
+            if continuityUnfilteredExpansionIDs == nil {
+                continuityUnfilteredExpansionIDs = expandedContinuityProjectIDs
+            }
+            expandedContinuityProjectIDs = Set(filteredContinuityProjects.map(\.id))
+        } else if let previousExpansion = continuityUnfilteredExpansionIDs {
+            expandedContinuityProjectIDs = previousExpansion.intersection(store.continuitySnapshot.projectGroups.map(\.id))
+            continuityUnfilteredExpansionIDs = nil
+        }
+        if let selectedContinuityThreadID, !visibleContinuityThreadIDs.contains(selectedContinuityThreadID) {
+            self.selectedContinuityThreadID = nil
+            showsContinuityDetails = false
+        }
     }
 
     private func focusFirstRecoverableProject() {
         guard let projectID = firstRecoverableProjectID else { return }
-        shouldCenterExpandedContinuityProject = true
-        if expandedContinuityProjectID == projectID {
-            expandedContinuityProjectID = nil
-            DispatchQueue.main.async {
-                animate(.islandContentSwap) {
-                    expandedContinuityProjectID = projectID
+        continuitySearchText = ""
+        continuityFilter = .recoverable
+        expandedContinuityProjectIDs.insert(projectID)
+        selectedContinuityThreadID = store.continuitySnapshot.projectGroups
+            .first(where: { $0.id == projectID })?.threads.first(where: \.canRecover)?.id
+        continuityRecoveryFocusGeneration += 1
+    }
+
+    private var continuityActionsAreBusy: Bool {
+        store.isSessionImportInspecting || store.isSessionImporting || store.isSessionExporting
+            || store.isContinuityRecovering || store.deletingContinuityThreadID != nil
+            || store.deletingContinuityProjectID != nil
+    }
+
+    private var continuityHasActiveOperation: Bool {
+        continuityActionsAreBusy || store.sessionImportPreview != nil || store.projectTransferPreview != nil
+    }
+
+    private var continuityHasOperationContent: Bool {
+        continuityHasActiveOperation || store.pendingSidebarCleanupCount > 0
+            || store.sessionImportProgress != nil || store.sessionExportProgress != nil
+            || store.lastSessionExportURL != nil || store.continuityStatusMessage != nil
+            || store.continuityError != nil || store.lastContinuityBackupURL != nil
+            || store.lastSessionImportBackupURL != nil || store.lastProjectImportBackupURL != nil
+            || store.lastSessionImportOutcome != nil
+    }
+
+    private var continuityOperationAttentionToken: String {
+        var values: [String] = []
+        values.append(String(store.isSessionImportInspecting))
+        values.append(String(store.isSessionImporting))
+        values.append(String(store.isSessionExporting))
+        values.append(String(store.isContinuityRecovering))
+        values.append(String(store.sessionImportPreview != nil))
+        values.append(String(store.projectTransferPreview != nil))
+        values.append(String(store.pendingSidebarCleanupCount))
+        values.append(String(store.lastSessionImportOutcome != nil))
+        values.append(store.continuityError ?? "")
+        values.append(store.lastSessionExportURL?.path ?? "")
+        values.append(store.deletingContinuityThreadID ?? "")
+        values.append(store.deletingContinuityProjectID ?? "")
+        values.append(store.lastContinuityBackupURL?.path ?? "")
+        values.append(store.lastSessionImportBackupURL?.path ?? "")
+        values.append(store.lastProjectImportBackupURL?.path ?? "")
+        return values.joined(separator: "|")
+    }
+
+    private func continuityOperationsSection(maxHeight: CGFloat) -> some View {
+        VStack(spacing: 8) {
+            Divider().overlay(MonitorDesktopTheme.separator)
+            DisclosureGroup(isExpanded: $showsContinuityOperations) {
+                if continuityHasOperationContent {
+                    ScrollView(.vertical, showsIndicators: true) {
+                        continuityOperationCards
+                            .padding(.top, 10)
+                            .padding(.bottom, 4)
+                    }
+                    .frame(height: maxHeight)
+                } else {
+                    continuityOperationCards
+                        .padding(.top, 10)
+                        .padding(.bottom, 4)
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Text("操作与备份")
+                        .font(MonitorDesktopTypography.rowTitle)
+                    Text(continuityActionsAreBusy ? "操作进行中" : (continuityHasActiveOperation ? "等待确认导入" : "导入、导出结果与恢复备份"))
+                        .font(MonitorDesktopTypography.metadata)
+                        .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+                    Spacer()
+                    if continuityActionsAreBusy { ProgressView().controlSize(.mini) }
                 }
             }
-        } else {
-            animate(.islandContentSwap) {
-                expandedContinuityProjectID = projectID
+        }
+        .animation(reduceMotion ? nil : .spring(response: 0.30, dampingFraction: 1), value: showsContinuityOperations)
+    }
+
+    private var continuityOperationCards: some View {
+        VStack(spacing: 12) {
+            if store.pendingSidebarCleanupCount > 0 { sidebarCleanupPendingCard }
+            if store.isSessionImportInspecting { sessionImportInspectionCard }
+            if let preview = store.sessionImportPreview { sessionImportPreviewCard(preview) }
+            if let preview = store.projectTransferPreview { projectTransferPreviewCard(preview) }
+            if let progress = store.sessionImportProgress { sessionImportProgressCard(progress) }
+            if let progress = store.sessionExportProgress { sessionExportProgressCard(progress) }
+            if store.lastSessionExportURL != nil, store.sessionExportProgress == nil { sessionExportCompletedCard }
+            if let message = store.continuityStatusMessage, !store.isSessionImportInspecting {
+                continuityMessageCard(message, color: continuityStatusMessageColor(message))
+            }
+            if let error = store.continuityError { continuityMessageCard(error, color: .orange) }
+            if store.lastContinuityBackupURL != nil { continuityBackupCard }
+            if store.lastSessionImportBackupURL != nil { sessionImportBackupCard }
+            if store.lastProjectImportBackupURL != nil { projectImportBackupCard }
+            if let outcome = store.lastSessionImportOutcome { sessionImportOutcomeCard(outcome) }
+            if !continuityHasOperationContent {
+                Text("暂无操作记录。导入、导出或恢复会话后，可以在这里查看进度、结果和可用备份。")
+                    .font(MonitorDesktopTypography.body)
+                    .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
             }
         }
     }
@@ -1839,15 +2055,15 @@ struct NotchView: View {
                         .foregroundStyle(.orange)
                     VStack(alignment: .leading, spacing: 3) {
                         Text("导入前必须完全退出 Codex／ChatGPT Desktop")
-                            .font(.system(size: 9, weight: .semibold))
+                            .font(.system(size: 11, weight: .semibold))
                         Text("使用 Cmd + Q 退出后，点击重新检查。")
-                            .font(.system(size: 8, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.46))
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                     }
                     Spacer()
                     Button("重新检查") { store.recheckSelectedSessionImportBundle() }
-                        .font(.system(size: 8.5, weight: .semibold))
-                        .buttonStyle(.plain)
+                        .font(.system(size: 11, weight: .semibold))
+                        .buttonStyle(MonitorCenterPressStyle())
                         .foregroundStyle(.orange)
                 }
                 .padding(9)
@@ -1867,7 +2083,7 @@ struct NotchView: View {
                 importDetailRow("来源项目", value: preview.manifest.project.displayName)
                 if importHasAccountMismatch(preview) {
                     Label("备份归属与当前账号不同，导入不会改写原始归属记录。", systemImage: "person.crop.circle.badge.exclamationmark")
-                        .font(.system(size: 7.8, weight: .semibold))
+                        .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(.orange)
                 }
             }
@@ -1876,8 +2092,8 @@ struct NotchView: View {
 
             VStack(alignment: .leading, spacing: 5) {
                 Text("导入到")
-                    .font(.system(size: 8, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.42))
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                 Menu {
                     ForEach(store.sessionImportProjectOptions) { option in
                         Button {
@@ -1898,20 +2114,20 @@ struct NotchView: View {
                         Image(systemName: store.selectedSessionImportProjectOption == nil ? "folder.badge.questionmark" : "folder.fill")
                         VStack(alignment: .leading, spacing: 2) {
                             Text(store.selectedSessionImportProjectOption?.name ?? "请选择目标 Codex 项目")
-                                .font(.system(size: 9, weight: .semibold))
+                                .font(.system(size: 11, weight: .semibold))
                             Text(store.selectedSessionImportProjectOption?.path ?? preview.manifest.project.originalPath)
-                                .font(.system(size: 7.5, weight: .medium, design: .monospaced))
-                                .foregroundStyle(.white.opacity(0.36))
+                                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                                 .lineLimit(1)
                         }
                         Spacer()
                         if let selected = store.sessionImportMappedProjectURL {
                             Text(FileManager.default.isWritableFile(atPath: selected.path) ? "可写" : "不可写")
-                                .font(.system(size: 7.5, weight: .bold))
+                                .font(.system(size: 11, weight: .bold))
                                 .foregroundStyle(FileManager.default.isWritableFile(atPath: selected.path) ? .green : .orange)
                         }
                         Image(systemName: "chevron.up.chevron.down")
-                            .font(.system(size: 7, weight: .bold))
+                            .font(.system(size: 11, weight: .bold))
                     }
                     .foregroundStyle(store.selectedSessionImportProjectOption == nil ? .orange : .cyan)
                     .padding(.horizontal, 10)
@@ -1925,8 +2141,8 @@ struct NotchView: View {
 
             VStack(alignment: .leading, spacing: 5) {
                 Text("会话身份策略")
-                    .font(.system(size: 8, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.42))
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                 ForEach(SessionImportDuplicateStrategy.allCases, id: \.rawValue) { strategy in
                     Button {
                         store.sessionImportDuplicateStrategy = strategy
@@ -1936,7 +2152,7 @@ struct NotchView: View {
                             Text(strategy.title)
                             Spacer()
                         }
-                        .font(.system(size: 8.5, weight: .semibold))
+                        .font(.system(size: 11, weight: .semibold))
                         .padding(.horizontal, 9)
                         .frame(maxWidth: .infinity, minHeight: 31)
                         .background(
@@ -1947,38 +2163,38 @@ struct NotchView: View {
                         )
                         .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(MonitorCenterPressStyle())
                     .foregroundStyle(store.sessionImportDuplicateStrategy == strategy ? .cyan : .white.opacity(0.55))
                 }
             }
 
             VStack(alignment: .leading, spacing: 6) {
                 Text("会话明细")
-                    .font(.system(size: 8, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.42))
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                 ForEach(Array(preview.manifest.sessions.prefix(5).enumerated()), id: \.element.threadID) { _, session in
                     let conflict = preview.conflicts.first { $0.threadID == session.threadID }
                     HStack(alignment: .top, spacing: 7) {
                         Image(systemName: session.archived ? "archivebox.fill" : "bubble.left.and.bubble.right.fill")
                             .foregroundStyle(.cyan.opacity(0.8))
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(session.title).font(.system(size: 8.5, weight: .semibold)).lineLimit(1)
+                            Text(session.title).font(.system(size: 11, weight: .semibold)).lineLimit(1)
                             Text(String(session.threadID.prefix(12)) + "… · " + (session.ownershipAlias ?? "归属未知"))
-                                .font(.system(size: 7.2, weight: .medium, design: .monospaced))
-                                .foregroundStyle(.white.opacity(0.34))
+                                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                         }
                         Spacer()
                         if let conflict, conflict.hasAnyConflict {
                             Text(conflict.isExistingSession ? "已存在" : "有残留")
-                                .font(.system(size: 7.5, weight: .bold))
+                                .font(.system(size: 11, weight: .bold))
                                 .foregroundStyle(conflict.isExistingSession ? .orange : .yellow)
                         }
                     }
                 }
                 if preview.sessionCount > 5 {
                     Text("其余 \(preview.sessionCount - 5) 条会话将使用同一策略")
-                        .font(.system(size: 7.5, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.34))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                 }
             }
             .padding(9)
@@ -1994,25 +2210,25 @@ struct NotchView: View {
                 }
                 .padding(.top, 5)
             }
-            .font(.system(size: 8.5, weight: .semibold))
-            .foregroundStyle(.white.opacity(0.52))
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(MonitorDesktopTheme.tertiaryText)
 
             HStack(spacing: 7) {
                 Button("取消") { store.cancelSessionImport() }
                     .frame(maxWidth: .infinity, minHeight: 37)
                     .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                    .buttonStyle(.plain)
+                    .buttonStyle(MonitorCenterPressStyle())
                 Button("备份并导入") { store.importSelectedSessionBundle() }
                     .frame(maxWidth: .infinity, minHeight: 37)
                     .background(Color.cyan.opacity(0.13), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                    .buttonStyle(.plain)
+                    .buttonStyle(MonitorCenterPressStyle())
                     .foregroundStyle(.cyan)
                     .disabled(
                         preview.codexIsRunning
                             || !mappedImportDirectoryIsWritable
                     )
             }
-            .font(.system(size: 9, weight: .semibold))
+            .font(.system(size: 11, weight: .semibold))
         }
         .padding(12)
         .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
@@ -2027,7 +2243,7 @@ struct NotchView: View {
                     .font(.system(size: 11, weight: .bold))
                 Spacer()
                 Text("P1")
-                    .font(.system(size: 8, weight: .bold, design: .rounded))
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
                     .foregroundStyle(.cyan)
             }
 
@@ -2037,15 +2253,15 @@ struct NotchView: View {
                         .foregroundStyle(.orange)
                     VStack(alignment: .leading, spacing: 3) {
                         Text("导入前必须使用 Cmd + Q 完全退出 Codex／ChatGPT Desktop")
-                            .font(.system(size: 9, weight: .semibold))
+                            .font(.system(size: 11, weight: .semibold))
                         Text("退出后点击重新检查，项目文件和会话将作为同一事务导入。")
-                            .font(.system(size: 8, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.46))
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                     }
                     Spacer()
                     Button("重新检查") { store.recheckSelectedSessionImportBundle() }
-                        .font(.system(size: 8.5, weight: .semibold))
-                        .buttonStyle(.plain)
+                        .font(.system(size: 11, weight: .semibold))
+                        .buttonStyle(MonitorCenterPressStyle())
                         .foregroundStyle(.orange)
                 }
                 .padding(9)
@@ -2112,16 +2328,16 @@ struct NotchView: View {
                         Text(store.projectImportTargetURL == nil
                             ? "选择新目录或空目录"
                             : store.projectImportTargetURL?.lastPathComponent ?? "目标项目")
-                            .font(.system(size: 9, weight: .semibold))
+                            .font(.system(size: 11, weight: .semibold))
                         Text(store.projectImportTargetURL?.path ?? "P0 不会覆盖或合并现有文件")
-                            .font(.system(size: 7.5, weight: .medium, design: .monospaced))
-                            .foregroundStyle(.white.opacity(0.38))
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                             .lineLimit(2)
                     }
                     Spacer()
                     if store.projectImportTargetURL != nil {
                         Text(projectImportTargetIsValid ? "空目录" : "不可导入")
-                            .font(.system(size: 7.5, weight: .bold))
+                            .font(.system(size: 11, weight: .bold))
                             .foregroundStyle(projectImportTargetIsValid ? .green : .orange)
                     }
                     Image(systemName: "chevron.right")
@@ -2132,13 +2348,13 @@ struct NotchView: View {
                 .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(MonitorCenterPressStyle())
             .accessibilityLabel("选择完整项目导入目录")
 
             VStack(alignment: .leading, spacing: 5) {
                 Text("会话身份策略")
-                    .font(.system(size: 8, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.42))
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                 ForEach(SessionImportDuplicateStrategy.allCases, id: \.rawValue) { strategy in
                     Button {
                         store.sessionImportDuplicateStrategy = strategy
@@ -2150,7 +2366,7 @@ struct NotchView: View {
                             Text(strategy.title)
                             Spacer()
                         }
-                        .font(.system(size: 8.5, weight: .semibold))
+                        .font(.system(size: 11, weight: .semibold))
                         .padding(.horizontal, 9)
                         .frame(maxWidth: .infinity, minHeight: 31)
                         .background(
@@ -2160,7 +2376,7 @@ struct NotchView: View {
                             in: RoundedRectangle(cornerRadius: 8, style: .continuous)
                         )
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(MonitorCenterPressStyle())
                     .foregroundStyle(store.sessionImportDuplicateStrategy == strategy
                         ? .cyan
                         : .white.opacity(0.55))
@@ -2180,40 +2396,40 @@ struct NotchView: View {
                     )
                     ForEach(Array(preview.manifest.excluded.prefix(8).enumerated()), id: \.offset) { _, item in
                         Text("• \(item.relativePath) — \(item.reason)")
-                            .font(.system(size: 7.5, weight: .medium, design: .monospaced))
-                            .foregroundStyle(.white.opacity(0.4))
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                             .lineLimit(1)
                     }
                     if preview.excludedCount > 8 {
                         Text("其余 \(preview.excludedCount - 8) 项已记录在 Manifest 中")
-                            .font(.system(size: 7.5, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.35))
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                     }
                     if preview.manifest.git?.workingTreePatchPath != nil {
                         Label("dirty working tree 已生成 binary-safe patch", systemImage: "arrow.triangle.branch")
-                            .font(.system(size: 7.7, weight: .semibold))
+                            .font(.system(size: 11, weight: .semibold))
                             .foregroundStyle(.cyan.opacity(0.78))
                     }
                     ForEach(Array((preview.manifest.attachments ?? [])
                         .filter { $0.status == .missing }
                         .prefix(5).enumerated()), id: \.offset) { _, attachment in
                         Text("缺失附件：\(attachment.originalPath)")
-                            .font(.system(size: 7.5, weight: .medium, design: .monospaced))
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
                             .foregroundStyle(.orange.opacity(0.78))
                             .lineLimit(1)
                     }
                 }
                 .padding(.top, 5)
             }
-            .font(.system(size: 8.5, weight: .semibold))
-            .foregroundStyle(.white.opacity(0.52))
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(MonitorDesktopTheme.tertiaryText)
 
             if let issue = store.projectImportReadinessIssue {
                 HStack(alignment: .top, spacing: 7) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
                     Text(issue)
-                        .font(.system(size: 8.3, weight: .semibold))
+                        .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(.orange.opacity(0.92))
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
@@ -2227,17 +2443,17 @@ struct NotchView: View {
                 Button("取消") { store.cancelSessionImport() }
                     .frame(maxWidth: .infinity, minHeight: 37)
                     .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                    .buttonStyle(.plain)
+                    .buttonStyle(MonitorCenterPressStyle())
                 Button("备份并导入完整项目") {
                     store.importSelectedProjectBundle()
                 }
                 .frame(maxWidth: .infinity, minHeight: 37)
                 .background(Color.cyan.opacity(0.13), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                .buttonStyle(.plain)
+                .buttonStyle(MonitorCenterPressStyle())
                 .foregroundStyle(.cyan)
                 .disabled(store.isSessionImporting)
             }
-            .font(.system(size: 9, weight: .semibold))
+            .font(.system(size: 11, weight: .semibold))
         }
         .padding(12)
         .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
@@ -2256,14 +2472,14 @@ struct NotchView: View {
     private func importDetailRow(_ label: String, value: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(label)
-                .foregroundStyle(.white.opacity(0.36))
+                .foregroundStyle(MonitorDesktopTheme.tertiaryText)
             Spacer()
             Text(value)
                 .foregroundStyle(.white.opacity(0.72))
                 .multilineTextAlignment(.trailing)
                 .lineLimit(2)
         }
-        .font(.system(size: 8, weight: .medium))
+        .font(.system(size: 11, weight: .medium))
     }
 
     private func importSourceAccounts(_ preview: SessionImportPreview) -> String {
@@ -2286,21 +2502,21 @@ struct NotchView: View {
         VStack(alignment: .leading, spacing: 9) {
             HStack {
                 ProgressView().controlSize(.small).tint(.cyan)
-                Text(progress.stage.title).font(.system(size: 10, weight: .bold))
+                Text(progress.stage.title).font(.system(size: 11, weight: .bold))
                 Spacer()
                 Text("\(progress.completed) / \(progress.total)")
-                    .font(.system(size: 9, weight: .semibold, design: .rounded))
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
                     .foregroundStyle(.cyan)
             }
             ProgressView(value: progress.fraction).tint(.cyan)
             if let item = progress.currentItem {
-                Text(item).font(.system(size: 8, weight: .medium)).foregroundStyle(.white.opacity(0.42)).lineLimit(1)
+                Text(item).font(.system(size: 11, weight: .medium)).foregroundStyle(MonitorDesktopTheme.tertiaryText).lineLimit(1)
             }
             Button(progress.stage == .cancelling ? "正在回滚…" : "取消导入") {
                 store.cancelSessionImport()
             }
-            .buttonStyle(.plain)
-            .font(.system(size: 8.5, weight: .semibold))
+            .buttonStyle(MonitorCenterPressStyle())
+            .font(.system(size: 11, weight: .semibold))
             .foregroundStyle(.orange)
             .disabled(progress.stage == .cancelling || progress.stage == .rebuilding || progress.stage == .checkingVisibility)
         }
@@ -2308,19 +2524,16 @@ struct NotchView: View {
         .background(Color.cyan.opacity(0.065), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
-    private var continuitySummaryStatusColor: Color {
-        if store.isContinuityLoading { return .cyan }
-        return store.continuitySnapshot.recoverableThreads.isEmpty ? .green : .orange
-    }
+
 
     private func continuityMetric(_ value: Int, _ label: String) -> some View {
         VStack(spacing: 2) {
             Text("\(value)")
-                .font(MonitorTypography.secondaryMetric)
+                .font(MonitorDesktopTypography.secondaryMetric)
                 .monospacedDigit()
             Text(label)
-                .font(MonitorTypography.metadata)
-                .foregroundStyle(.white.opacity(0.38))
+                .font(MonitorDesktopTypography.metadata)
+                .foregroundStyle(MonitorDesktopTheme.tertiaryText)
         }
         .frame(maxWidth: .infinity)
     }
@@ -2338,15 +2551,15 @@ struct NotchView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text((store.sessionImportInspectionTitle ?? "正在校验备份")
                             + String(repeating: "·", count: dotCount))
-                            .font(AstaSans.semiBold(10))
+                            .font(MonitorDesktopTypography.rowTitle)
                         Text("已持续 \(elapsed) 秒，正在检查压缩目录、Manifest、校验和与会话记录")
-                            .font(AstaSans.regular(8.4))
-                            .foregroundStyle(MonitorTheme.tertiaryText)
+                            .font(MonitorDesktopTypography.metadata)
+                            .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                     }
                     Spacer(minLength: 8)
                     Button("取消") { store.cancelSessionImport() }
-                        .font(AstaSans.semiBold(8.5))
-                        .buttonStyle(.plain)
+                        .font(MonitorDesktopTypography.metadataMedium)
+                        .buttonStyle(MonitorCenterPressStyle())
                         .foregroundStyle(.cyan)
                 }
 
@@ -2381,7 +2594,7 @@ struct NotchView: View {
             Image(systemName: color == .orange ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
                 .foregroundStyle(color)
             Text(message)
-                .font(.system(size: 9, weight: .medium))
+                .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.white.opacity(0.67))
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
@@ -2399,205 +2612,145 @@ struct NotchView: View {
     }
 
     private var continuityThreadCard: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack {
-                Text("最近项目会话")
-                    .font(MonitorTypography.cardTitle)
-                Spacer()
+        let projects = filteredContinuityProjects
+        let completeProjects = Dictionary(uniqueKeysWithValues: store.continuitySnapshot.projectGroups.map { ($0.id, $0) })
+        return VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Text("项目／会话")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text("最近更新").frame(width: 68, alignment: .trailing)
+                Text("账号归属").frame(width: 86, alignment: .leading)
+                Text("状态").frame(width: 74, alignment: .leading)
+                Color.clear.frame(width: 24, height: 1)
             }
-            if store.continuitySnapshot.baselineOwnershipCount > 0 {
-                continuityOwnershipEvidence(
-                    "归属未知：\(store.continuitySnapshot.baselineOwnershipCount) 条基线前会话",
-                    detail: "这些会话早于账号观察基线，无法可靠反推创建账号。"
-                )
-            } else if store.continuitySnapshot.unknownOwnershipCount > 0 {
-                continuityOwnershipEvidence(
-                    "归属未知：\(store.continuitySnapshot.unknownOwnershipCount) 条会话",
-                    detail: "插件尚未观察到足够证据确认这些会话的账号归属。"
-                )
-            }
-            if store.continuitySnapshot.userThreads.isEmpty {
-                Text("暂未发现本地 Codex 会话")
-                    .font(MonitorTypography.rowTitle)
-                    .foregroundStyle(.white.opacity(0.4))
-                    .frame(maxWidth: .infinity, minHeight: 54)
+            .font(MonitorDesktopTypography.metadata)
+            .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+            .padding(.leading, 32)
+            .padding(.trailing, 28)
+            .padding(.vertical, 8)
+            Divider().overlay(MonitorDesktopTheme.separator)
+            if projects.isEmpty {
+                VStack(spacing: 0) {
+                    MonitorCenterEmptyState(
+                        symbol: continuitySearchText.isEmpty ? "bubble.left.and.bubble.right" : "magnifyingglass",
+                        title: store.isContinuityLoading ? "正在检查本地会话" : (store.continuitySnapshot.userThreads.isEmpty ? "暂未发现本地会话" : "没有符合条件的会话"),
+                        detail: store.continuitySnapshot.userThreads.isEmpty ? "本地会话盘点完成后，项目和会话会出现在这里。" : "尝试其他关键词，或清除搜索与状态筛选。",
+                        isLoading: store.isContinuityLoading
+                    )
+                    if !continuitySearchText.isEmpty || continuityFilter != .all {
+                        Button("显示全部会话") {
+                            continuitySearchText = ""
+                            continuityFilter = .all
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ForEach(store.continuitySnapshot.projectGroups) { project in
-                    continuityProjectSection(project)
+                List(selection: $selectedContinuityThreadID) {
+                    ForEach(projects) { project in
+                        continuityProjectSection(project, completeProject: completeProjects[project.id])
+                    }
                 }
+                .listStyle(.inset)
+                .scrollContentBackground(.hidden)
+                .accessibilityLabel("本机项目与会话列表")
             }
-        }
-        .padding(MonitorGeometry.cardPadding)
-        .background(
-            MonitorTheme.cardFill,
-            in: RoundedRectangle(cornerRadius: MonitorGeometry.cardRadius, style: .continuous)
-        )
-        .onAppear {
-            if expandedContinuityProjectID == nil {
-                expandedContinuityProjectID = firstRecoverableProjectID
-                    ?? store.continuitySnapshot.projectGroups.first?.id
+            HStack {
+                Text("当前显示 \(projects.reduce(0) { $0 + $1.threads.count }) 条会话")
+                Spacer()
+                if selectedContinuityThread != nil { Text("已选择 1 条") }
             }
+            .font(MonitorDesktopTypography.metadata)
+            .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+            .padding(.horizontal, 4)
+            .padding(.top, 6)
         }
-        .onChange(of: store.continuitySnapshot.projectGroups.map(\.id)) { projectIDs in
-            if let expandedContinuityProjectID,
-               projectIDs.contains(expandedContinuityProjectID) {
-                return
-            }
-            expandedContinuityProjectID = firstRecoverableProjectID
-                ?? projectIDs.first
-        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func continuityOwnershipEvidence(
-        _ title: String,
-        detail: String
+    private func continuityProjectSection(
+        _ project: ContinuityProjectGroup,
+        completeProject: ContinuityProjectGroup?
     ) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "info.circle")
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(.orange)
-                .padding(.top, 1)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(MonitorTypography.rowTitle)
-                    .foregroundStyle(MonitorTheme.secondaryText)
-                Text(detail)
-                    .font(MonitorTypography.metadata)
-                    .foregroundStyle(MonitorTheme.tertiaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 7)
-        .background(
-            Color.orange.opacity(0.055),
-            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-        )
-        .accessibilityElement(children: .combine)
-    }
-
-    private func continuityProjectSection(_ project: ContinuityProjectGroup) -> some View {
-        let isExpanded = expandedContinuityProjectID == project.id
-        let pendingRecoveryCount = recoverableCount(in: project)
-        return VStack(spacing: 5) {
-            HStack(spacing: 6) {
-                Button {
-                    let nextProjectID = isExpanded ? nil : project.id
-                    shouldCenterExpandedContinuityProject = nextProjectID != nil
-                    animate(.islandContentSwap) {
-                        expandedContinuityProjectID = nextProjectID
-                    }
-                } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: "folder.fill")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(.cyan)
-                            .frame(width: 18, height: 18)
-                            .background(Color.cyan.opacity(0.09), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                        Text(project.name)
-                            .font(MonitorTypography.cardTitle)
-                            .lineLimit(1)
-                        Spacer(minLength: 6)
-                        if pendingRecoveryCount > 0 {
-                            Text("\(pendingRecoveryCount) 待恢复")
-                                .font(MonitorTypography.metadataMedium)
-                                .foregroundStyle(.orange)
-                                .padding(.horizontal, 6)
-                                .frame(height: 18)
-                                .background(
-                                    Color.orange.opacity(0.09),
-                                    in: Capsule()
-                                )
+        let total = completeProject?.threads.count ?? project.threads.count
+        return DisclosureGroup(isExpanded: Binding(
+            get: { expandedContinuityProjectIDs.contains(project.id) },
+            set: { expanded in
+                animate(.spring(response: 0.30, dampingFraction: 1)) {
+                    if expanded { expandedContinuityProjectIDs.insert(project.id) }
+                    else {
+                        expandedContinuityProjectIDs.remove(project.id)
+                        if project.threads.contains(where: { $0.id == selectedContinuityThreadID }) {
+                            selectedContinuityThreadID = nil
+                            showsContinuityDetails = false
                         }
-                        Text(projectConversationCountText(project))
-                            .font(MonitorTypography.metadata)
-                            .foregroundStyle(MonitorTheme.tertiaryText)
-                            .frame(minWidth: 92, alignment: .trailing)
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 8, weight: .bold))
-                            .foregroundStyle(MonitorTheme.faintText)
-                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
                     }
-                    .frame(maxWidth: .infinity, minHeight: 27)
-                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
-
+            }
+        )) {
+            ForEach(project.threads) { thread in
+                continuityThreadRow(thread)
+                    .tag(thread.id)
+                    .listRowInsets(EdgeInsets(top: 5, leading: 12, bottom: 5, trailing: 12))
+            }
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: "folder")
+                    .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(project.name)
+                        .font(MonitorDesktopTypography.rowTitle)
+                        .lineLimit(1)
+                    Text(project.id.isEmpty ? "项目路径未记录" : (project.id as NSString).abbreviatingWithTildeInPath)
+                        .font(MonitorDesktopTypography.metadata)
+                        .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .help("\(project.id)\n\(projectConversationCountText(completeProject ?? project))")
+                Spacer(minLength: 6)
+                Text(total == project.threads.count ? "\(total) 条" : "\(project.threads.count)／\(total) 条")
+                    .font(MonitorDesktopTypography.metadata)
+                    .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+                    .monospacedDigit()
                 Menu {
-                    Button {
-                        store.exportProject(project)
-                    } label: {
-                        Label("导出项目会话", systemImage: "square.and.arrow.up")
-                    }
-                    Divider()
-                    Button(role: .destructive) {
-                        pendingContinuityProjectDeletion = project
-                    } label: {
-                        Label("删除项目会话", systemImage: "trash")
-                    }
+                    if let completeProject { continuityProjectActions(completeProject) }
                 } label: {
-                    Group {
-                        if store.deletingContinuityProjectID == project.id {
-                            ProgressView()
-                                .controlSize(.mini)
-                                .tint(.red)
-                        } else {
-                            Image(systemName: "ellipsis.circle")
-                                .font(.system(size: 11, weight: .semibold))
-                        }
-                    }
-                    .foregroundStyle(MonitorTheme.tertiaryText)
-                    .frame(width: 27, height: 27)
-                    .contentShape(Circle())
+                    Image(systemName: "ellipsis")
+                        .frame(width: 24, height: 26)
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
-                .disabled(
-                    store.deletingContinuityThreadID != nil
-                        || store.deletingContinuityProjectID != nil
-                        || store.isSessionExporting
-                )
-                .help("项目会话操作")
+                .disabled(completeProject == nil || continuityActionsAreBusy)
+                .help("\(project.name)的全部 \(total) 条会话操作")
+                .accessibilityLabel("\(project.name)的项目操作")
             }
-
-            if isExpanded {
-                HStack(alignment: .top, spacing: 9) {
-                    Capsule()
-                        .fill(Color.cyan.opacity(0.16))
-                        .frame(width: 1.5)
-                    VStack(spacing: 5) {
-                        ForEach(project.threads) { thread in
-                            continuityThreadRow(thread)
-                        }
-                    }
-                }
-                .padding(.leading, 8)
-                .transition(.opacity.combined(with: .move(edge: .top)))
-            }
+            .padding(.vertical, 5)
         }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 5)
-        .background(
-            pendingRecoveryCount > 0
-                ? Color.orange.opacity(0.035)
-                : MonitorTheme.subtleCardFill,
-            in: RoundedRectangle(cornerRadius: MonitorGeometry.compactRadius, style: .continuous)
-        )
-        .overlay {
-            RoundedRectangle(
-                cornerRadius: MonitorGeometry.compactRadius,
-                style: .continuous
-            )
-            .strokeBorder(
-                pendingRecoveryCount > 0
-                    ? Color.orange.opacity(0.16)
-                    : Color.clear,
-                lineWidth: 0.7
-            )
+        .contextMenu {
+            if let completeProject { continuityProjectActions(completeProject) }
         }
         .id(continuityProjectScrollID(project.id))
+    }
+
+    @ViewBuilder
+    private func continuityProjectActions(_ project: ContinuityProjectGroup) -> some View {
+        Button {
+            store.exportProject(project)
+        } label: {
+            Label("导出项目全部 \(project.threads.count) 条会话", systemImage: "square.and.arrow.up")
+        }
+        .disabled(continuityActionsAreBusy)
+        Divider()
+        Button(role: .destructive) {
+            pendingContinuityProjectDeletion = project
+        } label: {
+            Label("删除项目全部 \(project.threads.count) 条会话…", systemImage: "trash")
+        }
+        .disabled(continuityActionsAreBusy)
     }
 
     private func continuityProjectScrollID(_ projectID: String) -> String {
@@ -2605,71 +2758,149 @@ struct NotchView: View {
     }
 
     private func continuityThreadRow(_ thread: LocalThreadRecord) -> some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(thread.visibility == .visible ? Color.green : (thread.visibility == .localOnly ? .orange : .red))
-                .frame(width: 5, height: 5)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(thread.title)
-                    .font(MonitorTypography.rowTitle)
-                    .lineLimit(1)
-                HStack(spacing: 5) {
-                    Text(thread.visibility.title)
-                    if thread.isArchived { Text("· 已归档") }
-                    Text("·")
-                    Text(ownershipTitle(thread.ownership))
-                }
-                .font(MonitorTypography.metadata)
-                .foregroundStyle(MonitorTheme.tertiaryText)
-            }
-            Spacer(minLength: 6)
-            if thread.canRecover {
-                Text("待恢复")
-                    .font(MonitorTypography.metadataMedium)
-                    .foregroundStyle(.orange)
-                    .padding(.horizontal, 6)
-                    .frame(height: 18)
-                    .background(Color.orange.opacity(0.09), in: Capsule())
-                    .accessibilityLabel("待恢复会话")
-            }
+        HStack(alignment: .center, spacing: 10) {
+            Text(thread.title)
+                .font(MonitorDesktopTypography.body)
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .help(thread.title)
+            Text(thread.updatedAt.compactRelativeText)
+                .font(MonitorDesktopTypography.metadata)
+                .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+                .lineLimit(1)
+                .frame(width: 68, alignment: .trailing)
+                .help(thread.updatedAt.formatted(date: .abbreviated, time: .shortened))
+            Text(ownershipTitle(thread.ownership))
+                .font(MonitorDesktopTypography.metadata)
+                .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+                .lineLimit(1)
+                .frame(width: 86, alignment: .leading)
+                .help(continuityOwnershipDetail(thread.ownership))
+            Text(continuityThreadStatus(thread))
+                .font(MonitorDesktopTypography.metadata)
+                .foregroundStyle(thread.canRecover || thread.visibility == .projectPathMissing ? .orange : MonitorDesktopTheme.tertiaryText)
+                .lineLimit(1)
+                .frame(width: 74, alignment: .leading)
+                .help(thread.visibility.title + (thread.isArchived ? " · 已归档" : ""))
             Menu {
-                Button {
-                    store.exportSession(thread)
-                } label: {
-                    Label("导出会话", systemImage: "square.and.arrow.up")
-                }
-                Divider()
-                Button(role: .destructive) {
-                    pendingContinuityThreadDeletion = thread
-                } label: {
-                    Label("删除会话", systemImage: "trash")
-                }
+                continuityThreadActions(thread)
             } label: {
                 Group {
                     if store.deletingContinuityThreadID == thread.id {
-                        ProgressView()
-                            .controlSize(.mini)
-                            .tint(.red)
+                        ProgressView().controlSize(.mini)
                     } else {
-                        Image(systemName: "ellipsis.circle")
-                            .font(.system(size: 10, weight: .semibold))
+                        Image(systemName: "ellipsis")
                     }
                 }
-                .foregroundStyle(MonitorTheme.tertiaryText)
-                .frame(width: 23, height: 23)
-                .contentShape(Circle())
+                .frame(width: 24, height: 26)
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
-            .disabled(
-                store.deletingContinuityThreadID != nil
-                    || store.deletingContinuityProjectID != nil
-                    || store.isSessionExporting
-            )
             .help("会话操作")
+            .accessibilityLabel("\(thread.title)的会话操作")
         }
-        .padding(.vertical, 2)
+        .frame(minHeight: 38)
+        .contentShape(Rectangle())
+        .contextMenu { continuityThreadActions(thread) }
+        .accessibilityElement(children: .contain)
+    }
+
+    @ViewBuilder
+    private func continuityThreadActions(_ thread: LocalThreadRecord) -> some View {
+        Button {
+            selectedContinuityThreadID = thread.id
+            showsContinuityDetails = true
+        } label: {
+            Label("查看会话详情", systemImage: "info.circle")
+        }
+        Button {
+            store.exportSession(thread)
+        } label: {
+            Label("导出会话", systemImage: "square.and.arrow.up")
+        }
+        .disabled(continuityActionsAreBusy)
+        Divider()
+        Button(role: .destructive) {
+            pendingContinuityThreadDeletion = thread
+        } label: {
+            Label("永久删除会话…", systemImage: "trash")
+        }
+        .disabled(continuityActionsAreBusy)
+    }
+
+    private func continuityThreadStatus(_ thread: LocalThreadRecord) -> String {
+        if thread.canRecover { return "待恢复" }
+        if thread.visibility == .projectPathMissing { return "路径缺失" }
+        return thread.isArchived ? "已归档" : "—"
+    }
+
+    private func continuityOwnershipDetail(_ ownership: SessionOwnership) -> String {
+        switch ownership.confidence {
+        case .observed: return "已观察归属：\(ownership.accountAlias ?? "已记录账号")。来自插件可靠观察，不按当前登录账号重新归类。"
+        case .baseline: return "这条会话早于账号观察基线，无法可靠反推创建账号。"
+        case .unknown: return "尚未观察到足够证据确认这条会话的账号归属。"
+        }
+    }
+
+    private func continuityThreadDetail(_ thread: LocalThreadRecord) -> some View {
+        ScrollView(.vertical, showsIndicators: true) {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(alignment: .top, spacing: 10) {
+                    Text(thread.title)
+                        .font(MonitorDesktopTypography.cardTitle)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                    Spacer(minLength: 0)
+                    Button { showsContinuityDetails = false } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("关闭会话详情")
+                }
+                Divider()
+                continuityDetailField("项目", value: thread.projectName)
+                continuityDetailField("项目路径", value: thread.projectPath.isEmpty ? "未记录项目路径" : thread.projectPath, monospaced: true)
+                continuityDetailField("最近活动", value: thread.updatedAt.formatted(date: .abbreviated, time: .shortened))
+                continuityDetailField("账号归属", value: ownershipTitle(thread.ownership))
+                Text(continuityOwnershipDetail(thread.ownership))
+                    .font(MonitorDesktopTypography.metadata)
+                    .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                continuityDetailField("可见性", value: thread.visibility.title)
+                continuityDetailField("归档状态", value: thread.isArchived ? "已归档" : "未归档")
+                if let branch = thread.gitBranch, !branch.isEmpty {
+                    continuityDetailField("Git 分支", value: branch, monospaced: true)
+                }
+                Divider()
+                Button {
+                    showsContinuityDetails = false
+                    store.exportSession(thread)
+                } label: {
+                    Label("导出这条会话", systemImage: "square.and.arrow.up")
+                }
+                .buttonStyle(.bordered)
+                .disabled(continuityActionsAreBusy)
+            }
+            .padding(20)
+        }
+        .frame(width: 400, height: 490)
+        .background(MonitorDesktopTheme.windowBackground)
+        .preferredColorScheme(.dark)
+    }
+
+    private func continuityDetailField(_ title: String, value: String, monospaced: Bool = false) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(MonitorDesktopTypography.metadata)
+                .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+            Text(value)
+                .font(monospaced ? .system(size: 12, design: .monospaced) : MonitorDesktopTypography.body)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+                .help(value)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func ownershipTitle(_ ownership: SessionOwnership) -> String {
@@ -2688,8 +2919,8 @@ struct NotchView: View {
         let activeCount = project.threads.count - archivedCount
         return "将通过 Codex App Server 永久删除「\(project.name)」下的 \(project.threads.count) 条会话"
             + "（活动 \(activeCount) 条，已归档 \(archivedCount) 条），并清理 Codex 项目登记。\n\n"
-            + "“仅移除 Codex 项目”会保留磁盘目录：\(project.id)\n\n"
-            + "“同时移到废纸篓”会把该目录及其中全部文件移入 macOS 废纸篓，可在清空废纸篓前恢复。"
+            + "“删除会话，保留项目文件”会保留磁盘目录：\(project.id)\n\n"
+            + "“删除会话并移走项目文件”会把该目录及其中全部文件移入 macOS 废纸篓，可在清空废纸篓前恢复。"
             + "会话删除本身无法撤销；如需保留，请先导出完整项目迁移包。"
     }
 
@@ -2703,18 +2934,18 @@ struct NotchView: View {
     private var continuityBackupCard: some View {
         HStack(spacing: 9) {
             Image(systemName: "clock.arrow.circlepath")
-                .foregroundStyle(.white.opacity(0.55))
+                .foregroundStyle(MonitorDesktopTheme.tertiaryText)
             VStack(alignment: .leading, spacing: 2) {
                 Text("已保留操作前备份")
-                    .font(.system(size: 9.5, weight: .semibold))
+                    .font(.system(size: 11, weight: .semibold))
                 Text(store.lastContinuityBackupURL?.lastPathComponent ?? "")
-                    .font(.system(size: 7.5, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.32))
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(MonitorDesktopTheme.tertiaryText)
             }
             Spacer()
             Button("回滚") { confirmsContinuityRollback = true }
-                .font(.system(size: 8.5, weight: .semibold))
-                .buttonStyle(.plain)
+                .font(.system(size: 11, weight: .semibold))
+                .buttonStyle(MonitorCenterPressStyle())
                 .foregroundStyle(.orange)
         }
         .padding(11)
@@ -2727,15 +2958,15 @@ struct NotchView: View {
                 .foregroundStyle(.orange)
             VStack(alignment: .leading, spacing: 2) {
                 Text("已保留导入前备份")
-                    .font(.system(size: 9.5, weight: .semibold))
+                    .font(.system(size: 11, weight: .semibold))
                 Text(store.lastSessionImportBackupURL?.lastPathComponent ?? "")
-                    .font(.system(size: 7.5, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.32))
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(MonitorDesktopTheme.tertiaryText)
             }
             Spacer()
             Button("撤销导入") { confirmsSessionImportRollback = true }
-                .font(.system(size: 8.5, weight: .semibold))
-                .buttonStyle(.plain)
+                .font(.system(size: 11, weight: .semibold))
+                .buttonStyle(MonitorCenterPressStyle())
                 .foregroundStyle(.orange)
                 .disabled(store.isSessionImporting)
         }
@@ -2749,15 +2980,15 @@ struct NotchView: View {
                 .foregroundStyle(.orange)
             VStack(alignment: .leading, spacing: 2) {
                 Text("已保留完整项目导入前事务")
-                    .font(.system(size: 9.5, weight: .semibold))
+                    .font(.system(size: 11, weight: .semibold))
                 Text(store.lastProjectImportBackupURL?.lastPathComponent ?? "")
-                    .font(.system(size: 7.5, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.32))
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(MonitorDesktopTheme.tertiaryText)
             }
             Spacer()
             Button("撤销项目导入") { store.rollbackLastProjectImport() }
-                .font(.system(size: 8.5, weight: .semibold))
-                .buttonStyle(.plain)
+                .font(.system(size: 11, weight: .semibold))
+                .buttonStyle(MonitorCenterPressStyle())
                 .foregroundStyle(.orange)
                 .disabled(store.isSessionImporting)
         }
@@ -2771,10 +3002,10 @@ struct NotchView: View {
                 Image(systemName: outcome.requiresRetry ? "exclamationmark.arrow.triangle.2.circlepath" : "checkmark.circle.fill")
                     .foregroundStyle(outcome.requiresRetry ? .orange : .green)
                 Text("导入结果")
-                    .font(.system(size: 9.5, weight: .bold))
+                    .font(.system(size: 11, weight: .bold))
                 Spacer()
                 Text(outcome.requiresRetry ? "需要确认" : "全部完成")
-                    .font(.system(size: 8, weight: .bold))
+                    .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(outcome.requiresRetry ? .orange : .green)
             }
             importOutcomeRow(
@@ -2801,8 +3032,8 @@ struct NotchView: View {
             }
             if outcome.requiresRetry {
                 Button("重试索引确认") { store.retryLastSessionImportVisibilityCheck() }
-                    .font(.system(size: 8.5, weight: .semibold))
-                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .semibold))
+                    .buttonStyle(MonitorCenterPressStyle())
                     .foregroundStyle(.orange)
                     .disabled(store.isSessionImporting)
             }
@@ -2816,21 +3047,23 @@ struct NotchView: View {
 
     private func importOutcomeRow(_ label: String, value: String, color: Color) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(label).foregroundStyle(.white.opacity(0.4))
+            Text(label).foregroundStyle(MonitorDesktopTheme.tertiaryText)
             Spacer()
             Circle().fill(color).frame(width: 4, height: 4)
             Text(value).foregroundStyle(.white.opacity(0.7)).multilineTextAlignment(.trailing)
         }
-        .font(.system(size: 8, weight: .medium))
+        .font(.system(size: 11, weight: .medium))
     }
 
     private var tiboPage: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 16) {
             tiboTrustConsole
             tiboRadarControls
             Group {
-                if let radar = store.tiboRadar {
-                    ScrollView(.vertical, showsIndicators: false) {
+                if tiboRadarMode == .history {
+                    tiboQuotaHistoryPanel
+                } else if let radar = store.tiboRadar {
+                    ScrollView(.vertical, showsIndicators: true) {
                     if tiboRadarMode == .live {
                         tiboLiveFeed(radar)
                     } else {
@@ -2838,20 +3071,18 @@ struct NotchView: View {
                     }
                     }
                 } else if store.isTiboFeedLoading {
-                    VStack(spacing: 9) {
-                        ProgressView().controlSize(.small).tint(.cyan)
-                        Text("正在同步蒂博雷达…")
-                            .font(AstaSans.medium(9))
-                            .foregroundStyle(MonitorTheme.tertiaryText)
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 130)
-                    .background(MonitorTheme.controlFill, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                    MonitorCenterEmptyState(
+                        symbol: "dot.radiowaves.left.and.right",
+                        title: "正在同步动态",
+                        detail: "正在获取社区动态与重置记录。",
+                        isLoading: true
+                    )
                 } else {
-                    Text("暂时没有可显示的雷达数据")
-                        .font(AstaSans.medium(10))
-                        .foregroundStyle(MonitorTheme.tertiaryText)
-                        .frame(maxWidth: .infinity, minHeight: 100)
-                        .background(MonitorTheme.controlFill, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                    MonitorCenterEmptyState(
+                        symbol: "dot.radiowaves.left.and.right",
+                        title: "暂时没有动态数据",
+                        detail: "请检查网络连接，或点击右上角“刷新”重试。"
+                    )
                 }
             }
             .opacity(tiboContentOpacity)
@@ -2866,7 +3097,7 @@ struct NotchView: View {
             Button("取消", role: .cancel) {
                 quotaResetCandidateToConfirm = nil
             }
-            Button("记录并通知") {
+            Button("记录为手动重置") {
                 if let candidate = quotaResetCandidateToConfirm {
                     store.confirmUserQuotaReset(candidate)
                 }
@@ -2874,225 +3105,198 @@ struct NotchView: View {
             }
         } message: {
             if let candidate = quotaResetCandidateToConfirm {
-                Text("这会把 \(quotaResetSummary(candidate)) 记录为“手动重置”，并立即发送一次系统通知。")
+                Text("这会把 \(quotaResetSummary(candidate)) 记录为“手动重置”。\(store.quotaNotificationStatus == .enabled ? "应用会尝试发送系统通知。" : "当前通知未开启，将仅保存记录。")")
             }
         }
     }
 
     private var tiboTrustConsole: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                HStack(spacing: 7) {
-                    Image(systemName: "checkmark.shield.fill")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(tiboOfficialStatusColor)
-                        .accessibilityHidden(true)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("官方额度")
-                            .font(MonitorTypography.metadata)
-                            .foregroundStyle(MonitorTheme.tertiaryText)
-                        Text(tiboOfficialStatusText)
-                            .font(MonitorTypography.cardTitle)
-                            .foregroundStyle(tiboOfficialStatusColor)
-                    }
-                }
-
-                Rectangle()
-                    .fill(MonitorTheme.separator)
-                    .frame(width: 1, height: 26)
-
-                HStack(spacing: 14) {
-                    tiboForecastMetric(
-                        "24 小时",
-                        store.tiboRadar?.forecast.probabilities.rounded24H
-                    )
-                    tiboForecastMetric(
-                        "48 小时",
-                        store.tiboRadar?.forecast.probabilities.rounded48H
-                    )
-                }
-
-                Spacer(minLength: 8)
-
-                HStack(spacing: 6) {
-                    Text("社区预测")
-                        .foregroundStyle(MonitorTheme.tertiaryText)
-                    Circle()
-                        .fill(tiboForecastConfidenceColor)
-                        .frame(width: 5, height: 5)
-                    Text(tiboForecastConfidenceText)
-                        .foregroundStyle(tiboForecastConfidenceColor)
-                }
-                .font(MonitorTypography.metadataMedium)
-            }
-            .padding(.horizontal, 12)
-            .frame(minHeight: 40)
-
-            Divider().overlay(MonitorTheme.hairline)
-
-            HStack(spacing: 8) {
-                Label("codex-reset.com", systemImage: "dot.radiowaves.left.and.right")
-                    .font(MonitorTypography.metadataMedium)
-                    .foregroundStyle(MonitorTheme.secondaryText)
-                Text(tiboSourceFreshnessText)
-                    .font(MonitorTypography.metadata)
-                    .foregroundStyle(
-                        tiboSourceIsStale
-                            ? Color.orange
-                            : MonitorTheme.tertiaryText
-                    )
-                    .lineLimit(1)
-
-                if store.isTiboFeedLoading {
-                    ProgressView().controlSize(.mini).tint(.cyan)
-                }
-
-                Spacer(minLength: 8)
-
-                if tiboQuotaHistoryCount > 0 {
-                    Button {
-                        animate(.islandContentSwap) {
-                            showsTiboQuotaHistory.toggle()
-                        }
-                    } label: {
-                        HStack(spacing: 5) {
-                            Image(systemName: "clock.arrow.circlepath")
-                            Text("恢复记录")
-                            Text("\(tiboQuotaHistoryCount)")
-                                .monospacedDigit()
-                                .foregroundStyle(MonitorTheme.primaryText)
-                                .padding(.horizontal, 5)
-                                .frame(height: 16)
-                                .background(
-                                    Color.white.opacity(0.08),
-                                    in: Capsule()
-                                )
-                        }
-                        .font(MonitorTypography.control)
-                        .foregroundStyle(
-                            showsTiboQuotaHistory
-                                ? MonitorTheme.cyanAccent
-                                : MonitorTheme.secondaryText
-                        )
-                        .padding(.horizontal, 8)
-                        .frame(height: 24)
-                        .background(
-                            showsTiboQuotaHistory
-                                ? MonitorTheme.cyanAccent.opacity(0.08)
-                                : MonitorTheme.controlFill,
-                            in: RoundedRectangle(
-                                cornerRadius: 7,
-                                style: .continuous
-                            )
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .popover(
-                        isPresented: $showsTiboQuotaHistory,
-                        arrowEdge: .bottom
-                    ) {
-                        tiboQuotaHistoryPanel
-                            .frame(width: 460)
-                            .background(MonitorTheme.windowBackground)
-                            .preferredColorScheme(.dark)
-                    }
-                }
-            }
-            .padding(.horizontal, 12)
-            .frame(minHeight: 32)
+        HStack(alignment: .top, spacing: 14) {
+            tiboAccountQuotaCard
+                .modifier(MonitorDesktopReveal(delay: 0))
+            tiboForecastCard
+                .modifier(MonitorDesktopReveal(delay: 0.05))
         }
-        .background(MonitorTheme.subtleCardFill, in: RoundedRectangle(cornerRadius: MonitorGeometry.cardRadius, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: MonitorGeometry.cardRadius, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.07), lineWidth: 0.7)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var tiboAccountQuotaCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("当前账号额度", systemImage: "gauge.with.dots.needle.50percent")
+                    .font(MonitorDesktopTypography.rowTitle)
+                Spacer(minLength: 4)
+                Text(tiboOfficialStatusText)
+                    .font(MonitorDesktopTypography.metadata)
+                    .foregroundStyle(tiboOfficialStatusColor)
+            }
+            if let bucket = store.quotaState.primaryBucket,
+               let window = bucket.limitingWindow {
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
+                    Text("\(window.remainingPercent)%")
+                        .font(.system(size: 32, weight: .semibold))
+                        .monospacedDigit()
+                        .contentTransition(.numericText())
+                        .animation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 1), value: window.remainingPercent)
+                    Text("剩余")
+                        .font(MonitorDesktopTypography.metadata)
+                        .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+                    Spacer()
+                    Text(window.windowLabel)
+                        .font(MonitorDesktopTypography.metadataMedium)
+                        .foregroundStyle(MonitorDesktopTheme.secondaryText)
+                }
+                ProgressView(value: Double(window.remainingPercent), total: 100)
+                    .tint(window.remainingPercent < 20 ? .orange : MonitorDesktopTheme.cyanAccent)
+                    .animation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 1), value: window.remainingPercent)
+                    .accessibilityLabel("\(window.windowLabel)剩余额度")
+                    .accessibilityValue("\(window.remainingPercent)%")
+                Text(window.resetsAt.map { "重置：\(QuotaResetCountdown.text(until: $0, relativeTo: Date()))" } ?? "服务端暂未提供重置时间")
+                    .font(MonitorDesktopTypography.metadata)
+                    .foregroundStyle(MonitorDesktopTheme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                HStack(spacing: 9) {
+                    if case .loading = store.quotaState {
+                        ProgressView().controlSize(.small)
+                    }
+                    Text(quotaErrorText == nil ? "暂无额度窗口" : "暂时无法读取额度")
+                        .font(.system(size: 20, weight: .medium))
+                }
+                .frame(minHeight: 64, alignment: .leading)
+            }
+            Spacer(minLength: 0)
+            Text(tiboQuotaUpdatedText)
+                .font(MonitorDesktopTypography.metadata)
+                .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+                .help(quotaErrorText ?? "显示当前账号剩余最少的额度窗口，以官方 App Server 数据为准。")
         }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("官方额度\(tiboOfficialStatusText)，24 小时预测\(store.tiboRadar?.forecast.probabilities.rounded24H ?? 0)%，48 小时预测\(store.tiboRadar?.forecast.probabilities.rounded48H ?? 0)%")
+        .padding(16)
+        .frame(maxWidth: .infinity, minHeight: 184, maxHeight: .infinity, alignment: .topLeading)
+        .background(MonitorDesktopTheme.cardFill, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private var tiboQuotaUpdatedText: String {
+        switch store.quotaState {
+        case let .loaded(_, date): return "官方数据 · \(tiboRelativeTime(date))更新"
+        case .loading: return "正在连接官方 App Server"
+        case .failed: return store.quotaState.buckets.isEmpty ? "连接失败，可使用右上角刷新重试" : "显示上次额度，当前连接异常"
+        }
+    }
+
+    private var tiboForecastCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("社区重置预测", systemImage: "chart.line.uptrend.xyaxis")
+                    .font(MonitorDesktopTypography.rowTitle)
+                Spacer(minLength: 4)
+                Text(tiboForecastConfidenceText)
+                    .font(MonitorDesktopTypography.metadata)
+                    .foregroundStyle(tiboForecastConfidenceColor)
+            }
+            HStack(spacing: 28) {
+                tiboForecastMetric("未来 24 小时", store.tiboRadar?.forecast.probabilities.rounded24H)
+                tiboForecastMetric("未来 48 小时", store.tiboRadar?.forecast.probabilities.rounded48H)
+                Spacer(minLength: 0)
+            }
+            Text("实验性预测，不能保证你的账号会重置。")
+                .font(MonitorDesktopTypography.metadata)
+                .foregroundStyle(MonitorDesktopTheme.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+                .help(store.tiboRadar?.forecast.confidenceNote ?? "社区模型的概率估算，不是官方重置承诺。")
+            Spacer(minLength: 0)
+            Text(tiboForecastUpdatedText)
+                .font(MonitorDesktopTypography.metadata)
+                .foregroundStyle(tiboForecastIsStale && store.tiboRadar != nil ? .orange : MonitorDesktopTheme.tertiaryText)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, minHeight: 184, maxHeight: .infinity, alignment: .topLeading)
+        .background(MonitorDesktopTheme.cardFill, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private var tiboForecastIsStale: Bool {
+        CodexResetRadarPresentation.forecastIsStale(forecast: store.tiboRadar?.forecast)
+    }
+
+    private var tiboForecastUpdatedText: String {
+        guard let date = store.tiboRadar?.forecast.updatedDate else { return "等待预测数据" }
+        return "\(tiboForecastIsStale ? "预测已过期" : "预测更新") · \(tiboRelativeTime(date))"
     }
 
     private var tiboQuotaHistoryPanel: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 5) {
-                ForEach(QuotaHistoryFilter.allCases) { filter in
-                    Button {
-                        animate(.islandContentSwap) { quotaHistoryFilter = filter }
-                    } label: {
-                        Text(filter.rawValue)
-                            .font(AstaSans.semiBold(7.7))
-                            .foregroundStyle(
-                                quotaHistoryFilter == filter
-                                    ? MonitorTheme.primaryText
-                                    : MonitorTheme.tertiaryText
-                            )
-                            .padding(.horizontal, 8)
-                            .frame(height: 22)
-                            .background(
-                                quotaHistoryFilter == filter
-                                    ? MonitorTheme.selection
-                                    : Color.clear,
-                                in: Capsule()
-                            )
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("本机观察到 \(tiboQuotaHistoryCount) 条额度变化")
+                    .font(MonitorDesktopTypography.rowTitle)
+                Spacer()
+                Picker("记录类型", selection: $quotaHistoryFilter) {
+                    ForEach(QuotaHistoryFilter.allCases) { filter in
+                        Text(filter.rawValue).tag(filter)
                     }
-                    .buttonStyle(.plain)
                 }
-                Spacer(minLength: 8)
-                Text(quotaNotificationStatusText)
-                    .font(AstaSans.regular(7.5))
-                    .foregroundStyle(MonitorTheme.faintText)
+                .pickerStyle(.menu)
+                .fixedSize()
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 7)
-
-            Rectangle().fill(MonitorTheme.separator).frame(height: 1)
-
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(spacing: 0) {
-                    ForEach(Array(store.confirmableQuotaRecoveries.prefix(2).enumerated()), id: \.element.id) { index, candidate in
-                        tiboQuotaCandidateRow(candidate)
-                        if index < min(store.confirmableQuotaRecoveries.count, 2) - 1
-                            || !store.quotaResetEvents.isEmpty {
-                            Rectangle().fill(MonitorTheme.separator).frame(height: 1)
+            Text("这里记录本机额度变化。社区公告不代表当前账号已经恢复额度。")
+                .font(MonitorDesktopTypography.metadata)
+                .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                quotaNotificationStatusControl
+                Spacer()
+            }
+            ScrollView(.vertical, showsIndicators: true) {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    if quotaHistoryFilter == .all {
+                        ForEach(store.confirmableQuotaRecoveries) { candidate in
+                            tiboQuotaCandidateRow(candidate)
+                                .padding(4)
+                                .background(Color.orange.opacity(0.055), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                         }
                     }
-                    ForEach(Array(filteredQuotaHistory.prefix(8).enumerated()), id: \.element.id) { index, event in
+                    ForEach(filteredQuotaHistory) { event in
                         tiboQuotaHistoryRow(event)
-                        if index < min(filteredQuotaHistory.count, 8) - 1 {
-                            Rectangle().fill(MonitorTheme.separator).frame(height: 1)
+                            .padding(4)
+                            .background(MonitorDesktopTheme.subtleCardFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
+                    if filteredQuotaHistory.isEmpty,
+                       quotaHistoryFilter != .all || store.confirmableQuotaRecoveries.isEmpty {
+                        MonitorCenterEmptyState(
+                            symbol: "clock.arrow.circlepath",
+                            title: "暂无\(quotaHistoryFilter == .all ? "本机恢复" : quotaHistoryFilter.rawValue)记录",
+                            detail: "只有本机实际观察到额度变化后，记录才会出现在这里。"
+                        )
+                        if quotaHistoryFilter != .all {
+                            Button("显示全部记录") { quotaHistoryFilter = .all }
+                                .buttonStyle(.bordered)
+                                .frame(maxWidth: .infinity)
                         }
                     }
-                    if filteredQuotaHistory.isEmpty {
-                        Text("该类型暂无恢复记录")
-                            .font(AstaSans.regular(8.2))
-                            .foregroundStyle(MonitorTheme.faintText)
-                            .frame(maxWidth: .infinity, minHeight: 42)
-                    }
                 }
+                .padding(.bottom, 8)
             }
-            .frame(maxHeight: 300)
-            .transition(.opacity.combined(with: .move(edge: .top)))
-        }
-        .background(MonitorTheme.subtleCardFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.065), lineWidth: 0.7)
         }
     }
 
     private var tiboQuotaHistoryCount: Int {
-        store.quotaResetEvents.count + store.confirmableQuotaRecoveries.count
+        QuotaResetHistoryPresentation.uniqueCount(
+            events: store.quotaResetEvents,
+            candidates: store.confirmableQuotaRecoveries
+        )
     }
 
     private var filteredQuotaHistory: [QuotaResetEvent] {
-        store.quotaResetEvents.filter { event in
+        QuotaResetHistoryPresentation.historyExcludingCandidates(
+            events: store.quotaResetEvents,
+            candidates: store.confirmableQuotaRecoveries
+        ).filter { event in
             switch quotaHistoryFilter {
-            case .all:
-                return true
+            case .all: return true
             case .tibo:
                 return event.displayReason == .officialCompleted
                     || event.displayReason == .officialScheduled
                     || event.displayReason == .mixed
-            case .natural:
-                return event.displayReason == .natural
+            case .natural: return event.displayReason == .natural
             case .manual:
                 return event.displayReason == .manualCredit
                     || event.displayReason == .userConfirmed
@@ -3103,27 +3307,27 @@ struct NotchView: View {
     private func tiboQuotaCandidateRow(_ candidate: QuotaResetConfirmationCandidate) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "questionmark.circle.fill")
-                .font(.system(size: 9, weight: .semibold))
+                .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.orange)
                 .frame(width: 14, height: 15)
             VStack(alignment: .leading, spacing: 2) {
                 Text("检测到额度恢复，等待确认")
-                    .font(AstaSans.semiBold(8.8))
+                    .font(MonitorDesktopTypography.rowTitle)
                 Text(quotaResetSummary(candidate))
-                    .font(AstaSans.regular(8))
-                    .foregroundStyle(MonitorTheme.tertiaryText)
-                    .lineLimit(2)
+                    .font(MonitorDesktopTypography.body)
+                    .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 6)
-            Button("确认") {
+            Button("标记为手动重置") {
                 quotaResetCandidateToConfirm = candidate
                 confirmsUserQuotaReset = true
             }
-            .buttonStyle(.plain)
-            .font(AstaSans.semiBold(8))
+            .buttonStyle(MonitorCenterPressStyle())
+            .font(MonitorDesktopTypography.metadataMedium)
             .foregroundStyle(.orange)
             .padding(.horizontal, 8)
-            .frame(height: 22)
+            .frame(height: 30)
             .background(Color.orange.opacity(0.09), in: Capsule())
         }
         .padding(.horizontal, 12)
@@ -3133,28 +3337,28 @@ struct NotchView: View {
     private func tiboQuotaHistoryRow(_ event: QuotaResetEvent) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: quotaResetSymbol(event.displayReason))
-                .font(.system(size: 9, weight: .semibold))
+                .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(quotaResetColor(event.displayReason))
                 .frame(width: 14, height: 15)
             VStack(alignment: .leading, spacing: 2) {
                 Text(event.displayReason.title)
-                    .font(AstaSans.semiBold(8.8))
-                    .foregroundStyle(MonitorTheme.primaryText)
+                    .font(MonitorDesktopTypography.rowTitle)
+                    .foregroundStyle(MonitorDesktopTheme.primaryText)
                 Text(quotaResetSummary(event))
-                    .font(AstaSans.regular(8))
-                    .foregroundStyle(MonitorTheme.tertiaryText)
-                    .lineLimit(1)
+                    .font(MonitorDesktopTypography.body)
+                    .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+                    .fixedSize(horizontal: false, vertical: true)
                 if event.userDisplayType != nil {
                     Text("原始判断：\(event.reason.title)")
-                        .font(AstaSans.regular(7.3))
-                        .foregroundStyle(MonitorTheme.faintText)
+                        .font(MonitorDesktopTypography.metadata)
+                        .foregroundStyle(MonitorDesktopTheme.faintText)
                 }
             }
             Spacer(minLength: 6)
             VStack(alignment: .trailing, spacing: 4) {
                 Text(tiboRelativeTime(event.detectedAt))
-                    .font(AstaSans.regular(7.5))
-                    .foregroundStyle(MonitorTheme.faintText)
+                    .font(MonitorDesktopTypography.metadata)
+                    .foregroundStyle(MonitorDesktopTheme.faintText)
                 HStack(spacing: 2) {
                     Menu {
                         Button {
@@ -3188,24 +3392,24 @@ struct NotchView: View {
                         }
                     } label: {
                         Image(systemName: "ellipsis.circle")
-                            .font(.system(size: 10, weight: .semibold))
-                            .frame(width: 20, height: 20)
+                            .font(.system(size: 11, weight: .semibold))
+                            .frame(width: 28, height: 28)
                     }
                     .menuStyle(.borderlessButton)
                     .menuIndicator(.hidden)
                     .fixedSize()
-                    .foregroundStyle(MonitorTheme.tertiaryText)
+                    .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                     .help("更改显示类型；原始检测证据会保留")
                     if let value = event.sourceURL, let url = URL(string: value) {
                         Button {
                             NSWorkspace.shared.open(url)
                         } label: {
                             Image(systemName: "arrow.up.right")
-                                .font(.system(size: 7.5, weight: .semibold))
-                                .frame(width: 20, height: 20)
+                                .font(.system(size: 11, weight: .semibold))
+                                .frame(width: 28, height: 28)
                         }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(MonitorTheme.cyanAccent)
+                        .buttonStyle(MonitorCenterPressStyle())
+                        .foregroundStyle(MonitorDesktopTheme.cyanAccent)
                         .help("打开重置证据")
                     }
                 }
@@ -3216,19 +3420,25 @@ struct NotchView: View {
     }
 
     private func tiboForecastMetric(_ label: String, _ value: Int?) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(label)
-                .font(MonitorTypography.metadata)
-                .foregroundStyle(MonitorTheme.tertiaryText)
-            Text(value.map { "\($0)%" } ?? "--")
-                .font(MonitorTypography.cardTitle)
+        VStack(alignment: .leading, spacing: 3) {
+            Text(value.map { "\($0)%" } ?? "暂无")
+                .font(.system(size: value == nil ? 22 : 30, weight: .semibold))
                 .monospacedDigit()
+                .contentTransition(.numericText())
+                .animation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 1), value: value)
+                .foregroundStyle(value == nil ? MonitorDesktopTheme.tertiaryText : MonitorDesktopTheme.primaryText)
+            Text(label)
+                .font(MonitorDesktopTypography.metadata)
+                .foregroundStyle(MonitorDesktopTheme.tertiaryText)
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
+        .accessibilityValue(value.map { "预测概率 \($0)%" } ?? "暂无预测")
     }
 
     private var tiboOfficialStatusText: String {
         switch store.quotaState {
-        case .loaded: return "正常"
+        case let .loaded(buckets, _): return buckets.isEmpty ? "暂无窗口" : "已同步"
         case .loading: return "读取中"
         case .failed: return "连接异常"
         }
@@ -3236,8 +3446,8 @@ struct NotchView: View {
 
     private var tiboOfficialStatusColor: Color {
         switch store.quotaState {
-        case .loaded: return .green
-        case .loading: return .cyan
+        case .loaded: return MonitorDesktopTheme.tertiaryText
+        case .loading: return MonitorDesktopTheme.secondaryText
         case .failed: return .orange
         }
     }
@@ -3246,24 +3456,23 @@ struct NotchView: View {
         switch store.tiboRadar?.forecast.confidence {
         case "high": return "高置信度"
         case "medium": return "中置信度"
-        default: return "低置信度"
+        case "low": return "低置信度"
+        default: return "暂无评估"
         }
     }
 
     private var tiboForecastConfidenceColor: Color {
-        switch store.tiboRadar?.forecast.confidence {
-        case "high": return .green
-        case "medium": return .cyan
-        default: return .orange
-        }
+        store.tiboRadar == nil ? MonitorDesktopTheme.tertiaryText : MonitorDesktopTheme.secondaryText
     }
 
     private var tiboSourceFreshnessText: String {
-        if let error = store.tiboFeedError { return "显示缓存 · \(error)" }
-        guard let date = store.tiboRadar?.fetchedDate ?? store.tiboFeedFetchedAt else {
-            return "等待数据"
+        if store.tiboFeedError != nil {
+            return store.tiboRadar == nil ? "社区数据更新失败" : "更新失败，正在显示上次数据"
         }
-        return "数据 \(tiboRelativeTime(date))"
+        guard let date = store.tiboRadar?.fetchedDate ?? store.tiboFeedFetchedAt else {
+            return "等待社区数据"
+        }
+        return "\(tiboSourceIsStale ? "数据可能延迟" : "动态更新") · \(tiboRelativeTime(date))"
     }
 
     private func tiboPinnedSignalRow(
@@ -3271,95 +3480,38 @@ struct NotchView: View {
         radar: CodexResetRadarSnapshot
     ) -> some View {
         let resolution = tiboPinnedSignalResolution(signal, radar: radar)
-        let displayEvent = resolution.evidenceEvent ?? resolution.signalEvent
-        let displaysFulfillment = resolution.state == .fulfilled
-        let displayText = displaysFulfillment
-            ? displayEvent?.displayText ?? signal.displayText
-            : signal.displayText
-        let displayDate = displaysFulfillment
-            ? displayEvent?.announcedDate ?? signal.date
-            : signal.date
-        let statusTitle: String
-        let statusColor: Color
+        let event = resolution.evidenceEvent ?? resolution.signalEvent
+        let fulfilled = resolution.state == .fulfilled
+        let text = fulfilled ? event?.displayText ?? signal.displayText : signal.displayText
+        let date = fulfilled ? event?.announcedDate ?? signal.date : signal.date
+        let title: String
         switch resolution.state {
-        case .confirmed:
-            statusTitle = "已确认重置"
-            statusColor = .green
-        case .fulfilled:
-            statusTitle = "已兑现重置"
-            statusColor = .green
-        case .activePreview:
-            statusTitle = "重置预告 · 等待到达"
-            statusColor = .cyan
-        case .expired:
-            statusTitle = resolution.signalEvent?.preview == true
-                ? "重置预告 · 已结束"
-                : "重置信号 · 已结束"
-            statusColor = .orange
-        case .pending:
-            statusTitle = "重置信号 · 待确认"
-            statusColor = .cyan
+        case .confirmed: title = resolution.isLocallyConfirmed ? "本机额度已验证" : "社区已归档的重置记录"
+        case .fulfilled: title = "重置预告已关联后续记录"
+        case .activePreview: title = "正在关注的重置预告"
+        case .pending: title = "正在关注的待验证信号"
+        case .expired: title = "历史重置信号"
         }
-        var metadata = ["来源：codex-reset.com"]
-        if resolution.isLocallyConfirmed {
-            metadata.append("官方额度已验证")
-        } else if displaysFulfillment {
-            metadata.append("已关联到账证据")
-        }
-        if let displayEvent {
-            metadata.append(tiboTimelineConfidenceLabel(displayEvent))
-            metadata.append(tiboTimelineSourceLabel(displayEvent))
-        }
-        let evidenceURL = displayEvent?.url ?? signal.url
-        return VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Image(systemName: "pin.fill")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(statusColor)
-                Text(statusTitle)
-                    .font(AstaSans.semiBold(8.5))
-                    .foregroundStyle(statusColor)
-                    .padding(.horizontal, 7)
-                    .frame(height: 21)
-                    .background(statusColor.opacity(0.09), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                Spacer(minLength: 6)
-                Text(tiboRelativeTime(displayDate))
-                    .font(AstaSans.medium(8))
-                    .foregroundStyle(MonitorTheme.faintText)
+        return VStack(alignment: .leading, spacing: 12) {
+            Label(title, systemImage: "pin.fill")
+                .font(MonitorDesktopTypography.metadataMedium)
+                .foregroundStyle(MonitorDesktopTheme.cyanAccent)
+            tiboPostHeader(date: date)
+            if let tweet = radar.tweets.first(where: { $0.id == signal.tweetId }), !fulfilled {
+                tiboReplyContext(tweet)
             }
-            Text(tiboHeadline(displayText))
-                .font(AstaSans.semiBold(11.5))
-                .foregroundStyle(MonitorTheme.primaryText)
-                .lineLimit(2)
-            if let body = tiboBodyText(displayText) {
-                Text(body)
-                    .font(MonitorTypography.body)
-                    .foregroundStyle(MonitorTheme.secondaryText)
-                    .lineSpacing(2)
-                    .lineLimit(2)
+            tiboReadableText(text, id: "pinned:\(signal.tweetId)")
+            HStack {
+                Text(resolution.isLocallyConfirmed ? "已关联本机额度变化" : "社区来源，需与账号额度核对")
+                    .font(MonitorDesktopTypography.metadata)
+                    .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+                Spacer(minLength: 8)
+                tiboSourceLink(event?.url ?? signal.url, title: "在 X 查看完整对话")
             }
-            HStack(spacing: 7) {
-                Image(systemName: "info.circle")
-                    .font(.system(size: 8, weight: .medium))
-                Text(metadata.joined(separator: " · "))
-                Spacer()
-                Button {
-                    guard let url = URL(string: evidenceURL) else { return }
-                    NSWorkspace.shared.open(url)
-                } label: {
-                    HStack(spacing: 4) {
-                        Text(displaysFulfillment ? "查看证据" : "在 X 查看")
-                        Image(systemName: "arrow.up.right")
-                    }
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(MonitorTheme.cyanAccent)
-            }
-            .font(AstaSans.medium(8))
-            .foregroundStyle(MonitorTheme.faintText)
         }
-        .padding(12)
-        .background(statusColor.opacity(0.025))
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(MonitorDesktopTheme.cyanAccent.opacity(0.065), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
     }
 
     private func tiboPinnedSignalResolution(
@@ -3382,105 +3534,55 @@ struct NotchView: View {
     }
 
     private var tiboRadarControls: some View {
-        HStack(alignment: .bottom, spacing: 16) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("视图")
-                    .font(MonitorTypography.metadataMedium)
-                    .foregroundStyle(MonitorTheme.tertiaryText)
-                HStack(spacing: 3) {
+        VStack(spacing: 12) {
+            HStack(spacing: 12) {
+                Picker("动态中心页面", selection: Binding(
+                    get: { tiboRadarMode },
+                    set: { mode in
+                        transitionTiboContent {
+                            tiboRadarMode = mode
+                            tiboRadarFilter = .all
+                        }
+                    }
+                )) {
                     ForEach(TiboRadarMode.allCases) { mode in
-                        Button {
-                            transitionTiboContent {
-                                tiboRadarMode = mode
-                                tiboRadarFilter = .all
-                            }
-                        } label: {
-                            Text(mode == .live ? "动态" : "时间轴")
-                                .font(MonitorTypography.control)
-                                .foregroundStyle(
-                                    tiboRadarMode == mode
-                                        ? MonitorTheme.primaryText
-                                        : MonitorTheme.tertiaryText
-                                )
-                                .animation(
-                                    reduceMotion
-                                        ? nil
-                                        : .easeOut(duration: 0.14),
-                                    value: tiboRadarMode
-                                )
-                                .frame(width: 72, height: 26)
-                                .background(
-                                    tiboRadarMode == mode
-                                        ? Color.white.opacity(0.09)
-                                        : Color.clear,
-                                    in: RoundedRectangle(
-                                        cornerRadius: 7,
-                                        style: .continuous
-                                    )
-                                )
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityValue(
-                            tiboRadarMode == mode ? "已选择" : ""
-                        )
+                        Text(mode.rawValue).tag(mode)
                     }
                 }
-                .padding(2)
-                .background(
-                    MonitorTheme.subtleCardFill,
-                    in: RoundedRectangle(cornerRadius: 9, style: .continuous)
-                )
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 430)
+                Spacer(minLength: 0)
+                if tiboRadarMode != .history {
+                    Picker("内容筛选", selection: Binding(
+                        get: { tiboRadarFilter },
+                        set: { filter in transitionTiboContent { tiboRadarFilter = filter } }
+                    )) {
+                        ForEach(TiboRadarFilter.allCases) { filter in
+                            Text(tiboFilterTitle(filter)).tag(filter)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: 118)
+                }
             }
-
-            Spacer()
-
-            VStack(alignment: .trailing, spacing: 4) {
-                Text("内容")
-                    .font(MonitorTypography.metadataMedium)
-                    .foregroundStyle(MonitorTheme.tertiaryText)
-                HStack(spacing: 2) {
-                    ForEach(TiboRadarFilter.allCases) { filter in
-                        Button {
-                            transitionTiboContent {
-                                tiboRadarFilter = filter
-                            }
-                        } label: {
-                            Text(tiboFilterTitle(filter))
-                                .font(MonitorTypography.control)
-                                .foregroundStyle(
-                                    tiboRadarFilter == filter
-                                        ? MonitorTheme.primaryText
-                                        : MonitorTheme.tertiaryText
-                                )
-                                .animation(
-                                    reduceMotion
-                                        ? nil
-                                        : .easeOut(duration: 0.12),
-                                    value: tiboRadarFilter
-                                )
-                                .padding(.horizontal, 9)
-                                .frame(height: 24)
-                                .background(
-                                    tiboRadarFilter == filter
-                                        ? Color.white.opacity(0.07)
-                                        : Color.clear,
-                                    in: RoundedRectangle(
-                                        cornerRadius: 6,
-                                        style: .continuous
-                                    )
-                                )
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityValue(
-                            tiboRadarFilter == filter ? "已选择" : ""
-                        )
+            if tiboRadarMode != .history {
+                HStack(spacing: 7) {
+                    Text("codex-reset.com")
+                        .foregroundStyle(MonitorDesktopTheme.secondaryText)
+                    Text("·")
+                    Text(tiboSourceFreshnessText)
+                        .foregroundStyle(store.tiboFeedError != nil || tiboSourceIsStale ? .orange : MonitorDesktopTheme.tertiaryText)
+                        .lineLimit(1)
+                        .help(store.tiboFeedError ?? tiboSourceFreshnessText)
+                    Spacer(minLength: 4)
+                    if store.isTiboFeedLoading {
+                        ProgressView().controlSize(.mini)
                     }
                 }
-                .padding(2)
-                .background(
-                    MonitorTheme.subtleCardFill.opacity(0.72),
-                    in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-                )
+                .font(MonitorDesktopTypography.metadata)
+                .padding(.horizontal, 2)
             }
         }
     }
@@ -3488,19 +3590,12 @@ struct NotchView: View {
     private func transitionTiboContent(_ updates: () -> Void) {
         tiboTransitionGeneration += 1
         let generation = tiboTransitionGeneration
-        if reduceMotion {
-            updates()
-            tiboContentOpacity = 1
-            tiboContentOffset = 0
-            return
-        }
-
-        tiboContentOpacity = 0.35
-        tiboContentOffset = 2
+        tiboContentOpacity = reduceMotion ? 0.75 : 0.35
+        tiboContentOffset = reduceMotion ? 0 : 8
         updates()
         DispatchQueue.main.async {
             guard tiboTransitionGeneration == generation else { return }
-            withAnimation(.easeOut(duration: 0.15)) {
+            withAnimation(reduceMotion ? .easeOut(duration: 0.15) : .spring(response: 0.34, dampingFraction: 1)) {
                 tiboContentOpacity = 1
                 tiboContentOffset = 0
             }
@@ -3512,58 +3607,54 @@ struct NotchView: View {
         case (_, .all): return "全部"
         case (.live, .reset): return "重置信号"
         case (.live, .secondary): return "额度动态"
-        case (.timeline, .reset): return "硬重置"
+        case (.timeline, .reset): return "重置记录"
         case (.timeline, .secondary): return "储备重置"
+        case (.history, _): return "全部"
         }
     }
 
     private func tiboLiveFeed(_ radar: CodexResetRadarSnapshot) -> some View {
-        let pinnedResolution = radar.signal.map {
-            tiboPinnedSignalResolution($0, radar: radar)
+        let pinnedSignal = tiboRadarFilter == .secondary ? nil : radar.signal.flatMap { signal in
+            CodexResetRadarPresentation.shouldPinSignal(
+                signal: signal,
+                resolution: tiboPinnedSignalResolution(signal, radar: radar)
+            ) ? signal : nil
         }
-        let pinnedPostIDs = Set([
-            radar.signal?.tweetId,
-            pinnedResolution?.evidenceEvent?.id,
-        ].compactMap { $0 })
+        let pinnedResolution = pinnedSignal.map { tiboPinnedSignalResolution($0, radar: radar) }
+        let pinnedPostIDs = Set([pinnedSignal?.tweetId, pinnedResolution?.evidenceEvent?.id].compactMap { $0 })
         let tweets = radar.tweets.filter { tweet in
             guard !pinnedPostIDs.contains(tweet.id) else { return false }
+            let event = radar.timelineEvents.first { $0.id == tweet.id }
             switch tiboRadarFilter {
             case .all: return true
-            case .reset:
-                return tweet.explicitResetClaim == true
-                    || tweet.tiboLane == "reset_announcement"
-                    || tweet.kind == "signal"
-                    || tweet.kind == "candidate"
-            case .secondary:
-                return tweet.kind == "limits"
-                    || (tweet.tiboLane == "reset_related" && tweet.explicitResetClaim != true)
+            case .reset: return CodexResetRadarPresentation.matchesResetFilter(tweet: tweet, event: event)
+            case .secondary: return CodexResetRadarPresentation.matchesQuotaFilter(tweet: tweet, event: event)
             }
         }
-        return LazyVStack(spacing: 0) {
-            if let signal = radar.signal, tiboRadarFilter != .secondary {
+        return LazyVStack(alignment: .leading, spacing: 12) {
+            if let signal = pinnedSignal {
                 tiboPinnedSignalRow(signal, radar: radar)
-                if !tweets.isEmpty {
-                    Rectangle().fill(MonitorTheme.separator).frame(height: 1)
-                }
+                    .modifier(MonitorDesktopReveal(delay: 0))
             }
-            ForEach(Array(tweets.prefix(20).enumerated()), id: \.element.id) { index, tweet in
+            if tweets.isEmpty, pinnedSignal == nil {
+                tiboFilteredEmptyState("暂无符合条件的动态")
+            }
+            ForEach(Array(tweets.enumerated()), id: \.element.id) { index, tweet in
                 if index == 0 || !Calendar.current.isDate(
                     tweets[index - 1].date ?? .distantPast,
                     inSameDayAs: tweet.date ?? .distantFuture
                 ) {
                     tiboDaySectionHeader(tweet.date)
                 }
-                tiboTweetRow(tweet, radar: radar)
-                if index < min(tweets.count, 20) - 1 {
-                    Rectangle().fill(MonitorTheme.separator).frame(height: 1)
+                if index < 3 {
+                    tiboTweetRow(tweet, radar: radar)
+                        .modifier(MonitorDesktopReveal(delay: Double(index) * 0.035))
+                } else {
+                    tiboTweetRow(tweet, radar: radar)
                 }
             }
         }
-        .background(MonitorTheme.subtleCardFill, in: RoundedRectangle(cornerRadius: MonitorGeometry.cardRadius, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: MonitorGeometry.cardRadius, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.07), lineWidth: 0.7)
-        }
+        .padding(.bottom, 8)
     }
 
     private func tiboTweetRow(
@@ -3571,74 +3662,129 @@ struct NotchView: View {
         radar: CodexResetRadarSnapshot
     ) -> some View {
         let event = radar.timelineEvents.first { $0.id == tweet.id }
-        let title = tiboHeadline(tweet.displayText)
-        let body = tiboBodyText(tweet.displayText)
-        let contentTag = tiboTweetTag(tweet, event: event)
-        return VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 7) {
-                if let contentTag {
-                    Text(contentTag.rawValue)
-                        .font(AstaSans.semiBold(8))
-                        .foregroundStyle(tiboTweetColor(contentTag))
-                        .padding(.horizontal, 7)
-                        .frame(height: 21)
-                        .background(tiboTweetColor(contentTag).opacity(0.08), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                .strokeBorder(tiboTweetColor(contentTag).opacity(0.35), lineWidth: 0.7)
-                        }
+        let tag = tiboTweetTag(tweet, event: event)
+        return VStack(alignment: .leading, spacing: 12) {
+            tiboPostHeader(date: tweet.date)
+            tiboReplyContext(tweet)
+            tiboReadableText(tweet.displayText, id: "tweet:\(tweet.id)")
+            HStack(spacing: 12) {
+                if let tag {
+                    Text(tag.rawValue)
+                        .foregroundStyle(tiboTweetColor(tag))
                 }
-                Text(title)
-                    .font(AstaSans.semiBold(10.8))
-                    .lineLimit(2)
-                Spacer()
-                Text(tiboRelativeTime(tweet.date))
-                    .font(AstaSans.medium(8))
-                    .foregroundStyle(MonitorTheme.faintText)
+                if let status = tweet.resetVerificationStatus ?? event?.resetVerificationStatus {
+                    Text(tiboVerificationLabel(status))
+                        .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+                }
+                Spacer(minLength: 0)
+                tiboSourceLink(tweet.url, title: "在 X 查看完整对话")
             }
-            if let body {
-                Text(body)
-                    .font(MonitorTypography.body)
-                    .foregroundStyle(MonitorTheme.secondaryText)
-                    .lineSpacing(2)
-                    .lineLimit(2)
+            .font(MonitorDesktopTypography.metadata)
+            if tweet.replies != nil || tweet.reposts != nil || tweet.likes != nil {
+                HStack(spacing: 16) {
+                    tiboEngagement("arrowshape.turn.up.left", tweet.replies)
+                    tiboEngagement("arrow.2.squarepath", tweet.reposts)
+                    tiboEngagement("heart", tweet.likes)
+                    Spacer()
+                }
+                .font(MonitorDesktopTypography.metadata)
+                .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+                .accessibilityLabel("互动数据")
             }
-            HStack(spacing: 11) {
-                Text("@thsottiaux")
-                Text("·")
-                Circle()
-                    .fill(tiboTweetEvidenceColor(event))
-                    .frame(width: 4, height: 4)
-                Text(event.map(tiboTimelineSourceLabel) ?? "实时雷达")
-                Button {
-                    guard let url = URL(string: tweet.url) else { return }
-                    NSWorkspace.shared.open(url)
-                } label: {
-                    HStack(spacing: 4) {
-                        Text("X 原文")
-                        Image(systemName: "arrow.up.right")
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(MonitorDesktopTheme.subtleCardFill, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+    }
+
+    private func tiboPostHeader(date: Date?) -> some View {
+        HStack(spacing: 7) {
+            Text("Tibo")
+                .font(MonitorDesktopTypography.rowTitle)
+                .foregroundStyle(MonitorDesktopTheme.primaryText)
+            Text("@thsottiaux")
+                .font(MonitorDesktopTypography.metadata)
+                .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+            Spacer(minLength: 8)
+            Text(tiboRelativeTime(date))
+                .font(MonitorDesktopTypography.metadata)
+                .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+                .help(date.map(tiboAbsoluteTime) ?? "发布时间未知")
+        }
+    }
+
+    @ViewBuilder
+    private func tiboReplyContext(_ tweet: CodexResetRadarTweet) -> some View {
+        if tweet.isReply == true {
+            let target = tweet.replyingTo?.trimmingCharacters(in: CharacterSet(charactersIn: "@"))
+            Text(target.map { "回复 @\($0) · 上文未提供" } ?? "回复内容 · 上文未提供")
+                .font(MonitorDesktopTypography.metadata)
+                .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+                .help("当前数据源未提供被回复的原文，可在 X 查看完整对话。")
+        }
+    }
+
+    private func tiboReadableText(_ text: String, id: String) -> some View {
+        let isExpanded = expandedTiboTexts.contains(id)
+        let needsExpansion = text.count > 100 || text.contains("\n")
+        return VStack(alignment: .leading, spacing: 8) {
+            Text(text)
+                .font(.system(size: 14))
+                .foregroundStyle(MonitorDesktopTheme.primaryText)
+                .lineSpacing(4)
+                .lineLimit(isExpanded || !needsExpansion ? nil : 4)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+            if needsExpansion {
+                Button(isExpanded ? "收起" : "展开全文") {
+                    animate(.spring(response: 0.30, dampingFraction: 1)) {
+                        if isExpanded { expandedTiboTexts.remove(id) }
+                        else { expandedTiboTexts.insert(id) }
                     }
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(MonitorTheme.cyanAccent)
-                Spacer(minLength: 0)
-                tiboEngagement("arrowshape.turn.up.left", tweet.replies)
-                tiboEngagement("arrow.2.squarepath", tweet.reposts)
-                tiboEngagement("heart", tweet.likes)
+                .font(MonitorDesktopTypography.control)
+                .buttonStyle(MonitorCenterPressStyle())
+                .foregroundStyle(MonitorDesktopTheme.cyanAccent)
             }
-            .font(MonitorTypography.metadataMedium)
-            .foregroundStyle(MonitorTheme.faintText)
         }
-        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func tiboSourceLink(_ value: String, title: String) -> some View {
+        Button {
+            guard let url = URL(string: value) else { return }
+            NSWorkspace.shared.open(url)
+        } label: {
+            Label(title, systemImage: "arrow.up.right")
+                .font(MonitorDesktopTypography.metadata)
+        }
+        .buttonStyle(MonitorCenterPressStyle())
+        .foregroundStyle(MonitorDesktopTheme.cyanAccent)
+    }
+
+    private func tiboFilteredEmptyState(_ title: String) -> some View {
+        VStack(spacing: 0) {
+            MonitorCenterEmptyState(
+                symbol: "line.3.horizontal.decrease.circle",
+                title: title,
+                detail: tiboRadarFilter == .all ? "数据源暂未提供记录，可稍后刷新。" : "当前筛选下没有记录，可以查看全部内容。"
+            )
+            if tiboRadarFilter != .all {
+                Button("显示全部") { transitionTiboContent { tiboRadarFilter = .all } }
+                    .buttonStyle(.bordered)
+            }
+        }
+        .padding(.vertical, 16)
+        .frame(maxWidth: .infinity)
     }
 
     private func tiboDaySectionHeader(_ date: Date?) -> some View {
         HStack(spacing: 8) {
             Text(tiboDaySectionTitle(date))
-                .font(AstaSans.semiBold(8.5))
-                .foregroundStyle(MonitorTheme.tertiaryText)
+                .font(MonitorDesktopTypography.metadataMedium)
+                .foregroundStyle(MonitorDesktopTheme.tertiaryText)
             Rectangle()
-                .fill(MonitorTheme.separator)
+                .fill(MonitorDesktopTheme.separator)
                 .frame(height: 1)
         }
         .padding(.horizontal, 12)
@@ -3655,26 +3801,10 @@ struct NotchView: View {
         return formatter.string(from: date)
     }
 
-    private func tiboBodyText(_ text: String) -> String? {
-        let compact = text.replacingOccurrences(of: "\n", with: " ")
-            .replacingOccurrences(of: "  ", with: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let remainder: Substring
-        if let stop = compact.firstIndex(of: "。") {
-            remainder = compact[compact.index(after: stop)...]
-        } else if let range = compact.range(of: ". ") {
-            remainder = compact[range.upperBound...]
-        } else {
-            return nil
-        }
-        let body = remainder.trimmingCharacters(in: .whitespacesAndNewlines)
-        return body.isEmpty ? nil : body
-    }
-
+    @ViewBuilder
     private func tiboEngagement(_ symbol: String, _ value: Int?) -> some View {
-        HStack(spacing: 3) {
-            Image(systemName: symbol)
-            Text(tiboCompactCount(value ?? 0))
+        if let value {
+            Label(tiboCompactCount(value), systemImage: symbol)
                 .monospacedDigit()
         }
     }
@@ -3683,136 +3813,66 @@ struct NotchView: View {
         let events = radar.timelineEvents.filter { event in
             switch tiboRadarFilter {
             case .all: return true
-            case .reset: return event.type == "reset" && event.preview == false
+            case .reset: return event.type == "reset"
             case .secondary: return event.type == "credits"
             }
         }
-        let visibleEvents = Array(events.prefix(30))
-        return LazyVStack(spacing: 0) {
-            ForEach(Array(visibleEvents.enumerated()), id: \.element.id) { index, event in
-                tiboTimelineRow(
-                    event,
-                    isFirst: index == 0,
-                    isLast: index == visibleEvents.count - 1,
-                    showsDate: index == 0 || visibleEvents[index - 1].date != event.date
-                )
+        return LazyVStack(alignment: .leading, spacing: 12) {
+            if events.isEmpty { tiboFilteredEmptyState("暂无符合条件的重置记录") }
+            ForEach(Array(events.enumerated()), id: \.element.id) { index, event in
+                if index == 0 || events[index - 1].date != event.date {
+                    tiboDaySectionHeader(event.announcedDate)
+                }
+                if index < 3 {
+                    tiboTimelineRow(event)
+                        .modifier(MonitorDesktopReveal(delay: Double(index) * 0.035))
+                } else {
+                    tiboTimelineRow(event)
+                }
             }
         }
-        .padding(.vertical, 7)
-        .background(MonitorTheme.subtleCardFill, in: RoundedRectangle(cornerRadius: MonitorGeometry.cardRadius, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: MonitorGeometry.cardRadius, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.07), lineWidth: 0.7)
-        }
+        .padding(.bottom, 8)
     }
 
-    private func tiboTimelineRow(
-        _ event: CodexResetTimelineEvent,
-        isFirst: Bool,
-        isLast: Bool,
-        showsDate: Bool
-    ) -> some View {
-        HStack(alignment: .top, spacing: 0) {
-            VStack(alignment: .trailing, spacing: 2) {
-                if showsDate {
-                    Text(tiboTimelineDateLabel(event.announcedDate))
-                        .font(MonitorTypography.metadataMedium)
-                        .foregroundStyle(tiboTimelineColor(event))
-                }
-                Text(tiboTimelineTimeLabel(event.announcedDate))
-                    .font(MonitorTypography.metadata)
-                    .foregroundStyle(MonitorTheme.faintText)
-            }
-            .frame(width: 58, alignment: .trailing)
-            .padding(.top, 10)
-
-            ZStack(alignment: .top) {
-                GeometryReader { proxy in
-                    let centerY: CGFloat = 22
-                    if !isFirst {
-                        Rectangle()
-                            .fill(MonitorTheme.cyanAccent.opacity(0.24))
-                            .frame(width: 1, height: centerY)
-                            .position(x: proxy.size.width / 2, y: centerY / 2)
-                    }
-                    if !isLast {
-                        Rectangle()
-                            .fill(MonitorTheme.cyanAccent.opacity(0.24))
-                            .frame(width: 1, height: max(0, proxy.size.height - centerY))
-                            .position(
-                                x: proxy.size.width / 2,
-                                y: centerY + max(0, proxy.size.height - centerY) / 2
-                            )
-                    }
-                }
-                ZStack {
-                    Circle()
-                        .fill(Color(red: 0.075, green: 0.085, blue: 0.095))
-                    Circle()
-                        .strokeBorder(tiboTimelineColor(event).opacity(0.85), lineWidth: 1.2)
-                    Image(systemName: tiboTimelineSymbol(event))
-                        .font(.system(size: 7.5, weight: .bold))
-                        .foregroundStyle(tiboTimelineColor(event))
-                }
-                .frame(width: 22, height: 22)
-                .padding(.top, 11)
-            }
-            .frame(width: 38)
-
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 6) {
+    private func tiboTimelineRow(_ event: CodexResetTimelineEvent) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: tiboTimelineSymbol(event))
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(tiboTimelineColor(event))
+                .frame(width: 28, height: 28)
+                .background(tiboTimelineColor(event).opacity(0.08), in: Circle())
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(tiboTimelineTitle(event))
-                        .font(AstaSans.semiBold(10.5))
-                    Text(tiboTimelineConfidenceLabel(event))
-                        .font(MonitorTypography.metadataMedium)
-                        .foregroundStyle(tiboTimelineColor(event))
-                    if let status = event.resetVerificationStatus {
-                        Text(tiboVerificationLabel(status))
-                            .font(MonitorTypography.metadataMedium)
-                            .foregroundStyle(MonitorTheme.secondaryText)
-                    }
-                    Spacer()
-                    Text(tiboRelativeTime(event.announcedDate))
-                        .font(MonitorTypography.metadata)
-                        .foregroundStyle(MonitorTheme.faintText)
+                        .font(MonitorDesktopTypography.rowTitle)
+                    Spacer(minLength: 4)
+                    Text(tiboTimelineTimeLabel(event.announcedDate))
+                        .font(MonitorDesktopTypography.metadata)
+                        .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+                        .help(event.announcedDate.map(tiboAbsoluteTime) ?? "发布时间未知")
                 }
-                Text(event.displayText)
-                    .font(MonitorTypography.body)
-                    .foregroundStyle(MonitorTheme.secondaryText)
-                    .lineSpacing(2)
-                    .lineLimit(3)
-                HStack(spacing: 7) {
+                tiboReadableText(event.displayText, id: "timeline:\(event.id)")
+                HStack(spacing: 8) {
                     Text(tiboTimelineSourceLabel(event))
-                    Button {
-                        guard let url = URL(string: event.url) else { return }
-                        NSWorkspace.shared.open(url)
-                    } label: {
-                        HStack(spacing: 4) {
-                            Text("查看 X 证据")
-                            Image(systemName: "arrow.up.right")
-                        }
+                    Text("·")
+                    Text(tiboTimelineConfidenceLabel(event))
+                    if let status = event.resetVerificationStatus {
+                        Text("· \(tiboVerificationLabel(status))")
                     }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(MonitorTheme.cyanAccent)
-                    Spacer()
+                    Spacer(minLength: 0)
                 }
-                .font(MonitorTypography.metadataMedium)
-                .foregroundStyle(MonitorTheme.faintText)
+                .font(MonitorDesktopTypography.metadata)
+                .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+                tiboSourceLink(event.url, title: "在 X 查看完整对话")
             }
-            .padding(.leading, 5)
-            .padding(.trailing, 12)
-            .padding(.vertical, 10)
         }
+        .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background(MonitorDesktopTheme.subtleCardFill, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
     }
 
-    private func tiboTimelineDateLabel(_ date: Date?) -> String {
-        guard let date else { return "--" }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "M月d日"
-        return formatter.string(from: date)
-    }
+
 
     private func tiboTimelineTimeLabel(_ date: Date?) -> String {
         guard let date else { return "" }
@@ -3844,36 +3904,38 @@ struct NotchView: View {
         }
     }
 
-    private func tiboTweetEvidenceColor(_ event: CodexResetTimelineEvent?) -> Color {
-        guard let event else { return MonitorTheme.faintText }
-        if event.source == "archive", event.confidence == "high" { return .green }
-        if event.source == "archive" { return .cyan }
-        return MonitorTheme.faintText
-    }
+
 
     private func tiboTimelineTitle(_ event: CodexResetTimelineEvent) -> String {
-        if event.resetVerificationStatus == "rejected" { return "候选信号已驳回" }
+        if event.resetVerificationStatus == "rejected" { return "已驳回的候选信号" }
+        if event.resetVerificationStatus == "pending" { return "待验证的重置信号" }
+        if event.resetVerificationStatus == "expired" { return "验证窗口已结束" }
         if event.type == "credits" { return "储备重置" }
         if event.preview { return "重置预告" }
-        if event.type == "reset" { return "额度重置" }
-        if event.type == "promo" || event.type == "boost" { return "额度促销动态" }
+        if event.type == "reset" { return event.source == "archive" && event.confidence == "high" ? "已归档的重置记录" : "重置相关记录" }
+        if event.type == "promo" || event.type == "boost" { return "额度提升动态" }
         return "相关动态"
     }
 
     private func tiboTimelineSymbol(_ event: CodexResetTimelineEvent) -> String {
         if event.resetVerificationStatus == "rejected" { return "xmark" }
-        if event.type == "credits" { return "tray.full.fill" }
-        if event.preview { return "clock.fill" }
-        if event.type == "reset" { return "checkmark" }
-        return "bolt.fill"
+        if event.resetVerificationStatus == "pending" { return "questionmark" }
+        if event.resetVerificationStatus == "expired" { return "clock" }
+        if event.type == "credits" { return "tray" }
+        if event.preview { return "clock" }
+        if event.type == "reset", event.source == "archive", event.confidence == "high" { return "checkmark" }
+        return "bubble.left"
     }
 
     private func tiboTimelineColor(_ event: CodexResetTimelineEvent) -> Color {
-        if event.resetVerificationStatus == "rejected" { return .red }
-        if event.type == "credits" { return .orange }
-        if event.preview || event.confidence == "medium" { return .cyan }
-        if event.type == "reset", event.confidence == "high" { return .green }
-        return MonitorTheme.secondaryText
+        if event.resetVerificationStatus == "rejected" { return .orange }
+        if event.resetVerificationStatus == "pending" || event.resetVerificationStatus == "expired" {
+            return MonitorDesktopTheme.tertiaryText
+        }
+        if event.type == "reset", !event.preview, event.source == "archive", event.confidence == "high" {
+            return .green
+        }
+        return MonitorDesktopTheme.cyanAccent
     }
 
     private func tiboTimelineConfidenceLabel(_ event: CodexResetTimelineEvent) -> String {
@@ -3885,7 +3947,7 @@ struct NotchView: View {
     }
 
     private func tiboTimelineSourceLabel(_ event: CodexResetTimelineEvent) -> String {
-        event.source == "archive" ? "已归档证据" : "实时雷达"
+        event.source == "archive" ? "社区归档" : "社区实时信号"
     }
 
     private func tiboVerificationLabel(_ value: String) -> String {
@@ -3893,20 +3955,12 @@ struct NotchView: View {
         case "pending": return "待验证"
         case "rejected": return "已驳回"
         case "expired": return "验证窗口已结束"
-        default: return value
+        case "confirmed", "verified": return "已验证"
+        default: return "验证状态未知"
         }
     }
 
-    private func tiboHeadline(_ text: String) -> String {
-        let compact = text.replacingOccurrences(of: "\n", with: " ")
-            .replacingOccurrences(of: "  ", with: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if let stop = compact.firstIndex(of: "。") {
-            let sentence = String(compact[...stop])
-            if sentence.count <= 58 { return sentence }
-        }
-        return compact.count <= 58 ? compact : String(compact.prefix(58)) + "…"
-    }
+
 
     private func tiboCompactCount(_ value: Int) -> String {
         if value >= 10_000 { return String(format: "%.1f万", Double(value) / 10_000) }
@@ -3918,10 +3972,10 @@ struct NotchView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 7) {
                 Image(systemName: "bell.badge.fill")
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.cyan)
                 Text("额度恢复监控")
-                    .font(.system(size: 10.5, weight: .semibold))
+                    .font(.system(size: 11, weight: .semibold))
                 Spacer()
                 quotaNotificationStatusControl
             }
@@ -3929,15 +3983,15 @@ struct NotchView: View {
             ForEach(store.confirmableQuotaRecoveries.prefix(2)) { candidate in
                 HStack(alignment: .top, spacing: 7) {
                     Image(systemName: "questionmark.circle.fill")
-                        .font(.system(size: 9, weight: .bold))
+                        .font(.system(size: 11, weight: .bold))
                         .foregroundStyle(.orange)
                         .frame(width: 13, height: 14)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("检测到额度恢复，等待确认")
-                            .font(.system(size: 9.5, weight: .semibold))
+                            .font(.system(size: 11, weight: .semibold))
                         Text(quotaResetSummary(candidate))
-                            .font(.system(size: 8.5, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.46))
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                             .lineLimit(2)
                     }
                     Spacer(minLength: 4)
@@ -3945,8 +3999,8 @@ struct NotchView: View {
                         quotaResetCandidateToConfirm = candidate
                         confirmsUserQuotaReset = true
                     }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 8, weight: .semibold))
+                    .buttonStyle(MonitorCenterPressStyle())
+                    .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.orange.opacity(0.92))
                     .padding(.horizontal, 7)
                     .frame(minHeight: 22)
@@ -3956,27 +4010,27 @@ struct NotchView: View {
 
             if store.quotaResetEvents.isEmpty && store.confirmableQuotaRecoveries.isEmpty {
                 Text("正在监控 Tibo 重置与窗口到期重置")
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.42))
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(MonitorDesktopTheme.tertiaryText)
             } else {
                 ForEach(store.quotaResetEvents.prefix(3)) { event in
                     HStack(alignment: .top, spacing: 7) {
                         Image(systemName: quotaResetSymbol(event.displayReason))
-                            .font(.system(size: 9, weight: .bold))
+                            .font(.system(size: 11, weight: .bold))
                             .foregroundStyle(quotaResetColor(event.displayReason))
                             .frame(width: 13, height: 14)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(event.displayReason.title)
-                                .font(.system(size: 9.5, weight: .semibold))
+                                .font(.system(size: 11, weight: .semibold))
                             Text(quotaResetSummary(event))
-                                .font(.system(size: 8.5, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.46))
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                                 .lineLimit(2)
                         }
                         Spacer(minLength: 4)
                         Text(tiboRelativeTime(event.detectedAt))
-                            .font(.system(size: 7.5, weight: .medium, design: .rounded))
-                            .foregroundStyle(.white.opacity(0.30))
+                            .font(.system(size: 11, weight: .medium, design: .rounded))
+                            .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                     }
                     .contentShape(Rectangle())
                     .onTapGesture {
@@ -4006,9 +4060,9 @@ struct NotchView: View {
                 HStack(spacing: 4) {
                     Text("打开通知设置")
                     Image(systemName: "arrow.up.right")
-                        .font(.system(size: 7, weight: .bold))
+                        .font(.system(size: 11, weight: .bold))
                 }
-                .font(.system(size: 8, weight: .semibold, design: .rounded))
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
                 .foregroundStyle(Color.orange.opacity(0.92))
                 .padding(.horizontal, 9)
                 .frame(minWidth: 88, minHeight: 28)
@@ -4018,13 +4072,13 @@ struct NotchView: View {
                 }
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(MonitorCenterPressStyle())
             .contentShape(Rectangle())
             .help("前往系统设置，为 Codex Monitor 开启通知")
         } else {
             Text(quotaNotificationStatusText)
-                .font(.system(size: 8, weight: .medium, design: .rounded))
-                .foregroundStyle(.white.opacity(0.34))
+                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .foregroundStyle(MonitorDesktopTheme.tertiaryText)
         }
     }
 
@@ -4087,11 +4141,11 @@ struct NotchView: View {
                     Text("Tibo 的 Codex 动态")
                         .font(.system(size: 11, weight: .semibold))
                     Text("@thsottiaux")
-                        .font(.system(size: 8, weight: .medium, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.35))
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                 }
                 Text(tiboSourceSubtitle)
-                    .font(.system(size: 8.5, weight: .medium))
+                    .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(tiboSourceIsStale ? .orange.opacity(0.82) : .white.opacity(0.4))
                     .lineLimit(1)
             }
@@ -4102,12 +4156,12 @@ struct NotchView: View {
             } else {
                 Button { store.refreshTiboFeed() } label: {
                     Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 9, weight: .semibold))
+                        .font(.system(size: 11, weight: .semibold))
                         .frame(width: 28, height: 28)
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(.white.opacity(0.46))
+                .buttonStyle(MonitorCenterPressStyle())
+                .foregroundStyle(MonitorDesktopTheme.tertiaryText)
             }
         }
         .padding(11)
@@ -4119,18 +4173,18 @@ struct NotchView: View {
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 7) {
                 Image(systemName: tiboEventSymbol(event.kind))
-                    .font(.system(size: 10, weight: .bold))
+                    .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(tiboEventColor(event.kind))
                 Text(item.isManualCompletion ? "已确认额度重置" : tiboEventTitle(event.kind))
-                    .font(.system(size: 10.5, weight: .semibold))
+                    .font(.system(size: 11, weight: .semibold))
                 Spacer()
                 Text(tiboRelativeTime(event.announcedDate))
-                    .font(.system(size: 8, weight: .medium, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.34))
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .foregroundStyle(MonitorDesktopTheme.tertiaryText)
             }
 
             Text(event.text.trimmingCharacters(in: .whitespacesAndNewlines))
-                .font(.system(size: 9.5, weight: .medium))
+                .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.white.opacity(0.72))
                 .multilineTextAlignment(.leading)
                 .lineSpacing(2)
@@ -4142,7 +4196,7 @@ struct NotchView: View {
                     Image(systemName: "checkmark.seal.fill")
                     Text("由 \(item.supportingSchedules.count) 条计划动态确认")
                 }
-                .font(.system(size: 8, weight: .semibold))
+                .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.green.opacity(0.72))
             }
 
@@ -4167,10 +4221,10 @@ struct NotchView: View {
                     .frame(minHeight: 22)
                     .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(MonitorCenterPressStyle())
                 .help("打开 @thsottiaux 的原始动态")
             }
-            .font(.system(size: 8, weight: .semibold, design: .rounded))
+            .font(.system(size: 11, weight: .semibold, design: .rounded))
             .foregroundStyle(.cyan.opacity(0.68))
         }
         .padding(12)
@@ -4194,16 +4248,16 @@ struct NotchView: View {
                 Image(systemName: "character.book.closed")
                 Text("中文翻译需要 macOS 15 或更高版本")
             }
-            .font(.system(size: 8, weight: .medium))
-            .foregroundStyle(.white.opacity(0.30))
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(MonitorDesktopTheme.tertiaryText)
         }
 #else
         HStack(spacing: 5) {
             Image(systemName: "character.book.closed")
             Text("当前系统不支持本地翻译")
         }
-        .font(.system(size: 8, weight: .medium))
-        .foregroundStyle(.white.opacity(0.30))
+        .font(.system(size: 11, weight: .medium))
+        .foregroundStyle(MonitorDesktopTheme.tertiaryText)
 #endif
     }
 
@@ -4272,7 +4326,7 @@ struct NotchView: View {
 
     private var costOverviewCard: some View {
         let totals = selectedCost
-        return VStack(alignment: .leading, spacing: MonitorGeometry.overviewItemGap) {
+        return VStack(alignment: .leading, spacing: 12) {
             dataCardHeader(
                 symbol: "chart.xyaxis.line",
                 title: "成本概览"
@@ -4281,24 +4335,26 @@ struct NotchView: View {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(costPeriodTitle)
-                        .font(AstaSans.regular(10.5))
-                        .foregroundStyle(MonitorTheme.secondaryText)
+                        .font(MonitorDesktopTypography.body)
+                        .foregroundStyle(MonitorDesktopTheme.secondaryText)
                     Text(formatDollars(totals.dollars))
-                        .font(MonitorTypography.primaryMetric)
+                        .font(MonitorDesktopTypography.primaryMetric)
                         .tracking(-0.21)
-                        .foregroundStyle(MonitorTheme.cyanAccent)
+                        .foregroundStyle(MonitorDesktopTheme.cyanAccent)
                         .monospacedDigit()
                         .contentTransition(.numericText())
+                        .animation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 1), value: totals.dollars)
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 2) {
                     Text("Token 吞吐量")
-                        .font(MonitorTypography.metadata)
-                        .foregroundStyle(.white.opacity(0.36))
+                        .font(MonitorDesktopTypography.metadata)
+                        .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                     Text(formatTokens(totals.tokens))
-                        .font(MonitorTypography.secondaryMetric)
+                        .font(MonitorDesktopTypography.secondaryMetric)
                         .monospacedDigit()
                         .contentTransition(.numericText())
+                        .animation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 1), value: totals.tokens)
                 }
             }
 
@@ -4309,35 +4365,33 @@ struct NotchView: View {
                 Spacer(minLength: 0)
                 if store.isCostLoading { ProgressView().controlSize(.mini).tint(.cyan) }
             }
-            .font(AstaSans.regular(10.5))
-            .foregroundStyle(MonitorTheme.tertiaryText)
+            .font(MonitorDesktopTypography.body)
+            .foregroundStyle(MonitorDesktopTheme.tertiaryText)
             .lineLimit(1)
 
             CostTrendChart(
                 values: Array(selectedCost.series.prefix(costVisiblePointCount)),
                 period: costPeriod
             )
-            .frame(height: MonitorGeometry.chartHeight)
+            .frame(height: 104)
 
             HStack {
                 Text(costTrendStartLabel)
                 Spacer()
                 Text(costTrendEndLabel)
             }
-            .font(MonitorTypography.body)
-            .foregroundStyle(MonitorTheme.faintText)
+            .font(MonitorDesktopTypography.body)
+            .foregroundStyle(MonitorDesktopTheme.faintText)
         }
-        .padding(MonitorGeometry.cardPadding)
+        .padding(18)
         .background(
-            MonitorTheme.cardFill,
+            MonitorDesktopTheme.cardFill,
             in: RoundedRectangle(cornerRadius: MonitorGeometry.cardRadius, style: .continuous)
         )
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: totals.dollars)
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: totals.tokens)
     }
 
     private var costActivityCard: some View {
-        VStack(alignment: .leading, spacing: MonitorGeometry.overviewItemGap) {
+        VStack(alignment: .leading, spacing: 12) {
             dataCardHeader(
                 symbol: "square.grid.3x3.fill",
                 title: "成本活动"
@@ -4347,8 +4401,8 @@ struct NotchView: View {
 
             if !selectedCostScope.usage.activityIsReady {
                 Text("正在整理成本活动…")
-                    .font(AstaSans.regular(10.5))
-                    .foregroundStyle(MonitorTheme.tertiaryText)
+                    .font(MonitorDesktopTypography.body)
+                    .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                     .frame(maxWidth: .infinity, minHeight: 48)
             } else {
                 CostActivityHeatmap(
@@ -4357,9 +4411,9 @@ struct NotchView: View {
                 )
             }
         }
-        .padding(MonitorGeometry.cardPadding)
+        .padding(18)
         .background(
-            MonitorTheme.cardFill,
+            MonitorDesktopTheme.cardFill,
             in: RoundedRectangle(cornerRadius: MonitorGeometry.cardRadius, style: .continuous)
         )
         .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: costActivityPeriod)
@@ -4384,30 +4438,30 @@ struct NotchView: View {
                             .fill(Color.cyan)
                             .frame(width: 6, height: 6)
                         Text(provider.provider.rawValue)
-                            .font(MonitorTypography.cardTitle)
+                            .font(MonitorDesktopTypography.cardTitle)
                         Spacer()
                     }
                     HStack {
                         if totals.tokens == 0 {
                             Text("暂无 Codex 本地日志")
-                                .foregroundStyle(.white.opacity(0.42))
+                                .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                         } else {
                             Text("Token 吞吐量")
-                                .foregroundStyle(.white.opacity(0.42))
+                                .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                             Text(formatTokens(totals.tokens))
                                 .foregroundStyle(.cyan.opacity(0.78))
                                 .monospacedDigit()
                                 .contentTransition(.numericText())
                             Spacer()
                             Text("等价成本")
-                                .foregroundStyle(.white.opacity(0.42))
+                                .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                             Text(formatDollars(totals.dollars))
                                 .fontWeight(.bold)
                                 .monospacedDigit()
                                 .contentTransition(.numericText())
                         }
                     }
-                    .font(MonitorTypography.body)
+                    .font(MonitorDesktopTypography.body)
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
                 }
@@ -4415,16 +4469,16 @@ struct NotchView: View {
             if !selectedCostScope.unknownModels.isEmpty {
                 HStack(alignment: .top, spacing: 6) {
                     Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 8))
+                        .font(.system(size: 11))
                         .padding(.top, 1)
                     VStack(alignment: .leading, spacing: 1) {
                         Text("\(selectedCostScope.unknownModels.count) 个未定价模型未计入美元估值")
                         Text(selectedCostScope.unknownModels.joined(separator: ", "))
-                            .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
                     }
                     Spacer(minLength: 0)
                 }
-                .font(.system(size: 8, weight: .medium))
+                .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.orange.opacity(0.82))
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -4434,9 +4488,9 @@ struct NotchView: View {
                         if let billingModel = selectedCostScope.estimatedModelAliases[model] {
                             HStack(spacing: 5) {
                                 Image(systemName: "equal.circle.fill")
-                                    .font(.system(size: 8))
+                                    .font(.system(size: 11))
                                 Text("\(model) 已按 \(billingModel) 估算")
-                                    .font(.system(size: 8, weight: .medium, design: .monospaced))
+                                    .font(.system(size: 11, weight: .medium, design: .monospaced))
                                     .lineLimit(1)
                             }
                         }
@@ -4446,9 +4500,9 @@ struct NotchView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .padding(MonitorGeometry.cardPadding)
+        .padding(18)
         .background(
-            MonitorTheme.cardFill,
+            MonitorDesktopTheme.cardFill,
             in: RoundedRectangle(cornerRadius: MonitorGeometry.cardRadius, style: .continuous)
         )
     }
@@ -4457,17 +4511,17 @@ struct NotchView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 10) {
                 Label("数据范围", systemImage: "person.2.fill")
-                    .font(MonitorTypography.cardTitle)
-                    .foregroundStyle(MonitorTheme.secondaryText)
+                    .font(MonitorDesktopTypography.cardTitle)
+                    .foregroundStyle(MonitorDesktopTheme.secondaryText)
                 Spacer(minLength: 8)
                 accountScopeMenu
             }
 
             HStack(spacing: 8) {
                 Text(accountScopeEvidenceText)
-                    .font(MonitorTypography.metadata)
-                    .foregroundStyle(MonitorTheme.tertiaryText)
-                    .lineLimit(1)
+                    .font(MonitorDesktopTypography.metadata)
+                    .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+                    .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 4)
                 if shouldOfferMonthlyHistoryShortcut {
                     Button("查看近 30 日") {
@@ -4476,9 +4530,9 @@ struct NotchView: View {
                             costPeriod = .month
                         }
                     }
-                    .buttonStyle(.plain)
-                    .font(MonitorTypography.control)
-                    .foregroundStyle(MonitorTheme.cyanAccent)
+                    .buttonStyle(MonitorCenterPressStyle())
+                    .font(MonitorDesktopTypography.control)
+                    .foregroundStyle(MonitorDesktopTheme.cyanAccent)
                 }
             }
 
@@ -4486,7 +4540,7 @@ struct NotchView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
         .background(
-            MonitorTheme.subtleCardFill,
+            MonitorDesktopTheme.subtleCardFill,
             in: RoundedRectangle(
                 cornerRadius: MonitorGeometry.cardRadius,
                 style: .continuous
@@ -4497,15 +4551,15 @@ struct NotchView: View {
                 cornerRadius: MonitorGeometry.cardRadius,
                 style: .continuous
             )
-            .strokeBorder(MonitorTheme.hairline, lineWidth: 0.5)
+            .strokeBorder(MonitorDesktopTheme.hairline, lineWidth: 0.5)
         }
     }
 
     private var analysisPeriodBar: some View {
         HStack(spacing: 12) {
             Label("统计周期", systemImage: "calendar")
-                .font(MonitorTypography.cardTitle)
-                .foregroundStyle(MonitorTheme.secondaryText)
+                .font(MonitorDesktopTypography.cardTitle)
+                .foregroundStyle(MonitorDesktopTheme.secondaryText)
             Spacer(minLength: 8)
             analysisPeriodControl
                 .frame(maxWidth: 360)
@@ -4513,7 +4567,7 @@ struct NotchView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
         .background(
-            MonitorTheme.subtleCardFill,
+            MonitorDesktopTheme.subtleCardFill,
             in: RoundedRectangle(
                 cornerRadius: MonitorGeometry.cardRadius,
                 style: .continuous
@@ -4524,7 +4578,7 @@ struct NotchView: View {
                 cornerRadius: MonitorGeometry.cardRadius,
                 style: .continuous
             )
-            .strokeBorder(MonitorTheme.hairline, lineWidth: 0.5)
+            .strokeBorder(MonitorDesktopTheme.hairline, lineWidth: 0.5)
         }
     }
 
@@ -4543,16 +4597,18 @@ struct NotchView: View {
         } label: {
             HStack(spacing: 6) {
                 Text(selectedAccountScopeTitle)
-                    .font(MonitorTypography.controlLarge)
-                    .foregroundStyle(MonitorTheme.primaryText)
+                    .font(MonitorDesktopTypography.controlLarge)
+                    .foregroundStyle(MonitorDesktopTheme.primaryText)
                     .lineLimit(1)
+                    .frame(maxWidth: 260, alignment: .trailing)
+                    .help(selectedAccountScopeTitle)
             }
             .padding(.horizontal, 9)
-            .frame(minWidth: 150, minHeight: 26, alignment: .trailing)
+            .frame(minWidth: 150, minHeight: 32, alignment: .trailing)
             .background(
-                MonitorTheme.controlFill,
+                MonitorDesktopTheme.controlFill,
                 in: RoundedRectangle(
-                    cornerRadius: MonitorTheme.controlCornerRadius,
+                    cornerRadius: MonitorDesktopTheme.controlCornerRadius,
                     style: .continuous
                 )
             )
@@ -4574,12 +4630,12 @@ struct NotchView: View {
                         animate(.islandContentSwap) { usagePeriod = period }
                     } label: {
                         Text(period.rawValue)
-                            .font(MonitorTypography.controlLarge)
-                            .frame(maxWidth: .infinity, minHeight: 24)
+                            .font(MonitorDesktopTypography.controlLarge)
+                            .frame(maxWidth: .infinity, minHeight: 30)
                             .foregroundStyle(
                                 usagePeriod == period
-                                    ? MonitorTheme.primaryText
-                                    : MonitorTheme.tertiaryText
+                                    ? MonitorDesktopTheme.primaryText
+                                    : MonitorDesktopTheme.tertiaryText
                             )
                             .background(
                                 usagePeriod == period
@@ -4589,15 +4645,15 @@ struct NotchView: View {
                             )
                             .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(MonitorCenterPressStyle())
                     .accessibilityValue(usagePeriod == period ? "已选择" : "")
                 }
             }
             .padding(3)
             .background(
-                MonitorTheme.controlFill,
+                MonitorDesktopTheme.controlFill,
                 in: RoundedRectangle(
-                    cornerRadius: MonitorTheme.controlCornerRadius,
+                    cornerRadius: MonitorDesktopTheme.controlCornerRadius,
                     style: .continuous
                 )
             )
@@ -4610,12 +4666,12 @@ struct NotchView: View {
                         animate(.islandContentSwap) { costPeriod = period }
                     } label: {
                         Text(period.rawValue)
-                            .font(MonitorTypography.controlLarge)
-                            .frame(maxWidth: .infinity, minHeight: 24)
+                            .font(MonitorDesktopTypography.controlLarge)
+                            .frame(maxWidth: .infinity, minHeight: 30)
                             .foregroundStyle(
                                 costPeriod == period
-                                    ? MonitorTheme.primaryText
-                                    : MonitorTheme.tertiaryText
+                                    ? MonitorDesktopTheme.primaryText
+                                    : MonitorDesktopTheme.tertiaryText
                             )
                             .background(
                                 costPeriod == period
@@ -4625,15 +4681,15 @@ struct NotchView: View {
                             )
                             .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(MonitorCenterPressStyle())
                     .accessibilityValue(costPeriod == period ? "已选择" : "")
                 }
             }
             .padding(3)
             .background(
-                MonitorTheme.controlFill,
+                MonitorDesktopTheme.controlFill,
                 in: RoundedRectangle(
-                    cornerRadius: MonitorTheme.controlCornerRadius,
+                    cornerRadius: MonitorDesktopTheme.controlCornerRadius,
                     style: .continuous
                 )
             )
@@ -4777,28 +4833,28 @@ struct NotchView: View {
     ) -> some View {
         HStack(spacing: 6) {
             Image(systemName: symbol)
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(MonitorTheme.cyanAccent)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(MonitorDesktopTheme.cyanAccent)
                 .frame(width: 12)
             Text(title)
-                .font(MonitorTypography.cardTitle)
-                .foregroundStyle(MonitorTheme.primaryText)
+                .font(MonitorDesktopTypography.cardTitle)
+                .foregroundStyle(MonitorDesktopTheme.primaryText)
             if let badge {
                 Text(badge)
-                    .font(.system(size: 7, weight: .bold, design: .rounded))
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
                     .tracking(0.35)
-                    .foregroundStyle(MonitorTheme.cyanAccent)
+                    .foregroundStyle(MonitorDesktopTheme.cyanAccent)
                     .padding(.horizontal, 6)
                     .frame(height: 15)
-                    .background(MonitorTheme.cyanAccent.opacity(0.09), in: Capsule())
+                    .background(MonitorDesktopTheme.cyanAccent.opacity(0.09), in: Capsule())
                     .overlay {
-                        Capsule().strokeBorder(MonitorTheme.cyanAccent.opacity(0.15), lineWidth: 0.5)
+                        Capsule().strokeBorder(MonitorDesktopTheme.cyanAccent.opacity(0.15), lineWidth: 0.5)
                     }
             }
             Spacer(minLength: 8)
             trailing()
-                .font(MonitorTypography.metadata)
-                .foregroundStyle(MonitorTheme.faintText)
+                .font(MonitorDesktopTypography.metadata)
+                .foregroundStyle(MonitorDesktopTheme.faintText)
                 .lineLimit(1)
         }
         .frame(minHeight: 18)
@@ -4806,7 +4862,7 @@ struct NotchView: View {
 
     private var usageOverviewCard: some View {
         let usage = selectedUsage
-        return VStack(alignment: .leading, spacing: MonitorGeometry.overviewItemGap) {
+        return VStack(alignment: .leading, spacing: 12) {
             dataCardHeader(
                 symbol: "chart.xyaxis.line",
                 title: "Token 概览"
@@ -4815,14 +4871,15 @@ struct NotchView: View {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(usagePeriodTitle)
-                        .font(AstaSans.regular(10.5))
-                        .foregroundStyle(MonitorTheme.secondaryText)
+                        .font(MonitorDesktopTypography.body)
+                        .foregroundStyle(MonitorDesktopTheme.secondaryText)
                     Text(formatTokens(usage.tokens))
-                        .font(AstaSans.semiBold(21))
+                        .font(MonitorDesktopTypography.primaryMetric)
                         .tracking(-0.21)
-                        .foregroundStyle(MonitorTheme.cyanAccent)
+                        .foregroundStyle(MonitorDesktopTheme.cyanAccent)
                         .monospacedDigit()
                         .contentTransition(.numericText())
+                        .animation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 1), value: usage.tokens)
                 }
                 Spacer()
                 UsageCountMetric(value: usage.sessionCount, label: "会话")
@@ -4836,36 +4893,33 @@ struct NotchView: View {
                 Spacer(minLength: 0)
                 if store.isCostLoading { ProgressView().controlSize(.mini).tint(.cyan) }
             }
-            .font(AstaSans.regular(10.5))
-            .foregroundStyle(MonitorTheme.tertiaryText)
+            .font(MonitorDesktopTypography.body)
+            .foregroundStyle(MonitorDesktopTheme.tertiaryText)
             .lineLimit(1)
 
             UsageTrendChart(
                 values: Array(usage.series.prefix(usageVisiblePointCount)),
                 period: usagePeriod
             )
-            .frame(height: 58)
+            .frame(height: 104)
 
             HStack {
                 Text(usageTrendStartLabel)
                 Spacer()
                 Text(usageTrendEndLabel)
             }
-            .font(AstaSans.regular(9))
-            .foregroundStyle(MonitorTheme.faintText)
+            .font(MonitorDesktopTypography.metadata)
+            .foregroundStyle(MonitorDesktopTheme.faintText)
         }
-        .padding(MonitorGeometry.cardPadding)
+        .padding(18)
         .background(
-            MonitorTheme.cardFill,
+            MonitorDesktopTheme.cardFill,
             in: RoundedRectangle(cornerRadius: MonitorGeometry.cardRadius, style: .continuous)
         )
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: usage.tokens)
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: usage.sessionCount)
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: usage.projectCount)
     }
 
     private var usageActivityCard: some View {
-        VStack(alignment: .leading, spacing: MonitorGeometry.overviewItemGap) {
+        VStack(alignment: .leading, spacing: 12) {
             dataCardHeader(
                 symbol: "square.grid.3x3.fill",
                 title: "Token 活动"
@@ -4875,8 +4929,8 @@ struct NotchView: View {
 
             if !selectedCostScope.usage.activityIsReady {
                 Text("正在整理 Token 活动…")
-                    .font(AstaSans.regular(10.5))
-                    .foregroundStyle(MonitorTheme.tertiaryText)
+                    .font(MonitorDesktopTypography.body)
+                    .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                     .frame(maxWidth: .infinity, minHeight: 48)
             } else {
                 TokenActivityHeatmap(
@@ -4885,9 +4939,9 @@ struct NotchView: View {
                 )
             }
         }
-        .padding(MonitorGeometry.cardPadding)
+        .padding(18)
         .background(
-            MonitorTheme.cardFill,
+            MonitorDesktopTheme.cardFill,
             in: RoundedRectangle(cornerRadius: MonitorGeometry.cardRadius, style: .continuous)
         )
         .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: usageActivityPeriod)
@@ -4903,27 +4957,27 @@ struct NotchView: View {
             ) { Text("跟随统计周期 · \(usagePeriod.rawValue)") }
             if topProjects.isEmpty {
                 Text("当前周期暂无本地 Token 记录")
-                    .font(AstaSans.regular(10.5))
-                    .foregroundStyle(.white.opacity(0.4))
+                    .font(MonitorDesktopTypography.body)
+                    .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                     .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
             } else {
                 ForEach(Array(topProjects.enumerated()), id: \.element.id) { index, project in
                     HStack(spacing: 7) {
                         Text("\(index + 1)")
-                            .font(AstaSans.semiBold(9))
+                            .font(MonitorDesktopTypography.rowTitle)
                             .foregroundStyle(index == 0 ? .cyan.opacity(0.85) : .white.opacity(0.3))
                             .frame(width: 10)
                         VStack(alignment: .leading, spacing: 1) {
                             Text(project.name)
-                                .font(AstaSans.semiBold(10.5))
+                                .font(MonitorDesktopTypography.cardTitle)
                                 .lineLimit(1)
                             Text("\(project.sessionCount) 个会话")
-                                .font(AstaSans.regular(9))
-                                .foregroundStyle(.white.opacity(0.32))
+                                .font(MonitorDesktopTypography.metadata)
+                                .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                         }
                         Spacer(minLength: 5)
                         Text(formatCompactTokens(project.tokens))
-                            .font(AstaSans.regular(10.5))
+                            .font(MonitorDesktopTypography.body)
                             .foregroundStyle(.cyan.opacity(0.75))
                             .monospacedDigit()
                             .contentTransition(.numericText())
@@ -4931,9 +4985,9 @@ struct NotchView: View {
                 }
             }
         }
-        .padding(MonitorGeometry.cardPadding)
+        .padding(18)
         .background(
-            MonitorTheme.cardFill,
+            MonitorDesktopTheme.cardFill,
             in: RoundedRectangle(cornerRadius: MonitorGeometry.cardRadius, style: .continuous)
         )
     }
@@ -4989,16 +5043,21 @@ struct NotchView: View {
 
             if store.quotaState.buckets.isEmpty {
                 HStack {
-                    ProgressView().controlSize(.small).tint(.white)
+                    if quotaErrorText == nil {
+                        ProgressView().controlSize(.small).tint(.white)
+                    } else {
+                        Image(systemName: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                    }
                     Text(quotaErrorText ?? "正在连接 Codex App Server…")
                         .font(.system(size: 11))
-                        .foregroundStyle(.white.opacity(0.55))
+                        .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                 }
                 .frame(maxWidth: .infinity, minHeight: 68, alignment: .center)
             } else {
                 ForEach(store.quotaState.buckets.prefix(2)) { bucket in
                     ForEach(Array(bucket.windows.enumerated()), id: \.offset) { _, window in
-                        QuotaRow(bucket: bucket, window: window)
+                        QuotaRow(bucket: bucket, window: window, desktop: true)
                     }
                 }
             }
@@ -5441,46 +5500,47 @@ private struct IslandButtonBody: View {
 private struct QuotaRow: View {
     let bucket: RateLimitBucket
     let window: RateLimitWindow
+    var desktop = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: desktop ? 9 : 6) {
             HStack {
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 5) {
                         Text(bucket.name)
                         if bucket.windows.count > 1 {
                             Text(window.windowLabel)
-                                .font(.system(size: 8, weight: .semibold))
+                                .font(desktop ? MonitorDesktopTypography.metadataMedium : .system(size: 8, weight: .semibold))
                                 .foregroundStyle(progressColor.opacity(0.78))
                                 .padding(.horizontal, 5)
-                                .frame(height: 15)
+                                .frame(height: desktop ? 22 : 15)
                                 .background(
                                     Capsule().fill(progressColor.opacity(0.10))
                                 )
                             if window == bucket.limitingWindow {
                                 Text("当前瓶颈")
-                                    .font(.system(size: 8, weight: .semibold))
+                                    .font(desktop ? MonitorDesktopTypography.metadataMedium : .system(size: 8, weight: .semibold))
                                     .foregroundStyle(.orange.opacity(0.82))
                             }
                         }
                     }
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(desktop ? MonitorDesktopTypography.rowTitle : .system(size: 12, weight: .semibold))
                     TimelineView(.periodic(from: .now, by: 60)) { context in
                         Text(resetText(relativeTo: context.date))
-                            .font(.system(size: 9, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.42))
+                            .font(desktop ? MonitorDesktopTypography.metadata : .system(size: 9, weight: .medium))
+                            .foregroundStyle(desktop ? MonitorDesktopTheme.tertiaryText : .white.opacity(0.42))
                             .contentTransition(.numericText())
                     }
                 }
                 Spacer()
                 Text("\(window.remainingPercent)%")
-                    .font(.system(size: 16, weight: .bold, design: .rounded))
+                    .font(desktop ? MonitorDesktopTypography.secondaryMetric : .system(size: 16, weight: .bold, design: .rounded))
                     .monospacedDigit()
                     .contentTransition(.numericText())
                 Text("剩余")
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.42))
+                    .font(desktop ? MonitorDesktopTypography.metadata : .system(size: 9, weight: .medium))
+                    .foregroundStyle(desktop ? MonitorDesktopTheme.tertiaryText : .white.opacity(0.42))
             }
 
             GeometryReader { proxy in
@@ -5491,7 +5551,7 @@ private struct QuotaRow: View {
                         .frame(width: proxy.size.width * CGFloat(window.remainingPercent) / 100)
                 }
             }
-            .frame(height: 5)
+            .frame(height: desktop ? 6 : 5)
         }
         .animation(
             reduceMotion ? nil : .easeOut(duration: 0.18),
@@ -5536,13 +5596,13 @@ private struct TiboChineseTranslationView: View {
                         Text("中文翻译")
                         Spacer()
                         Text("系统翻译")
-                            .foregroundStyle(.white.opacity(0.30))
+                            .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                     }
-                    .font(.system(size: 8, weight: .semibold))
+                    .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.cyan.opacity(0.72))
 
                     Text(translatedText)
-                        .font(.system(size: 9.5, weight: .medium))
+                        .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.white.opacity(0.78))
                         .multilineTextAlignment(.leading)
                         .lineSpacing(2)
@@ -5565,7 +5625,7 @@ private struct TiboChineseTranslationView: View {
                     Image(systemName: "exclamationmark.circle")
                     Text(errorText)
                 }
-                .font(.system(size: 8, weight: .medium))
+                .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.orange.opacity(0.78))
             }
 
@@ -5580,7 +5640,7 @@ private struct TiboChineseTranslationView: View {
                     }
                     Text(translationButtonTitle)
                 }
-                .font(.system(size: 8.5, weight: .semibold))
+                .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.cyan.opacity(0.72))
                 .frame(minHeight: 22)
                 .contentShape(Rectangle())
@@ -5708,11 +5768,11 @@ private struct CostTrendChart: View {
                             .position(point)
 
                         Text("\(bucketLabel(for: hoveredIndex)) · \(formatDollars(values[hoveredIndex]))")
-                            .font(.system(size: 7.5, weight: .semibold, design: .rounded))
+                            .font(.system(size: 11, weight: .semibold, design: .rounded))
                             .foregroundStyle(.white.opacity(0.92))
                             .lineLimit(1)
                             .padding(.horizontal, 6)
-                            .frame(height: 16)
+                            .frame(height: 24)
                             .background(.black.opacity(0.92), in: Capsule(style: .continuous))
                             .overlay {
                                 Capsule(style: .continuous)
@@ -5721,13 +5781,13 @@ private struct CostTrendChart: View {
                             .fixedSize()
                             .position(
                                 x: tooltipX(point.x, width: proxy.size.width),
-                                y: 8
+                                y: 12
                             )
                     }
                 } else {
                     Text("当前周期暂无可估算成本")
-                        .font(.system(size: 8, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.3))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
@@ -5774,7 +5834,7 @@ private struct CostTrendChart: View {
     }
 
     private func tooltipX(_ pointX: CGFloat, width: CGFloat) -> CGFloat {
-        min(max(pointX, 76), max(76, width - 76))
+        min(max(pointX, 104), max(104, width - 104))
     }
 }
 
@@ -5786,21 +5846,21 @@ private struct UsageCountMetric: View {
     var body: some View {
         VStack(alignment: .trailing, spacing: 1) {
             Text("\(value)")
-                .font(AstaSans.semiBold(15))
+                .font(.system(size: 17, weight: .semibold))
                 .monospacedDigit()
                 .contentTransition(.numericText())
+                .animation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 1), value: value)
             Text(label)
-                .font(AstaSans.regular(9))
-                .foregroundStyle(.white.opacity(0.34))
+                .font(MonitorDesktopTypography.metadata)
+                .foregroundStyle(MonitorDesktopTheme.tertiaryText)
         }
         .frame(minWidth: 34, alignment: .trailing)
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: value)
     }
 }
 
 private struct TokenActivityHeatmap: View {
-    private static let cellSize: CGFloat = 14
-    private static let spacing: CGFloat = 4
+    private static let cellSize: CGFloat = 22
+    private static let spacing: CGFloat = 5
 
     let activity: [DailyTokenActivity]
     let reduceMotion: Bool
@@ -5822,14 +5882,14 @@ private struct TokenActivityHeatmap: View {
                         activityCell(day)
                     }
                 }
-                .padding(.top, 25)
+                .padding(.top, 32)
 
                 if let hovered = activity.first(where: { $0.date == hoveredDate }) {
                     Text("\(dateLabel(hovered.date)) · \(compactTokens(hovered.tokens))")
-                        .font(.system(size: 7.5, weight: .semibold, design: .rounded))
-                        .foregroundStyle(MonitorTheme.primaryText)
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .foregroundStyle(MonitorDesktopTheme.primaryText)
                         .padding(.horizontal, 7)
-                        .frame(height: 18)
+                        .frame(height: 24)
                         .background(Color.black.opacity(0.90), in: Capsule())
                         .overlay {
                             Capsule().strokeBorder(Color.cyan.opacity(0.28), lineWidth: 0.6)
@@ -5837,9 +5897,9 @@ private struct TokenActivityHeatmap: View {
                         .transition(.opacity)
                 } else {
                     Text("悬停查看日期与 Token")
-                        .font(.system(size: 7.2, weight: .medium))
-                        .foregroundStyle(MonitorTheme.faintText)
-                        .frame(height: 18)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(MonitorDesktopTheme.faintText)
+                        .frame(height: 24)
                 }
             }
             .frame(width: gridWidth)
@@ -5849,8 +5909,8 @@ private struct TokenActivityHeatmap: View {
                 Spacer()
                 Text(activity.last.map { dateLabel($0.date) } ?? "—")
             }
-            .font(.system(size: 7.2, weight: .medium, design: .rounded))
-            .foregroundStyle(MonitorTheme.faintText)
+            .font(.system(size: 11, weight: .medium, design: .rounded))
+            .foregroundStyle(MonitorDesktopTheme.faintText)
             .frame(width: gridWidth)
         }
         .frame(maxWidth: .infinity)
@@ -5955,8 +6015,8 @@ private struct TokenActivityHeatmap: View {
 }
 
 private struct CostActivityHeatmap: View {
-    private static let cellSize: CGFloat = 14
-    private static let spacing: CGFloat = 4
+    private static let cellSize: CGFloat = 22
+    private static let spacing: CGFloat = 5
 
     let activity: [DailyCostActivity]
     let reduceMotion: Bool
@@ -5978,14 +6038,14 @@ private struct CostActivityHeatmap: View {
                         activityCell(day)
                     }
                 }
-                .padding(.top, 25)
+                .padding(.top, 32)
 
                 if let hovered = activity.first(where: { $0.date == hoveredDate }) {
                     Text("\(dateLabel(hovered.date)) · \(compactDollars(hovered.dollars))")
-                        .font(.system(size: 7.5, weight: .semibold, design: .rounded))
-                        .foregroundStyle(MonitorTheme.primaryText)
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .foregroundStyle(MonitorDesktopTheme.primaryText)
                         .padding(.horizontal, 7)
-                        .frame(height: 18)
+                        .frame(height: 24)
                         .background(Color.black.opacity(0.90), in: Capsule())
                         .overlay {
                             Capsule().strokeBorder(Color.cyan.opacity(0.34), lineWidth: 0.6)
@@ -5993,9 +6053,9 @@ private struct CostActivityHeatmap: View {
                         .transition(.opacity)
                 } else {
                     Text("悬停查看日期与成本")
-                        .font(.system(size: 7.2, weight: .medium))
-                        .foregroundStyle(MonitorTheme.faintText)
-                        .frame(height: 18)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(MonitorDesktopTheme.faintText)
+                        .frame(height: 24)
                 }
             }
             .frame(width: gridWidth)
@@ -6005,8 +6065,8 @@ private struct CostActivityHeatmap: View {
                 Spacer()
                 Text(activity.last.map { dateLabel($0.date) } ?? "—")
             }
-            .font(.system(size: 7.2, weight: .medium, design: .rounded))
-            .foregroundStyle(MonitorTheme.faintText)
+            .font(.system(size: 11, weight: .medium, design: .rounded))
+            .foregroundStyle(MonitorDesktopTheme.faintText)
             .frame(width: gridWidth)
         }
         .frame(maxWidth: .infinity)
@@ -6175,11 +6235,11 @@ private struct UsageTrendChart: View {
                             .position(point)
 
                         Text("\(bucketLabel(for: hoveredIndex)) · \(compactTokens(values[hoveredIndex])) tokens")
-                            .font(.system(size: 7.5, weight: .semibold, design: .rounded))
+                            .font(.system(size: 11, weight: .semibold, design: .rounded))
                             .foregroundStyle(.white.opacity(0.92))
                             .lineLimit(1)
                             .padding(.horizontal, 6)
-                            .frame(height: 16)
+                            .frame(height: 24)
                             .background(.black.opacity(0.92), in: Capsule(style: .continuous))
                             .overlay {
                                 Capsule(style: .continuous)
@@ -6188,13 +6248,13 @@ private struct UsageTrendChart: View {
                             .fixedSize()
                             .position(
                                 x: tooltipX(point.x, width: proxy.size.width),
-                                y: 8
+                                y: 12
                             )
                     }
                 } else {
                     Text("当前周期暂无 Token 记录")
-                        .font(.system(size: 8, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.3))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }

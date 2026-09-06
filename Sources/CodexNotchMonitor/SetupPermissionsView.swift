@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 private enum SetupOnboardingStep: Int, CaseIterable {
@@ -26,10 +27,12 @@ struct SetupPermissionsView: View {
     @State private var confirmsHookInstall = false
     @State private var confirmsHookUninstall = false
     @State private var confirmsSecurityReviewCompletion = false
+    @State private var environmentDetailsExpanded = false
+    @State private var updateDetailsExpanded = false
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: true) {
-            VStack(spacing: 12) {
+            VStack(spacing: 16) {
                 if store.isSetupOnboardingComplete {
                     maintenanceDashboard
                 } else {
@@ -40,13 +43,22 @@ struct SetupPermissionsView: View {
                     setupMessage(message)
                 }
             }
-            .padding(.bottom, 4)
+            .frame(maxWidth: 840)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.bottom, 24)
         }
+        .font(MonitorDesktopTypography.body)
+        .foregroundStyle(MonitorDesktopTheme.primaryText)
+        .controlSize(.regular)
         .onAppear {
             step = SetupOnboardingStep(rawValue: persistedStepRawValue) ?? .welcome
             store.refreshCodexSetup()
+            store.refreshNotificationStatus()
             store.checkForAppUpdate(force: false)
             reconcileStepWithSetupState()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            store.refreshNotificationStatus()
         }
         .onChange(of: step) { value in
             persistedStepRawValue = value.rawValue
@@ -85,16 +97,16 @@ struct SetupPermissionsView: View {
                     Capsule()
                         .fill(
                             item.rawValue <= step.rawValue
-                                ? MonitorTheme.selection
-                                : MonitorTheme.controlFill
+                                ? MonitorDesktopTheme.selection
+                                : MonitorDesktopTheme.controlFill
                         )
                         .frame(height: 4)
                     Text(item.title)
-                        .font(MonitorTypography.metadata)
+                        .font(MonitorDesktopTypography.metadata)
                         .foregroundStyle(
                             item == step
-                                ? MonitorTheme.primaryText
-                                : MonitorTheme.faintText
+                                ? MonitorDesktopTheme.primaryText
+                                : MonitorDesktopTheme.faintText
                         )
                 }
             }
@@ -126,7 +138,7 @@ struct SetupPermissionsView: View {
                 symbol: "checkmark.shield.fill",
                 color: .cyan,
                 title: "设置 Codex Monitor",
-                detail: "完成通知和可选 Hooks 设置，让额度、任务阶段与会话状态形成完整闭环。"
+                detail: "开启需要的通知与任务状态功能。你也可以稍后设置。"
             )
             setupDivider
             VStack(alignment: .leading, spacing: 9) {
@@ -150,27 +162,20 @@ struct SetupPermissionsView: View {
 
     private var environmentCard: some View {
         setupCard {
-            setupSectionTitle("环境检查", detail: "这一页只读取状态，不修改任何文件。")
+            setupSectionTitle("环境检查", detail: "确认本机运行环境与 Hook 配置。")
             setupDivider
-            setupStatusRow(
-                "Codex CLI",
-                value: snapshot?.codexExecutableURL == nil ? "未找到" : "可用",
-                color: snapshot?.codexExecutableURL == nil ? .orange : .green
-            )
-            setupStatusRow(
-                "Hook Helper",
-                value: snapshot?.sourceHelperURL == nil ? "缺失" : "架构随 App 提供",
-                color: snapshot?.sourceHelperURL == nil ? .orange : .green
-            )
-            setupStatusRow(
-                "Hooks 配置",
-                value: snapshot?.hookState == .invalidHooksFile ? "无法解析" : "可安全检查",
-                color: snapshot?.hookState == .invalidHooksFile ? .orange : .green
-            )
+            environmentStatusRows
             setupDivider
-            pathBlock("Hook 配置", path: snapshot?.hooksURL.path ?? "~/.codex/hooks.json")
-            pathBlock("稳定 Helper", path: snapshot?.installedHelperURL.path ?? "应用支持目录")
-            navigationButtons(nextDisabled: snapshot == nil)
+            DisclosureGroup("配置位置", isExpanded: $environmentDetailsExpanded) {
+                VStack(alignment: .leading, spacing: 14) {
+                    pathBlock("Hook 配置", path: snapshot?.hooksURL.path ?? "~/.codex/hooks.json")
+                    pathBlock("稳定 Helper", path: snapshot?.installedHelperURL.path ?? "应用支持目录")
+                }
+                .padding(.top, 12)
+                .modifier(MonitorDesktopReveal())
+            }
+            .animation(disclosureAnimation, value: environmentDetailsExpanded)
+            navigationButtons(nextDisabled: snapshot == nil || snapshot?.hookState == .checking)
         }
     }
 
@@ -186,9 +191,9 @@ struct SetupPermissionsView: View {
                 value: notificationStatusTitle,
                 color: notificationStatusColor
             )
-            Text("只有点击“允许通知”后才会触发 macOS 授权提示。选择跳过后，可随时从安装与权限页面重新开启。")
-                .font(MonitorTypography.body)
-                .foregroundStyle(MonitorTheme.secondaryText)
+            Text(notificationActionDetail)
+                .font(MonitorDesktopTypography.body)
+                .foregroundStyle(MonitorDesktopTheme.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
             setupDivider
             HStack(spacing: 8) {
@@ -198,10 +203,8 @@ struct SetupPermissionsView: View {
                 Button("跳过") { advance() }
                     .buttonStyle(.bordered)
                 if store.quotaNotificationStatus != .enabled {
-                    Button("允许通知") {
-                        store.requestNotificationAuthorizationForSetup()
-                    }
-                    .buttonStyle(.borderedProminent)
+                    notificationPermissionButton
+                        .buttonStyle(.borderedProminent)
                 } else {
                     Button("下一步") { advance() }
                         .buttonStyle(.borderedProminent)
@@ -224,10 +227,10 @@ struct SetupPermissionsView: View {
             )
             VStack(alignment: .leading, spacing: 6) {
                 Text("安装会做什么")
-                    .font(MonitorTypography.rowTitle)
+                    .font(MonitorDesktopTypography.rowTitle)
                 Text("• 备份并合并 ~/.codex/hooks.json\n• 保留其他已有 Hooks\n• 安装 9 类当前用户事件，单次同步等待上限 2 秒\n• Helper 只写入一个小型本地事件，不执行网络请求")
-                    .font(MonitorTypography.body)
-                    .foregroundStyle(MonitorTheme.secondaryText)
+                    .font(MonitorDesktopTypography.body)
+                    .foregroundStyle(MonitorDesktopTheme.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
             setupDivider
@@ -305,8 +308,8 @@ struct SetupPermissionsView: View {
                         ? "正在打开 Codex Hooks 管理；应用不会替你自动信任。"
                         : hookTrustInstruction
                 )
-                    .font(MonitorTypography.body)
-                    .foregroundStyle(MonitorTheme.secondaryText)
+                    .font(MonitorDesktopTypography.body)
+                    .foregroundStyle(MonitorDesktopTheme.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 8) {
                     Button(
@@ -325,14 +328,10 @@ struct SetupPermissionsView: View {
                     .buttonStyle(.borderedProminent)
                 }
             } else if snapshot?.hookState == .waitingForFirstEvent {
-                Text("安全审核已经完成。请使用 Cmd + Q 完全退出 Codex，再重新打开并发送一条真实消息；Codex Monitor 不会创建测试会话。")
-                    .font(MonitorTypography.body)
-                    .foregroundStyle(MonitorTheme.secondaryText)
+                Text("当前 Hook 的 Active 状态已记录。请使用 Cmd + Q 完全退出 Codex，再重新打开并发送一条真实消息；连接仍需事件验证。")
+                    .font(MonitorDesktopTypography.body)
+                    .foregroundStyle(MonitorDesktopTheme.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
-            } else if snapshot?.hookState == .connected {
-                Label("连接已经通过真实 Hook 事件验证", systemImage: "checkmark.circle.fill")
-                    .font(MonitorTypography.rowTitle)
-                    .foregroundStyle(.green)
             }
             setupDivider
             HStack(spacing: 8) {
@@ -348,280 +347,273 @@ struct SetupPermissionsView: View {
     }
 
     private var maintenanceDashboard: some View {
-        VStack(spacing: 12) {
-            maintenanceOverviewCard
+        VStack(alignment: .leading, spacing: 16) {
+            Text("通知与任务状态连接均可按需开启。")
+                .font(MonitorDesktopTypography.body)
+                .foregroundStyle(MonitorDesktopTheme.secondaryText)
+            permissionsGroup
+                .modifier(MonitorDesktopReveal())
             appUpdateCard
-            maintenanceEvidenceCard
-            hookManagementCard
-
-            HStack {
-                Button("重新运行首次引导") {
+                .modifier(MonitorDesktopReveal(delay: 0.04))
+            environmentDetailsGroup
+                .modifier(MonitorDesktopReveal(delay: 0.08))
+            HStack(spacing: 10) {
+                Button("重新运行引导") {
                     store.resetSetupOnboarding()
                     persistedStepRawValue = SetupOnboardingStep.welcome.rawValue
-                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) {
-                        step = .welcome
-                    }
+                    withAnimation(disclosureAnimation) { step = .welcome }
                 }
-                .buttonStyle(.plain)
-                .font(MonitorTypography.control)
-                .foregroundStyle(MonitorTheme.cyanAccent)
-                Spacer()
-                Button("刷新状态") { store.refreshCodexSetup() }
+                .buttonStyle(.borderless)
+                Spacer(minLength: 0)
+                Button("刷新状态") { refreshPermissionStatus() }
                     .buttonStyle(.bordered)
             }
+            .font(MonitorDesktopTypography.control)
             .padding(.horizontal, 2)
         }
     }
 
-    private var maintenanceOverviewCard: some View {
+    private var permissionsGroup: some View {
         setupCard {
-            HStack(spacing: 12) {
-                ZStack {
-                    Circle().fill(maintenanceOverallColor.opacity(0.12))
-                    Image(systemName: maintenanceOverallSymbol)
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(maintenanceOverallColor)
+            Text("权限与连接")
+                .font(MonitorDesktopTypography.cardTitle)
+            permissionRow(
+                title: "通知",
+                detail: "额度恢复、重置确认与需要处理的任务提醒。"
+            ) {
+                HStack(spacing: 12) {
+                    Text(notificationStatusTitle)
+                        .foregroundStyle(notificationStatusColor)
+                    notificationPermissionButton
+                        .buttonStyle(.bordered)
                 }
-                .frame(width: 38, height: 38)
-                .accessibilityHidden(true)
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(maintenanceOverallTitle)
-                        .font(MonitorTypography.cardTitle)
-                        .foregroundStyle(MonitorTheme.primaryText)
-                    Text(maintenanceOverallDetail)
-                        .font(MonitorTypography.body)
-                        .foregroundStyle(MonitorTheme.secondaryText)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                Spacer(minLength: 10)
-
-                Text(maintenanceOverallBadge)
-                    .font(MonitorTypography.control)
-                    .foregroundStyle(maintenanceOverallColor)
-                    .padding(.horizontal, 9)
-                    .frame(height: 24)
-                    .background(
-                        maintenanceOverallColor.opacity(0.10),
-                        in: Capsule()
-                    )
             }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(maintenanceOverallTitle)
-            .accessibilityValue(maintenanceOverallDetail)
+            setupDivider
+            permissionRow(
+                title: "任务状态连接",
+                detail: "通过 Codex Hooks 显示任务开始、等待批准与完成。"
+            ) {
+                HStack(spacing: 12) {
+                    Text(displayedHookStateTitle)
+                        .foregroundStyle(hookStateColor)
+                    hookPrimaryAction
+                }
+            }
+            hookFollowUp
         }
     }
 
-    private var maintenanceEvidenceCard: some View {
-        setupCard {
-            setupSectionTitle(
-                "当前证据",
-                detail: "以下状态均为只读检查，不会修改通知、Hook 或配置文件。"
-            )
-            setupDivider
-            setupStatusRow(
-                "系统通知",
-                value: notificationStatusTitle,
-                color: notificationStatusColor
-            )
-            setupStatusRow(
-                "Codex Hooks",
-                value: snapshot?.hookState.title ?? "正在检查",
-                color: hookStateColor
-            )
-            if let date = snapshot?.lastConnectedAt {
-                setupStatusRow(
-                    "最近真实事件",
-                    value: date.compactRelativeText,
-                    color: .green
-                )
+    @ViewBuilder
+    private var hookPrimaryAction: some View {
+        if store.isCodexSetupWorking {
+            ProgressView().controlSize(.small)
+                .accessibilityLabel("正在更新 Hook 配置")
+        } else {
+            switch snapshot?.hookState.onboardingStepMode {
+            case .install:
+                Button(snapshot?.hookState == .updateRequired ? "更新 Hook…" : "安装 Hook…") {
+                    confirmsHookInstall = true
+                }
+                .buttonStyle(.bordered)
+            case .review:
+                Button(store.isCodexSecurityReviewLaunching ? "正在打开" : "打开 Hooks 管理") {
+                    store.openCodexHookSecurityReview()
+                }
+                .buttonStyle(.bordered)
+                .disabled(store.isCodexSecurityReviewLaunching)
+            case .advance:
+                Button(store.isCodexSecurityReviewLaunching ? "正在打开" : "管理") {
+                    store.openCodexHookSecurityReview()
+                }
+                .buttonStyle(.bordered)
+                .disabled(store.isCodexSecurityReviewLaunching)
+            case .deferOnly:
+                Button("重新检查") { refreshPermissionStatus() }
+                    .buttonStyle(.bordered)
+            case .checking, .none:
+                ProgressView().controlSize(.small)
+                    .accessibilityLabel("正在检查任务状态连接")
             }
-            setupDivider
-            pathBlock(
-                "配置文件",
-                path: snapshot?.hooksURL.path ?? "~/.codex/hooks.json"
-            )
-            pathBlock(
-                "Helper",
-                path: snapshot?.installedHelperURL.path ?? "应用支持目录"
-            )
         }
     }
 
-    private var hookManagementCard: some View {
-        setupCard {
-            setupSectionTitle(
-                "Hook 管理",
-                detail: "以下操作可能写入配置；每次都会先备份，并在执行前再次确认。"
-            )
-            setupDivider
-            HStack(alignment: .top, spacing: 8) {
-                Image(systemName: "exclamationmark.shield.fill")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.orange)
-                    .padding(.top, 1)
-                Text("重新安装只会合并 CodexMonitorHook；卸载只会移除属于它的 Handler，不会删除其他 Hooks。")
-                    .font(MonitorTypography.body)
-                    .foregroundStyle(MonitorTheme.secondaryText)
+    @ViewBuilder
+    private var hookFollowUp: some View {
+        if snapshot?.hookState.needsTrustConfirmation == true {
+            VStack(alignment: .leading, spacing: 9) {
+                Text(hookTrustInstruction)
                     .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 9)
-            .padding(.vertical, 8)
-            .background(
-                Color.orange.opacity(0.055),
-                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-            )
-            setupDivider
-            HStack(spacing: 8) {
-                Button("查看备份") { store.revealCodexSetupBackups() }
-                    .buttonStyle(.bordered)
-                Spacer()
-                if snapshot?.hookState.needsTrustConfirmation == true {
-                    Button(
-                        store.isCodexSecurityReviewLaunching
-                            ? "正在打开"
-                            : (snapshot?.hookState.reviewActionTitle ?? "检查 Hooks 状态")
-                    ) {
-                        store.openCodexHookSecurityReview()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(store.isCodexSecurityReviewLaunching)
-                    Button("确认已 Active") {
-                        confirmsSecurityReviewCompletion = true
-                    }
-                    .buttonStyle(.bordered)
-                } else if snapshot?.hookState == .waitingForFirstEvent
-                    || snapshot?.hookState == .connected {
-                    Button("打开 Hooks 管理") {
-                        store.openCodexHookSecurityReview()
-                    }
-                    .buttonStyle(.bordered)
+                Button("我已在 Codex 确认 Active…") {
+                    confirmsSecurityReviewCompletion = true
                 }
-                Menu {
-                    Button("重新安装 Hook") { confirmsHookInstall = true }
-                    Divider()
-                    Button("卸载 Hook", role: .destructive) {
-                        confirmsHookUninstall = true
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                }
-                .menuStyle(.borderlessButton)
-                .help("更多 Hook 操作")
+                .buttonStyle(.bordered)
+                .disabled(store.isCodexSetupWorking || store.isCodexSecurityReviewLaunching)
             }
+            .font(MonitorDesktopTypography.metadata)
+            .foregroundStyle(MonitorDesktopTheme.secondaryText)
+        } else if snapshot?.hookState == .waitingForFirstEvent {
+            Text("Active 状态已记录。请完全退出并重开 Codex，再发送一条真实消息以验证当前连接。")
+                .font(MonitorDesktopTypography.metadata)
+                .foregroundStyle(MonitorDesktopTheme.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+        } else if snapshot?.hookState.onboardingStepMode == .deferOnly {
+            Text(hookEnvironmentInstruction)
+                .font(MonitorDesktopTypography.metadata)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        if let date = snapshot?.lastConnectedAt {
+            Text("\(snapshot?.hookState == .connected ? "最近真实事件" : "历史事件")：\(date.compactRelativeText)")
+                .font(MonitorDesktopTypography.metadata)
+                .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+                .help(date.formatted(date: .abbreviated, time: .shortened))
+        }
+    }
+
+    private var environmentDetailsGroup: some View {
+        setupCard {
+            DisclosureGroup("环境与配置", isExpanded: $environmentDetailsExpanded) {
+                VStack(alignment: .leading, spacing: 12) {
+                    environmentStatusRows
+                    setupDivider
+                    pathBlock("Hook 配置", path: snapshot?.hooksURL.path ?? "~/.codex/hooks.json")
+                    pathBlock("稳定 Helper", path: snapshot?.installedHelperURL.path ?? "应用支持目录")
+                    Text("安装和卸载前会备份并请求确认，只处理本插件的 Hook 定义，保留其他 Hooks。")
+                        .font(MonitorDesktopTypography.metadata)
+                        .foregroundStyle(MonitorDesktopTheme.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 10) {
+                        Button("查看备份") { store.revealCodexSetupBackups() }
+                            .buttonStyle(.bordered)
+                        Spacer(minLength: 0)
+                        Menu("Hook 操作") {
+                            Button(hookMaintenanceInstallTitle) { confirmsHookInstall = true }
+                            Divider()
+                            Button("卸载 Hook…", role: .destructive) { confirmsHookUninstall = true }
+                                .disabled(snapshot?.hookState == .notInstalled)
+                        }
+                        .menuStyle(.borderlessButton)
+                        .fixedSize()
+                        .disabled(hookWriteActionsAreBlocked)
+                    }
+                }
+                .padding(.top, 12)
+                .modifier(MonitorDesktopReveal())
+            }
+            .font(MonitorDesktopTypography.rowTitle)
+            .animation(disclosureAnimation, value: environmentDetailsExpanded)
         }
     }
 
     private var appUpdateCard: some View {
-        let status = store.appUpdateStatus
-        return setupCard {
-            HStack(spacing: 11) {
-                AppUpdateStatusIcon(
-                    phase: status.phase,
-                    color: appUpdateStatusColor,
-                    reduceMotion: reduceMotion
-                )
-                setupSectionTitle(
-                    "应用更新",
-                    detail: "从 GitHub Latest Release 检查新版本，并选择适用于此 Mac 的 DMG。"
-                )
-                Spacer(minLength: 8)
-                Text(appUpdateStatusTitle)
-                    .font(MonitorTypography.control)
-                    .foregroundStyle(appUpdateStatusColor)
-                    .padding(.horizontal, 9)
-                    .frame(height: 24)
-                    .background(
-                        appUpdateStatusColor.opacity(0.10),
-                        in: Capsule()
-                    )
-            }
-
-            setupDivider
-
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("当前版本")
-                        .font(MonitorTypography.metadataMedium)
-                        .foregroundStyle(MonitorTheme.tertiaryText)
-                    Text("v\(status.currentVersion) (Build \(status.currentBuild))")
-                        .font(AstaSans.semiBold(10.5))
-                }
-                Spacer()
-                if let release = status.release {
-                    VStack(alignment: .trailing, spacing: 3) {
-                        Text("GitHub Release")
-                            .font(MonitorTypography.metadataMedium)
-                            .foregroundStyle(MonitorTheme.tertiaryText)
-                        Text(release.tagName)
-                            .font(AstaSans.semiBold(10.5))
-                            .foregroundStyle(
-                                status.phase == .updateAvailable
-                                    ? MonitorTheme.cyanAccent
-                                    : MonitorTheme.primaryText
-                            )
+        setupCard {
+            permissionRow(title: "应用更新", detail: "v\(store.appUpdateStatus.currentVersion) · Build \(store.appUpdateStatus.currentBuild) · \(appUpdateCheckedText)") {
+                HStack(spacing: 12) {
+                    Text(appUpdateStatusTitle)
+                        .foregroundStyle(appUpdateStatusColor)
+                    if store.appUpdateStatus.phase == .checking {
+                        ProgressView().controlSize(.small)
+                            .accessibilityLabel("正在检查应用更新")
+                    } else if store.appUpdateStatus.phase == .updateAvailable {
+                        Button(appUpdateDownloadTitle) { store.openAppUpdateDownload() }
+                            .buttonStyle(.bordered)
+                    } else {
+                        Button("检查更新") { store.checkForAppUpdate(force: true) }
+                            .buttonStyle(.bordered)
                     }
                 }
             }
-
-            if status.phase == .updateAvailable, let release = status.release {
-                if !release.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text(release.body)
-                        .font(MonitorTypography.body)
-                        .foregroundStyle(MonitorTheme.secondaryText)
-                        .lineSpacing(2)
-                        .lineLimit(4)
-                }
-                if let asset = status.asset {
-                    HStack(spacing: 7) {
-                        Label(AppUpdateArchitecture.current.displayName, systemImage: "desktopcomputer")
-                        if asset.size > 0 {
-                            Text("·")
-                            Text(ByteCountFormatter.string(fromByteCount: asset.size, countStyle: .file))
-                        }
-                        if let digest = asset.digest {
-                            Text("·")
-                            Text(shortUpdateDigest(digest))
-                                .monospaced()
-                        }
-                    }
-                    .font(MonitorTypography.metadata)
-                    .foregroundStyle(MonitorTheme.tertiaryText)
-                    .lineLimit(1)
-                }
+            if store.appUpdateStatus.phase == .updateAvailable,
+               let release = store.appUpdateStatus.release {
+                updateAvailableDetails(release)
             }
-
-            if let message = store.appUpdateMessage ?? status.message {
+            if let message = store.appUpdateMessage ?? store.appUpdateStatus.message {
                 Text(message)
-                    .font(MonitorTypography.body)
-                    .foregroundStyle(status.phase == .failed ? Color.orange : MonitorTheme.secondaryText)
+                    .font(MonitorDesktopTypography.metadata)
+                    .foregroundStyle(store.appUpdateStatus.phase == .failed ? .orange : MonitorDesktopTheme.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        }
+    }
 
+    private func updateAvailableDetails(_ release: AppRelease) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
             setupDivider
-
-            HStack(spacing: 8) {
-                Text(appUpdateCheckedText)
-                    .font(MonitorTypography.metadata)
-                    .foregroundStyle(MonitorTheme.faintText)
-                Spacer()
-                if status.phase == .updateAvailable {
-                    Button("查看说明") { store.openAppReleasePage() }
-                        .buttonStyle(.bordered)
-                    Button("稍后提醒") { store.deferAppUpdate() }
-                        .buttonStyle(.bordered)
-                    Button(appUpdateDownloadTitle) { store.openAppUpdateDownload() }
-                        .buttonStyle(.borderedProminent)
-                } else {
-                    Button(status.phase == .checking ? "正在检查" : "检查更新") {
-                        store.checkForAppUpdate(force: true)
+            Text("新版本 \(release.tagName)")
+                .font(MonitorDesktopTypography.rowTitle)
+            if !release.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(release.body)
+                    .font(MonitorDesktopTypography.body)
+                    .foregroundStyle(MonitorDesktopTheme.secondaryText)
+                    .lineSpacing(2)
+                    .lineLimit(4)
+            }
+            HStack(spacing: 10) {
+                Button("查看版本说明") { store.openAppReleasePage() }
+                    .buttonStyle(.borderless)
+                Button("稍后提醒") { store.deferAppUpdate() }
+                    .buttonStyle(.borderless)
+                Spacer(minLength: 0)
+            }
+            .font(MonitorDesktopTypography.control)
+            if let asset = store.appUpdateStatus.asset {
+                DisclosureGroup("安装包详情", isExpanded: $updateDetailsExpanded) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 7) {
+                            Label(AppUpdateArchitecture.current.displayName, systemImage: "desktopcomputer")
+                            if asset.size > 0 {
+                                Text("·")
+                                Text(ByteCountFormatter.string(fromByteCount: asset.size, countStyle: .file))
+                            }
+                        }
+                        if let digest = asset.digest {
+                            Text(digest)
+                                .font(.system(size: 12, design: .monospaced))
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
-                    .buttonStyle(.bordered)
-                    .disabled(status.phase == .checking)
+                    .padding(.top, 10)
+                    .modifier(MonitorDesktopReveal())
+                }
+                .font(MonitorDesktopTypography.metadata)
+                .foregroundStyle(MonitorDesktopTheme.secondaryText)
+                .animation(disclosureAnimation, value: updateDetailsExpanded)
+            }
+        }
+    }
+
+    private func permissionRow<Actions: View>(
+        title: String,
+        detail: String,
+        @ViewBuilder actions: () -> Actions
+    ) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .center, spacing: 16) {
+                permissionLabel(title: title, detail: detail)
+                    .frame(minWidth: 210, maxWidth: .infinity, alignment: .leading)
+                actions().fixedSize(horizontal: true, vertical: false)
+            }
+            VStack(alignment: .leading, spacing: 10) {
+                permissionLabel(title: title, detail: detail)
+                HStack {
+                    Spacer(minLength: 0)
+                    actions().fixedSize(horizontal: true, vertical: false)
                 }
             }
+        }
+        .font(MonitorDesktopTypography.control)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 3)
+    }
+
+    private func permissionLabel(title: String, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(MonitorDesktopTypography.rowTitle)
+            Text(detail)
+                .font(MonitorDesktopTypography.metadata)
+                .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -638,11 +630,11 @@ struct SetupPermissionsView: View {
 
     private var appUpdateStatusColor: Color {
         switch store.appUpdateStatus.phase {
-        case .upToDate: return .green
-        case .updateAvailable: return MonitorTheme.cyanAccent
+        case .upToDate: return MonitorDesktopTheme.secondaryText
+        case .updateAvailable: return MonitorDesktopTheme.secondaryText
         case .failed: return .orange
-        case .checking: return MonitorTheme.selection
-        case .idle, .developmentBuild: return MonitorTheme.tertiaryText
+        case .checking: return MonitorDesktopTheme.secondaryText
+        case .idle, .developmentBuild: return MonitorDesktopTheme.tertiaryText
         }
     }
 
@@ -655,133 +647,68 @@ struct SetupPermissionsView: View {
 
     private var appUpdateDownloadTitle: String {
         guard store.appUpdateStatus.asset != nil else { return "打开 Release" }
-        switch AppUpdateArchitecture.current {
-        case .arm64: return "下载 arm64 DMG"
-        case .x86_64: return "下载 x86_64 DMG"
-        case .unknown: return "下载 DMG"
-        }
-    }
-
-    private func shortUpdateDigest(_ digest: String) -> String {
-        guard digest.hasPrefix("sha256:") else { return digest }
-        let value = digest.dropFirst("sha256:".count)
-        return "SHA-256 \(value.prefix(8))…"
+        return "下载安装包"
     }
 
     private var snapshot: CodexSetupSnapshot? { store.codexSetupSnapshot }
 
-    private var maintenanceOverallTitle: String {
-        guard let state = snapshot?.hookState else { return "正在检查安装状态" }
-        if state == .connected,
-           store.quotaNotificationStatus == .enabled {
-            return "安装状态正常"
-        }
-        switch state {
-        case .connected:
-            return "基础连接正常"
-        case .waitingForFirstEvent:
-            return "等待真实连接验证"
-        case .trustStatusUnknown, .securityReviewRequired:
-            return "需要确认 Hook 状态"
-        case .notInstalled, .updateRequired:
-            return "Hook 需要处理"
-        case .codexUnavailable, .helperUnavailable, .invalidHooksFile:
-            return "安装环境异常"
-        case .checking:
-            return "正在检查安装状态"
-        }
-    }
-
-    private var maintenanceOverallDetail: String {
-        guard let state = snapshot?.hookState else {
-            return "正在读取通知、Hook 定义和真实连接证据。"
-        }
-        if state == .connected,
-           store.quotaNotificationStatus == .enabled {
-            return "系统通知已允许，Codex Hooks 已通过真实事件验证。"
-        }
-        if state == .connected {
-            return "Codex Hooks 已连接；系统通知当前为\(notificationStatusTitle)。"
-        }
-        return "系统通知：\(notificationStatusTitle)；Codex Hooks：\(state.title)。"
-    }
-
-    private var maintenanceOverallColor: Color {
-        guard let state = snapshot?.hookState else {
-            return MonitorTheme.tertiaryText
-        }
-        if state == .connected,
-           store.quotaNotificationStatus == .enabled {
-            return .green
-        }
-        switch state {
-        case .codexUnavailable, .helperUnavailable, .invalidHooksFile:
-            return .red
-        case .connected, .waitingForFirstEvent, .trustStatusUnknown,
-             .securityReviewRequired, .notInstalled, .updateRequired:
-            return .orange
-        case .checking:
-            return MonitorTheme.tertiaryText
-        }
-    }
-
-    private var maintenanceOverallSymbol: String {
-        guard let state = snapshot?.hookState else {
-            return "arrow.triangle.2.circlepath"
-        }
-        if state == .connected,
-           store.quotaNotificationStatus == .enabled {
-            return "checkmark.shield.fill"
-        }
-        switch state {
-        case .codexUnavailable, .helperUnavailable, .invalidHooksFile:
-            return "exclamationmark.shield.fill"
-        case .checking:
-            return "arrow.triangle.2.circlepath"
-        default:
-            return "exclamationmark.triangle.fill"
-        }
-    }
-
-    private var maintenanceOverallBadge: String {
-        guard let state = snapshot?.hookState else { return "检查中" }
-        if state == .connected,
-           store.quotaNotificationStatus == .enabled {
-            return "全部正常"
-        }
-        switch state {
-        case .connected:
-            return "通知待处理"
-        case .waitingForFirstEvent:
-            return "待验证"
-        case .trustStatusUnknown, .securityReviewRequired:
-            return "待确认"
-        case .notInstalled:
-            return "未安装"
-        case .updateRequired:
-            return "需要更新"
-        case .codexUnavailable, .helperUnavailable, .invalidHooksFile:
-            return "异常"
-        case .checking:
-            return "检查中"
-        }
-    }
-
     private var hookStateColor: Color {
-        if store.isCodexSecurityReviewLaunching { return MonitorTheme.cyanAccent }
-        switch snapshot?.hookState {
-        case .connected: return .green
-        case .waitingForFirstEvent, .trustStatusUnknown, .securityReviewRequired: return .orange
-        case .notInstalled, .checking, .none: return MonitorTheme.tertiaryText
-        case .updateRequired: return .orange
-        case .codexUnavailable, .helperUnavailable, .invalidHooksFile: return .red
-        }
+        CodexSetupPresentation.hookNeedsAttention(for: snapshot?.hookState)
+            ? .orange : MonitorDesktopTheme.secondaryText
     }
 
     private var displayedHookStateTitle: String {
-        store.isCodexSecurityReviewLaunching
-            ? "正在打开 Hooks 管理"
-            : (snapshot?.hookState.title ?? "正在检查")
+        if store.isCodexSetupWorking { return "正在更新配置" }
+        if store.isCodexSecurityReviewLaunching { return "正在打开管理" }
+        return CodexSetupPresentation.hookTitle(for: snapshot?.hookState)
+    }
+
+    private var environmentStatusRows: some View {
+        VStack(spacing: 8) {
+            setupStatusRow(
+                "Codex CLI",
+                value: environmentIsChecking ? "正在检查" : (snapshot?.codexExecutableURL == nil ? "未找到" : "可用"),
+                color: !environmentIsChecking && snapshot?.codexExecutableURL == nil ? .orange : MonitorDesktopTheme.secondaryText
+            )
+            setupStatusRow(
+                "Hook Helper",
+                value: environmentIsChecking ? "正在检查" : (snapshot?.sourceHelperURL == nil ? "不可用" : "随应用提供"),
+                color: !environmentIsChecking && snapshot?.sourceHelperURL == nil ? .orange : MonitorDesktopTheme.secondaryText
+            )
+            setupStatusRow(
+                "Hooks 配置",
+                value: configurationAssessment.title,
+                color: configurationAssessment == .invalid || configurationAssessment == .blocked ? .orange : MonitorDesktopTheme.secondaryText
+            )
+        }
+    }
+
+    private var environmentIsChecking: Bool {
+        snapshot == nil || snapshot?.hookState == .checking
+    }
+
+    private var configurationAssessment: CodexSetupConfigurationAssessment {
+        CodexSetupPresentation.configurationAssessment(for: snapshot?.hookState)
+    }
+
+    private var hookWriteActionsAreBlocked: Bool {
+        store.isCodexSetupWorking || store.isCodexSecurityReviewLaunching
+            || snapshot == nil || snapshot?.hookState.onboardingStepMode == .checking
+            || snapshot?.hookState.onboardingStepMode == .deferOnly
+    }
+
+    private var hookEnvironmentInstruction: String {
+        switch snapshot?.hookState {
+        case .codexUnavailable: return "未找到可用的 Codex CLI。确认 Codex 已安装后重新检查；当前无法安装任务状态连接。"
+        case .helperUnavailable: return "安装包中的 Hook Helper 不可用。请检查应用安装，当前无法安装任务状态连接。"
+        case .invalidHooksFile: return "Hooks 配置无法解析。为保护已有配置，当前不会执行安装或卸载。"
+        default: return "请先完成环境检查。"
+        }
+    }
+
+    private func refreshPermissionStatus() {
+        store.refreshCodexSetup()
+        store.refreshNotificationStatus()
     }
 
     private var hookInstallActionTitle: String {
@@ -790,19 +717,16 @@ struct SetupPermissionsView: View {
             : "备份并安装 Hook"
     }
 
+    private var hookMaintenanceInstallTitle: String {
+        if snapshot?.hookState == .notInstalled || snapshot?.hookState == .updateRequired {
+            return hookInstallActionTitle + "…"
+        }
+        return "备份并重新安装 Hook…"
+    }
+
     private var shouldShowSetupMessage: Bool {
         if store.isSetupOnboardingComplete { return true }
         return step == .hooks || step == .verify
-    }
-
-    private var hookStateSymbol: String {
-        switch snapshot?.hookState {
-        case .connected: return "checkmark.shield.fill"
-        case .waitingForFirstEvent: return "message.badge.waveform.fill"
-        case .trustStatusUnknown: return "questionmark.shield.fill"
-        case .securityReviewRequired: return "person.badge.key.fill"
-        default: return "wrench.and.screwdriver.fill"
-        }
     }
 
     private var notificationStatusTitle: String {
@@ -814,10 +738,26 @@ struct SetupPermissionsView: View {
     }
 
     private var notificationStatusColor: Color {
+        MonitorDesktopTheme.secondaryText
+    }
+
+    private var notificationActionDetail: String {
         switch store.quotaNotificationStatus {
-        case .enabled: return .green
-        case .denied: return .orange
-        case .unknown: return MonitorTheme.tertiaryText
+        case .unknown:
+            return "点击“允许通知”可向 macOS 请求授权，也可以跳过，稍后再开启。"
+        case .enabled:
+            return "通知已允许。可在系统设置中调整提醒样式与声音。"
+        case .denied:
+            return "通知已关闭。可在系统设置中重新允许，基础监控仍可正常使用。"
+        }
+    }
+
+    @ViewBuilder
+    private var notificationPermissionButton: some View {
+        if store.quotaNotificationStatus == .unknown {
+            Button("允许通知") { store.requestNotificationAuthorizationForSetup() }
+        } else {
+            Button("打开通知设置") { store.openNotificationSettings() }
         }
     }
 
@@ -826,8 +766,8 @@ struct SetupPermissionsView: View {
             return "正在打开 Codex Hooks 管理。"
         }
         switch snapshot?.hookState {
-        case .connected: return "Hook 已通过首条真实事件验证，设置完成。"
-        case .waitingForFirstEvent: return "审核完成后，需要重启 Codex 并发送一条真实消息。"
+        case .connected: return "当前 Hook 定义已收到真实事件，设置完成。"
+        case .waitingForFirstEvent: return "Active 状态已记录，需要重启 Codex 并发送一条真实消息以验证连接。"
         case .trustStatusUnknown: return "App 尚未保存当前 Hook 的确认记录，请在 /hooks 检查是否为 Active。"
         case .securityReviewRequired: return "信任必须由你在 Codex 审核菜单中亲自确认。"
         case .notInstalled: return "尚未安装 Hook，可以返回上一步安装或稍后处理。"
@@ -846,6 +786,10 @@ struct SetupPermissionsView: View {
         }
     }
 
+    private var disclosureAnimation: Animation? {
+        reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 1)
+    }
+
     private func setupCard<Content: View>(
         @ViewBuilder content: () -> Content
     ) -> some View {
@@ -855,12 +799,12 @@ struct SetupPermissionsView: View {
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            MonitorTheme.cardFill,
+            MonitorDesktopTheme.cardFill,
             in: RoundedRectangle(cornerRadius: MonitorGeometry.cardRadius, style: .continuous)
         )
         .overlay {
             RoundedRectangle(cornerRadius: MonitorGeometry.cardRadius, style: .continuous)
-                .strokeBorder(MonitorTheme.separator, lineWidth: 0.7)
+                .strokeBorder(MonitorDesktopTheme.hairline, lineWidth: 0.7)
         }
     }
 
@@ -881,54 +825,57 @@ struct SetupPermissionsView: View {
     }
 
     private func setupSectionTitle(_ title: String, detail: String) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: 6) {
             Text(title)
-                .font(AstaSans.semiBold(12))
+                .font(MonitorDesktopTypography.cardTitle)
             Text(detail)
-                .font(MonitorTypography.body)
-                .foregroundStyle(MonitorTheme.secondaryText)
+                .font(MonitorDesktopTypography.body)
+                .foregroundStyle(MonitorDesktopTheme.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
 
     private func setupBullet(_ title: String, symbol: String) -> some View {
         Label(title, systemImage: symbol)
-            .font(MonitorTypography.rowTitle)
-            .foregroundStyle(MonitorTheme.secondaryText)
+            .font(MonitorDesktopTypography.rowTitle)
+            .foregroundStyle(MonitorDesktopTheme.secondaryText)
     }
 
     private func setupStatusRow(_ title: String, value: String, color: Color) -> some View {
         HStack(spacing: 8) {
             Text(title)
-                .font(MonitorTypography.rowTitle)
+                .font(MonitorDesktopTypography.rowTitle)
             Spacer()
             Circle().fill(color).frame(width: 5, height: 5)
+                .accessibilityHidden(true)
             Text(value)
-                .font(MonitorTypography.control)
+                .font(MonitorDesktopTypography.control)
                 .foregroundStyle(color)
                 .multilineTextAlignment(.trailing)
         }
-        .frame(minHeight: 25)
+        .frame(minHeight: 32)
+        .accessibilityElement(children: .combine)
     }
 
     private func pathBlock(_ title: String, path: String) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: 6) {
             Text(title)
-                .font(MonitorTypography.metadataMedium)
-                .foregroundStyle(MonitorTheme.tertiaryText)
+                .font(MonitorDesktopTypography.metadataMedium)
+                .foregroundStyle(MonitorDesktopTheme.tertiaryText)
             Text(path.replacingOccurrences(
                 of: FileManager.default.homeDirectoryForCurrentUser.path,
                 with: "~"
             ))
-            .font(.system(size: 8, weight: .medium, design: .monospaced))
-            .foregroundStyle(MonitorTheme.secondaryText)
-            .lineLimit(1)
-            .truncationMode(.middle)
+            .font(.system(size: 12, weight: .regular, design: .monospaced))
+            .foregroundStyle(MonitorDesktopTheme.secondaryText)
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
+            .help(path)
         }
     }
 
     private var setupDivider: some View {
-        Divider().overlay(MonitorTheme.separator)
+        Divider().overlay(MonitorDesktopTheme.separator)
     }
 
     private func navigationButtons(nextDisabled: Bool = false) -> some View {
@@ -977,63 +924,17 @@ struct SetupPermissionsView: View {
     private func setupMessage(_ message: String) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "info.circle.fill")
-                .foregroundStyle(MonitorTheme.cyanAccent)
+                .foregroundStyle(MonitorDesktopTheme.cyanAccent)
             Text(message)
-                .font(MonitorTypography.body)
-                .foregroundStyle(MonitorTheme.secondaryText)
+                .font(MonitorDesktopTypography.body)
+                .foregroundStyle(MonitorDesktopTheme.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
         .padding(12)
         .background(
-            MonitorTheme.cyanAccent.opacity(0.07),
+            MonitorDesktopTheme.cyanAccent.opacity(0.07),
             in: RoundedRectangle(cornerRadius: MonitorGeometry.compactRadius, style: .continuous)
         )
-    }
-}
-
-private struct AppUpdateStatusIcon: View {
-    let phase: AppUpdatePhase
-    let color: Color
-    let reduceMotion: Bool
-
-    @ViewBuilder
-    var body: some View {
-        switch phase {
-        case .checking where !reduceMotion:
-            TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
-                let progress = context.date.timeIntervalSinceReferenceDate
-                    .truncatingRemainder(dividingBy: 1.0)
-                icon("arrow.triangle.2.circlepath")
-                    .rotationEffect(.degrees(progress * 360))
-            }
-        case .updateAvailable where !reduceMotion:
-            TimelineView(.animation(minimumInterval: 1.0 / 24.0)) { context in
-                let progress = context.date.timeIntervalSinceReferenceDate
-                    .truncatingRemainder(dividingBy: 1.6) / 1.6
-                let wave = progress < 0.5 ? progress * 2 : (1 - progress) * 2
-                icon("arrow.down.circle.fill")
-                    .scaleEffect(1 + wave * 0.07)
-                    .shadow(color: color.opacity(0.18 + wave * 0.22), radius: 5 + wave * 3)
-            }
-        case .upToDate:
-            icon("checkmark.circle.fill")
-        case .updateAvailable:
-            icon("arrow.down.circle.fill")
-        case .failed:
-            icon("exclamationmark.triangle.fill")
-        case .developmentBuild:
-            icon("hammer.circle.fill")
-        case .idle, .checking:
-            icon("arrow.triangle.2.circlepath")
-        }
-    }
-
-    private func icon(_ symbol: String) -> some View {
-        Image(systemName: symbol)
-            .font(.system(size: 18, weight: .semibold))
-            .foregroundStyle(color)
-            .frame(width: 40, height: 40)
-            .background(color.opacity(0.09), in: Circle())
     }
 }

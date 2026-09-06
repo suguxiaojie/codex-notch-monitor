@@ -7,6 +7,11 @@ enum ContinuityTests {
             runLocalInventoryBenchmark()
             return
         }
+        sessionLibraryCheckStatusDoesNotClaimCompleteness()
+        sessionLibraryCheckStatusRespectsEvidenceAndPrecedence()
+        sessionLibrarySearchMatchesTitlesProjectsAndPaths()
+        sessionLibraryFiltersExcludeInternalThreads()
+        sessionLibraryFilteringPreservesOrderAndSnapshot()
         try accountObservationDoesNotGuessHistory()
         try accountTransitionTracksOnlyNewSessions()
         try usageAccountContextExposesOnlyObservedOwnership()
@@ -37,7 +42,7 @@ enum ContinuityTests {
         try projectTransferP1PreservesGitAndAttachments()
         try projectTransferLargeGitOutputDoesNotDeadlock()
         projectImportDirectoryDefaultsToCodexProjectsContainer()
-        print("Continuity tests: 30/30 passed")
+        print("Continuity tests: 35/35 passed")
     }
 
     private static func runLocalInventoryBenchmark() {
@@ -284,6 +289,135 @@ enum ContinuityTests {
         expect(snapshot.recoverableThreads.map(\.id) == ["user"], "只有用户会话可恢复")
         expect(!subagent.canRecover && !system.canRecover, "内部线程不得进入恢复")
         expect(snapshot.baselineOwnershipCount == 1, "内部线程不应计入基线前归属统计")
+    }
+
+    private static func sessionLibraryCheckStatusDoesNotClaimCompleteness() {
+        var missing = record(id: "missing", path: "/missing/LibraryProject")
+        missing.visibility = .projectPathMissing
+        let snapshot = SessionContinuitySnapshot(
+            threads: [missing], unreadableFileCount: 0,
+            checkedAt: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+        expect(snapshot.recoverableThreads.isEmpty, "路径缺失与可恢复会话是不同状态")
+        expect(
+            SessionLibraryPresentation.checkStatus(snapshot: snapshot, isLoading: false, error: nil) == .attention,
+            "项目路径缺失且无可恢复会话时，不得显示记录完整"
+        )
+        var unreadable = snapshot
+        unreadable.threads = []
+        unreadable.unreadableFileCount = 1
+        expect(
+            SessionLibraryPresentation.checkStatus(snapshot: unreadable, isLoading: false, error: nil) == .attention,
+            "没有可恢复会话但存在无法读取文件时，仍需明确提示"
+        )
+    }
+
+    private static func sessionLibraryCheckStatusRespectsEvidenceAndPrecedence() {
+        let empty = SessionContinuitySnapshot.empty
+        expect(
+            SessionLibraryPresentation.checkStatus(snapshot: empty, isLoading: true, error: "上次检查失败") == .checking,
+            "重新检查应优先显示检查中，不被旧错误覆盖"
+        )
+        expect(
+            SessionLibraryPresentation.checkStatus(snapshot: empty, isLoading: false, error: "无法连接") == .failed,
+            "首次检查失败不能把空快照当成完整或尚未检查"
+        )
+        expect(
+            SessionLibraryPresentation.checkStatus(snapshot: empty, isLoading: false, error: nil) == .notChecked,
+            "未检查的空快照不能显示就绪"
+        )
+        var ready = empty
+        ready.checkedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        expect(
+            SessionLibraryPresentation.checkStatus(snapshot: ready, isLoading: false, error: " \n") == .ready,
+            "已检查且没有问题时，空白错误不应形成失败状态"
+        )
+        var unknown = record(id: "unknown", path: "/tmp/Library")
+        unknown.visibility = .visible
+        var baseline = record(id: "baseline", path: "/tmp/Library", ownership: .baseline)
+        baseline.visibility = .visible
+        ready.threads = [unknown, baseline]
+        expect(
+            SessionLibraryPresentation.checkStatus(snapshot: ready, isLoading: false, error: nil) == .ready,
+            "未知或基线前归属本身不是可见性故障"
+        )
+        expect(
+            SessionLibraryCheckStatus.ready.title == "未发现待恢复会话",
+            "就绪文案应只陈述已知事实，不声称记录完整"
+        )
+        ready.threads = [record(id: "recoverable", path: "/tmp/Library")]
+        expect(
+            SessionLibraryPresentation.checkStatus(snapshot: ready, isLoading: false, error: nil) == .attention,
+            "确有本地可恢复会话时应提示需要处理"
+        )
+        expect(
+            SessionLibraryPresentation.checkStatus(snapshot: ready, isLoading: false, error: "新盘点失败") == .failed,
+            "存在旧待恢复记录时，也应优先说明本次检查失败"
+        )
+    }
+
+    private static func sessionLibrarySearchMatchesTitlesProjectsAndPaths() {
+        let snapshot = sessionLibraryFixture()
+        let titles = SessionLibraryPresentation.groups(snapshot: snapshot, query: "  bAcKuP \n", filter: .all)
+        expect(titles.flatMap(\.threads).map(\.id) == ["alpha-archive", "beta-recoverable"], "标题搜索应忽略大小写和首尾空白")
+        let project = SessionLibraryPresentation.groups(snapshot: snapshot, query: "ALPHA", filter: .all)
+        expect(project.flatMap(\.threads).map(\.id) == ["alpha-recent", "alpha-archive"], "项目名匹配应保留整个项目的用户会话")
+        let path = SessionLibraryPresentation.groups(snapshot: snapshot, query: "/NESTED/", filter: .all)
+        expect(path.flatMap(\.threads).map(\.id) == ["beta-recoverable", "beta-missing"], "完整项目路径应支持本地大小写不敏感搜索")
+        expect(
+            SessionLibraryPresentation.groups(snapshot: snapshot, query: " \n", filter: .all) == snapshot.projectGroups,
+            "空白查询应保留现有项目分组"
+        )
+        expect(SessionLibraryPresentation.groups(snapshot: snapshot, query: "不存在的标题", filter: .all).isEmpty, "无匹配查询应返回空结果")
+    }
+
+    private static func sessionLibraryFiltersExcludeInternalThreads() {
+        let snapshot = sessionLibraryFixture()
+        let expected: [(SessionLibraryFilter, [String])] = [
+            (.all, ["alpha-recent", "alpha-archive", "beta-recoverable", "beta-missing"]),
+            (.recoverable, ["beta-recoverable"]),
+            (.archived, ["alpha-archive"]),
+            (.missingPath, ["beta-missing"]),
+        ]
+        for (filter, ids) in expected {
+            let groups = SessionLibraryPresentation.groups(snapshot: snapshot, query: "", filter: filter)
+            expect(groups.flatMap(\.threads).map(\.id) == ids, "筛选\(filter.rawValue)应只包含对应用户会话")
+            expect(groups.flatMap(\.threads).allSatisfy { $0.kind == .userConversation }, "任何筛选均不得包含Subagent或系统记录")
+        }
+        expect(
+            SessionLibraryPresentation.groups(snapshot: snapshot, query: "Alpha", filter: .archived).flatMap(\.threads).map(\.id) == ["alpha-archive"],
+            "项目名匹配不能绕过归档筛选"
+        )
+        expect(SessionLibraryPresentation.groups(snapshot: snapshot, query: "Backup", filter: .missingPath).isEmpty, "文本匹配与状态筛选应共同生效")
+        expect(SessionLibraryPresentation.groups(snapshot: snapshot, query: "GuardianOnly", filter: .all).isEmpty, "仅内部线程匹配时不能泄入用户会话结果")
+    }
+
+    private static func sessionLibraryFilteringPreservesOrderAndSnapshot() {
+        let snapshot = sessionLibraryFixture()
+        let original = snapshot
+        let groups = SessionLibraryPresentation.groups(snapshot: snapshot, query: "Backup", filter: .all)
+        expect(groups.map(\.id) == ["/tmp/Alpha", "/tmp/Nested/Beta"], "搜索后应保持原项目顺序，不按筛剩下的会话日期重新排序")
+        expect(groups.first?.threads.first?.ownership == .baseline, "展示搜索不能更改基线前会话归属")
+        expect(snapshot == original, "展示搜索与过滤不能修改原始快照")
+        for _ in 0..<3 {
+            expect(SessionLibraryPresentation.groups(snapshot: snapshot, query: "Backup", filter: .all) == groups, "相同输入的展示顺序必须稳定")
+        }
+    }
+
+    private static func sessionLibraryFixture() -> SessionContinuitySnapshot {
+        var recent = record(id: "alpha-recent", path: "/tmp/Alpha", title: "Daily Notes", updatedAt: Date(timeIntervalSince1970: 500))
+        recent.visibility = .visible
+        var archived = record(id: "alpha-archive", path: "/tmp/Alpha", isArchived: true, ownership: .baseline, title: "Backup Plan", updatedAt: Date(timeIntervalSince1970: 200))
+        archived.visibility = .visible
+        let recoverable = record(id: "beta-recoverable", path: "/tmp/Nested/Beta", title: "BACKUP review", updatedAt: Date(timeIntervalSince1970: 400))
+        var missing = record(id: "beta-missing", path: "/tmp/Nested/Beta", title: "Missing Work", updatedAt: Date(timeIntervalSince1970: 300))
+        missing.visibility = .projectPathMissing
+        let subagent = record(id: "internal", path: "/tmp/GuardianOnly", kind: .subagent, isArchived: true, title: "Backup", updatedAt: Date(timeIntervalSince1970: 900))
+        let system = record(id: "system", path: "/tmp/Alpha", kind: .system, title: "Backup", updatedAt: Date(timeIntervalSince1970: 1_000))
+        return SessionContinuitySnapshot(
+            threads: [system, missing, archived, subagent, recent, recoverable],
+            unreadableFileCount: 0, checkedAt: Date(timeIntervalSince1970: 1_800_000_000)
+        )
     }
 
     private static func projectGroupsContainTheirConversations() {
@@ -2080,16 +2214,18 @@ enum ContinuityTests {
         kind: LocalThreadKind = .userConversation,
         rolloutURL: URL? = nil,
         isArchived: Bool = false,
-        ownership: SessionOwnership = .unknown
+        ownership: SessionOwnership = .unknown,
+        title: String = "测试会话",
+        updatedAt: Date = Date(timeIntervalSince1970: 1_800_000_000)
     ) -> LocalThreadRecord {
         LocalThreadRecord(
             id: id,
-            title: "测试会话",
+            title: title,
             projectName: URL(fileURLWithPath: path).lastPathComponent,
             projectPath: path,
             rolloutURL: rolloutURL ?? URL(fileURLWithPath: "/tmp/\(id).jsonl"),
             isArchived: isArchived,
-            updatedAt: Date(timeIntervalSince1970: 1_800_000_000),
+            updatedAt: updatedAt,
             gitBranch: "main",
             readableMessages: messages,
             kind: kind,

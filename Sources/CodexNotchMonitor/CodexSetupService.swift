@@ -60,6 +60,60 @@ enum CodexSetupHooksStepMode: Equatable {
     case checking
 }
 
+enum CodexSetupConfigurationAssessment: Equatable {
+    case checking
+    case blocked
+    case invalid
+    case notConfigured
+    case readable
+
+    var title: String {
+        switch self {
+        case .checking: return "正在检查配置"
+        case .blocked: return "尚未检查配置"
+        case .invalid: return "配置无法解析"
+        case .notConfigured: return "尚未配置此插件"
+        case .readable: return "配置可解析"
+        }
+    }
+}
+
+enum CodexSetupPresentation {
+    static func hookTitle(for state: CodexSetupHookState?) -> String {
+        guard let state else { return "正在检查" }
+        switch state {
+        case .notInstalled: return "未启用"
+        case .connected: return "已通过事件验证"
+        case .waitingForFirstEvent: return "等待真实任务事件"
+        default: return state.title
+        }
+    }
+
+    static func hookNeedsAttention(for state: CodexSetupHookState?) -> Bool {
+        switch state {
+        case .codexUnavailable, .helperUnavailable, .invalidHooksFile,
+             .updateRequired, .trustStatusUnknown, .securityReviewRequired:
+            return true
+        case nil, .checking, .notInstalled, .connected, .waitingForFirstEvent:
+            return false
+        }
+    }
+
+    static func configurationAssessment(
+        for state: CodexSetupHookState?
+    ) -> CodexSetupConfigurationAssessment {
+        switch state {
+        case nil, .checking: return .checking
+        case .codexUnavailable, .helperUnavailable: return .blocked
+        case .invalidHooksFile: return .invalid
+        case .notInstalled: return .notConfigured
+        case .updateRequired, .trustStatusUnknown, .securityReviewRequired,
+             .waitingForFirstEvent, .connected:
+            return .readable
+        }
+    }
+}
+
 struct CodexSetupSnapshot: Equatable {
     let hookState: CodexSetupHookState
     let codexExecutableURL: URL?

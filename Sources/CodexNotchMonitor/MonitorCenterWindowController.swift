@@ -2,9 +2,11 @@ import AppKit
 import SwiftUI
 
 enum MonitorCenterLayout {
-    static let width: CGFloat = 872
-    static let height: CGFloat = 620
-    static let sidebarWidth: CGFloat = 216
+    static let width: CGFloat = 1060
+    static let height: CGFloat = 760
+    static let minimumWidth: CGFloat = 900
+    static let minimumHeight: CGFloat = 640
+    static let sidebarWidth: CGFloat = 220
 }
 
 private final class MonitorCenterGlassCompositionView: NSView {
@@ -131,7 +133,7 @@ final class MonitorCenterWindowController: NSObject, NSWindowDelegate {
         )
         let window = NSWindow(
             contentRect: frame,
-            styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
@@ -143,6 +145,11 @@ final class MonitorCenterWindowController: NSObject, NSWindowDelegate {
         window.hasShadow = false
         window.appearance = NSAppearance(named: .darkAqua)
         window.isReleasedWhenClosed = false
+        window.contentMinSize = NSSize(
+            width: MonitorCenterLayout.minimumWidth,
+            height: MonitorCenterLayout.minimumHeight
+        )
+        window.setFrameAutosaveName("MonitorCenterWindow")
         window.collectionBehavior = [.moveToActiveSpace]
         window.delegate = self
         let hostingView = NSHostingView(rootView: rootView)

@@ -6,27 +6,27 @@ enum ActivitySettingsLayoutMode: Equatable {
     case narrow
 
     static func resolve(width: CGFloat) -> ActivitySettingsLayoutMode {
-        if width < 700 { return .narrow }
-        if width < 820 { return .compact }
+        if width < 760 { return .narrow }
+        if width < 960 { return .compact }
         return .standard
     }
 
     var previewFraction: CGFloat {
         switch self {
-        case .standard: return 0.42
-        case .compact: return 0.40
+        case .standard: return 0.40
+        case .compact: return 0.38
         case .narrow: return 1
         }
     }
 
     var panePadding: CGFloat {
-        self == .standard ? 20 : 14
+        self == .narrow ? 16 : 20
     }
 
     var previewScaleFactor: CGFloat {
         switch self {
         case .standard, .narrow: return 0.60
-        case .compact: return 0.47
+        case .compact: return 0.42
         }
     }
 }
@@ -50,89 +50,38 @@ private enum ActivitySettingsFocus: Hashable {
 
 private struct ActivitySettingsSegmentedControl: View {
     @Binding var selection: ActivitySettingsSection
-    let reduceMotion: Bool
-    @Namespace private var selectionAnimation
-    @State private var hoveredSection: ActivitySettingsSection?
 
     var body: some View {
-        HStack(spacing: 1) {
+        Picker("设置分组", selection: $selection) {
             ForEach(ActivitySettingsSection.allCases) { section in
-                Button {
-                    select(section)
-                } label: {
-                    Text(section.rawValue)
-                        .font(MonitorTypography.controlLarge)
-                        .foregroundStyle(
-                            selection == section
-                                ? Color.white
-                                : MonitorTheme.secondaryText
-                        )
-                        .frame(maxWidth: .infinity, minHeight: 34)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .background {
-                    if selection == section {
-                        RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            .fill(Color.accentColor)
-                            .matchedGeometryEffect(
-                                id: "activity-settings-selection",
-                                in: selectionAnimation
-                            )
-                    } else if hoveredSection == section {
-                        RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            .fill(Color.white.opacity(0.055))
-                    }
-                }
-                .onHover { hovering in
-                    hoveredSection = hovering ? section : nil
-                }
-                .accessibilityLabel(section.rawValue)
-                .accessibilityValue(selection == section ? "已选择" : "")
+                Text(section.rawValue).tag(section)
             }
         }
-        .padding(2)
-        .background(
-            Color.white.opacity(0.085),
-            in: RoundedRectangle(cornerRadius: 9, style: .continuous)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.055), lineWidth: 0.5)
-        }
-        .onMoveCommand(perform: moveSelection)
-        .accessibilityElement(children: .contain)
+        .labelsHidden()
+        .pickerStyle(.segmented)
+        .controlSize(.large)
+        .font(MonitorDesktopTypography.controlLarge)
         .accessibilityLabel("设置分组")
     }
+}
 
-    private func select(_ section: ActivitySettingsSection) {
-        guard section != selection else { return }
-        if reduceMotion {
-            selection = section
+private struct ActivitySettingsNumericTransition: ViewModifier {
+    let value: Double
+    let reduceMotion: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(macOS 14.0, *) {
+            content
+                .contentTransition(reduceMotion ? .identity : .numericText(value: value))
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: value)
         } else {
-            withAnimation(.spring(response: 0.26, dampingFraction: 0.92)) {
-                selection = section
-            }
-        }
-    }
-
-    private func moveSelection(_ direction: MoveCommandDirection) {
-        let sections = ActivitySettingsSection.allCases
-        guard let index = sections.firstIndex(of: selection) else { return }
-        switch direction {
-        case .left:
-            select(sections[max(0, index - 1)])
-        case .right:
-            select(sections[min(sections.count - 1, index + 1)])
-        default:
-            break
+            content
         }
     }
 }
 
-/// Studio Inspector settings surface: a persistent real preview on the left
-/// and a compact native inspector on the right. Existing AppStorage keys still
-/// own persistence and immediate application.
+/// Live preview and native controls share the persisted Activity Island preferences.
 struct QuotaStyleSettingsView: View {
     @ObservedObject var store: MonitorStore
     @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
@@ -158,31 +107,39 @@ struct QuotaStyleSettingsView: View {
     @FocusState private var focusedControl: ActivitySettingsFocus?
 
     var body: some View {
-        GeometryReader { proxy in
-            let layoutMode = ActivitySettingsLayoutMode.resolve(width: proxy.size.width)
-            Group {
-                if layoutMode == .narrow {
-                    VStack(spacing: 0) {
-                        previewPane(layoutMode: layoutMode)
-                            .frame(height: 238)
-                        Divider().overlay(MonitorTheme.separator)
-                        inspector
-                    }
-                } else {
-                    HStack(spacing: 0) {
-                        previewPane(layoutMode: layoutMode)
-                            .frame(width: proxy.size.width * layoutMode.previewFraction)
-                        Divider().overlay(MonitorTheme.separator)
-                        inspector
+        VStack(spacing: 0) {
+            settingsHeader
+                .modifier(MonitorDesktopReveal(reduceMotion: motionIsReduced))
+            Divider().overlay(MonitorDesktopTheme.separator)
+
+            GeometryReader { proxy in
+                let layoutMode = ActivitySettingsLayoutMode.resolve(width: proxy.size.width)
+                Group {
+                    if layoutMode == .narrow {
+                        VStack(spacing: 0) {
+                            previewPane(layoutMode: layoutMode)
+                                .frame(height: 204)
+                            Divider().overlay(MonitorDesktopTheme.separator)
+                            inspector
+                        }
+                    } else {
+                        HStack(alignment: .top, spacing: 0) {
+                            previewPane(layoutMode: layoutMode)
+                                .frame(width: proxy.size.width * layoutMode.previewFraction)
+                            Divider().overlay(MonitorDesktopTheme.separator)
+                            inspector
+                        }
                     }
                 }
+                .animation(
+                    motionIsReduced ? nil : .easeOut(duration: 0.16),
+                    value: layoutMode
+                )
             }
-            .animation(
-                motionIsReduced ? nil : .easeOut(duration: 0.16),
-                value: layoutMode
-            )
         }
         .background(Color.clear)
+        .toggleStyle(.switch)
+        .controlSize(.regular)
         .onDisappear { isAdjustingSlider = false }
         .onChange(of: islandEnabled) { enabled in
             if !enabled, focusedControl != .enabled {
@@ -218,37 +175,55 @@ struct QuotaStyleSettingsView: View {
         }
     }
 
+    private var settingsHeader: some View {
+        HStack(alignment: .center, spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("灵动岛设置")
+                    .font(MonitorDesktopTypography.pageTitle)
+                    .foregroundStyle(MonitorDesktopTheme.primaryText)
+                Text("按你的工作方式呈现 Codex 任务状态。")
+                    .font(MonitorDesktopTypography.body)
+                    .foregroundStyle(MonitorDesktopTheme.secondaryText)
+            }
+            Spacer(minLength: 12)
+            Label("自动保存", systemImage: "checkmark.circle")
+                .font(MonitorDesktopTypography.metadata)
+                .foregroundStyle(MonitorDesktopTheme.secondaryText)
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 18)
+    }
+
     private func previewPane(layoutMode: ActivitySettingsLayoutMode) -> some View {
         VStack(alignment: .leading, spacing: layoutMode == .narrow ? 8 : 14) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("实时预览")
-                        .font(MonitorTypography.cardTitle)
-                        .foregroundStyle(MonitorTheme.primaryText)
-                    Text("设置会立即作用于当前显示状态。")
-                        .font(MonitorTypography.body)
-                        .foregroundStyle(MonitorTheme.tertiaryText)
-                }
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("实时预览")
+                    .font(MonitorDesktopTypography.cardTitle)
+                    .foregroundStyle(MonitorDesktopTheme.primaryText)
                 Spacer(minLength: 12)
                 Text(previewStatusTitle)
-                    .font(MonitorTypography.control)
-                    .foregroundStyle(islandEnabled ? MonitorTheme.secondaryText : MonitorTheme.faintText)
+                    .font(MonitorDesktopTypography.control)
+                    .foregroundStyle(MonitorDesktopTheme.secondaryText)
             }
 
             previewStage(layoutMode: layoutMode)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(maxWidth: .infinity)
+                .frame(height: layoutMode == .narrow ? 136 : 210)
 
             if layoutMode != .narrow {
+                Text("调整会立即生效，预览跟随当前真实任务。")
+                    .font(MonitorDesktopTypography.body)
+                    .foregroundStyle(MonitorDesktopTheme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
                 Text(previewSummary)
-                    .font(MonitorTypography.metadata)
-                    .foregroundStyle(MonitorTheme.tertiaryText)
-                    .lineLimit(3)
+                    .font(MonitorDesktopTypography.metadata)
+                    .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityHidden(true)
             }
         }
         .padding(layoutMode.panePadding)
-        .background(Color.black.opacity(0.10))
+        .modifier(MonitorDesktopReveal(delay: 0.06, reduceMotion: motionIsReduced))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("灵动岛实时预览")
         .accessibilityValue(previewSummary)
@@ -259,7 +234,7 @@ struct QuotaStyleSettingsView: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(Color.black.opacity(0.24))
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(MonitorTheme.separator, lineWidth: 0.7)
+                .strokeBorder(MonitorDesktopTheme.separator, lineWidth: 0.7)
 
             VStack(spacing: 0) {
                 previewMenuBar
@@ -306,14 +281,14 @@ struct QuotaStyleSettingsView: View {
     private var previewMenuBar: some View {
         HStack(spacing: 8) {
             Text("Codex Monitor")
-                .font(MonitorTypography.metadata)
-                .foregroundStyle(MonitorTheme.tertiaryText)
+                .font(MonitorDesktopTypography.metadata)
+                .foregroundStyle(MonitorDesktopTheme.tertiaryText)
             Spacer(minLength: 8)
             if islandEnabled, selectedMode == .menuBar {
                 Image(systemName: liveSnapshot == nil ? "circle.dotted" : "waveform.path.ecg")
                     .font(.system(size: 9, weight: .medium))
                 Text(menuBarPreviewTitle)
-                    .font(MonitorTypography.metadata)
+                    .font(MonitorDesktopTypography.metadata)
                     .lineLimit(1)
             } else {
                 Image(systemName: "wifi")
@@ -322,12 +297,12 @@ struct QuotaStyleSettingsView: View {
                     .font(.system(size: 9, weight: .medium))
             }
         }
-        .foregroundStyle(MonitorTheme.secondaryText)
+        .foregroundStyle(MonitorDesktopTheme.secondaryText)
         .padding(.horizontal, 10)
         .frame(height: 27)
         .background(Color.white.opacity(0.025))
         .overlay(alignment: .bottom) {
-            Divider().overlay(MonitorTheme.hairline)
+            Divider().overlay(MonitorDesktopTheme.hairline)
         }
     }
 
@@ -342,8 +317,8 @@ struct QuotaStyleSettingsView: View {
                 surfaceOpacity: surfaceOpacity,
                 surfaceScale: effectiveScale
             )
-            .animation(controlResponseAnimation, value: surfaceScale)
-            .animation(controlResponseAnimation, value: surfaceOpacity)
+            .animation(nil, value: surfaceScale)
+            .animation(nil, value: surfaceOpacity)
         } else {
             HStack(spacing: 2) {
                 ActivityStateOrb(
@@ -387,8 +362,8 @@ struct QuotaStyleSettingsView: View {
                 width: ActivityIslandLayout.expandedSurfaceSize.width * effectiveScale,
                 height: ActivityIslandLayout.expandedSurfaceSize.height * effectiveScale
             )
-            .animation(controlResponseAnimation, value: surfaceScale)
-            .animation(controlResponseAnimation, value: surfaceOpacity)
+            .animation(nil, value: surfaceScale)
+            .animation(nil, value: surfaceOpacity)
         }
     }
 
@@ -400,13 +375,13 @@ struct QuotaStyleSettingsView: View {
         VStack(spacing: 7) {
             Image(systemName: symbol)
                 .font(.system(size: 18, weight: .medium))
-                .foregroundStyle(MonitorTheme.secondaryText)
+                .foregroundStyle(MonitorDesktopTheme.secondaryText)
             Text(title)
-                .font(MonitorTypography.cardTitle)
-                .foregroundStyle(MonitorTheme.primaryText)
+                .font(MonitorDesktopTypography.cardTitle)
+                .foregroundStyle(MonitorDesktopTheme.primaryText)
             Text(detail)
-                .font(MonitorTypography.body)
-                .foregroundStyle(MonitorTheme.tertiaryText)
+                .font(MonitorDesktopTypography.body)
+                .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                 .multilineTextAlignment(.center)
         }
         .padding(16)
@@ -414,22 +389,29 @@ struct QuotaStyleSettingsView: View {
 
     private var inspector: some View {
         VStack(spacing: 0) {
-            ActivitySettingsSegmentedControl(
-                selection: $selectedSection,
-                reduceMotion: motionIsReduced
-            )
+            ActivitySettingsSegmentedControl(selection: $selectedSection)
             .padding(.horizontal, 20)
             .padding(.top, 14)
             .padding(.bottom, 12)
 
-            Divider().overlay(MonitorTheme.separator)
+            Divider().overlay(MonitorDesktopTheme.separator)
 
             ScrollView(.vertical, showsIndicators: true) {
                 ZStack(alignment: .topLeading) {
                     inspectorContent
+                        .padding(16)
+                        .background(
+                            MonitorDesktopTheme.cardFill,
+                            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        )
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .strokeBorder(MonitorDesktopTheme.hairline, lineWidth: 1)
+                        }
                         .id(selectedSection)
                         .transition(inspectorTransition)
                 }
+                .modifier(MonitorDesktopReveal(delay: 0.12, reduceMotion: motionIsReduced))
                 .animation(inspectorAnimation, value: selectedSection)
                 .padding(.horizontal, 20)
                 .padding(.top, 16)
@@ -438,7 +420,6 @@ struct QuotaStyleSettingsView: View {
             .scrollDisabled(isAdjustingSlider)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.black.opacity(0.035))
     }
 
     @ViewBuilder
@@ -476,7 +457,8 @@ struct QuotaStyleSettingsView: View {
             VStack(spacing: 0) {
                 preferenceRow(
                     title: "显示方式",
-                    detail: displayModeDetail
+                    detail: displayModeDetail,
+                    controlsDisabled: !islandEnabled
                 ) {
                     Picker("显示方式", selection: $modeRawValue) {
                         ForEach(ActivityIslandMode.allCases) { mode in
@@ -485,48 +467,51 @@ struct QuotaStyleSettingsView: View {
                     }
                     .labelsHidden()
                     .pickerStyle(.segmented)
-                    .frame(minWidth: 190, idealWidth: 250, maxWidth: 285)
+                    .frame(width: 210)
                     .focused($focusedControl, equals: .mode)
                 }
 
                 Group {
                     if selectedMode == .floating {
-                    inspectorDivider
-                    preferenceRow(
-                        title: "目标显示器",
-                        detail: "选择浮动灵动岛所在的显示器。"
-                    ) {
-                        Picker("目标显示器", selection: $screenRawValue) {
-                            ForEach(ActivityIslandScreenMode.allCases) { screen in
-                                Text(screen.title).tag(screen.rawValue)
+                        inspectorDivider
+                        preferenceRow(
+                            title: "目标显示器",
+                            detail: "选择浮动灵动岛所在的显示器。",
+                            controlsDisabled: !islandEnabled
+                        ) {
+                            Picker("目标显示器", selection: $screenRawValue) {
+                                ForEach(ActivityIslandScreenMode.allCases) { screen in
+                                    Text(screen.title).tag(screen.rawValue)
+                                }
                             }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                            .frame(width: 160)
+                            .focused($focusedControl, equals: .screen)
                         }
-                        .labelsHidden()
-                        .pickerStyle(.menu)
-                        .frame(minWidth: 140, idealWidth: 180)
-                        .focused($focusedControl, equals: .screen)
-                    }
 
-                    inspectorDivider
-                    preferenceRow(
-                        title: "位置",
-                        detail: "选择灵动岛在屏幕顶部的水平位置。"
-                    ) {
-                        Picker("位置", selection: $positionRawValue) {
-                            ForEach(ActivityIslandPosition.allCases) { position in
-                                Text(position.title).tag(position.rawValue)
+                        inspectorDivider
+                        preferenceRow(
+                            title: "位置",
+                            detail: "选择灵动岛在屏幕顶部的水平位置。",
+                            controlsDisabled: !islandEnabled
+                        ) {
+                            Picker("位置", selection: $positionRawValue) {
+                                ForEach(ActivityIslandPosition.allCases) { position in
+                                    Text(position.title).tag(position.rawValue)
+                                }
                             }
+                            .labelsHidden()
+                            .pickerStyle(.segmented)
+                            .frame(width: 210)
+                            .focused($focusedControl, equals: .position)
                         }
-                        .labelsHidden()
-                        .pickerStyle(.segmented)
-                        .frame(minWidth: 190, idealWidth: 250)
-                        .focused($focusedControl, equals: .position)
-                    }
                     } else {
                         inspectorDivider
                         preferenceRow(
                             title: "信息密度",
-                            detail: "自动模式会在菜单栏空间不足时逐级收短。"
+                            detail: "自动模式会在菜单栏空间不足时逐级收短。",
+                            controlsDisabled: !islandEnabled
                         ) {
                             Picker("信息密度", selection: $menuBarDensityRawValue) {
                                 ForEach(MenuBarInformationDensity.allCases) { density in
@@ -535,7 +520,7 @@ struct QuotaStyleSettingsView: View {
                             }
                             .labelsHidden()
                             .pickerStyle(.segmented)
-                            .frame(minWidth: 210, idealWidth: 285)
+                            .frame(width: 240)
                             .focused($focusedControl, equals: .density)
                         }
                     }
@@ -543,8 +528,6 @@ struct QuotaStyleSettingsView: View {
                 .id(selectedMode)
                 .transition(conditionalTransition)
             }
-            .disabled(!islandEnabled)
-            .opacity(islandEnabled ? 1 : 0.48)
             .animation(inspectorAnimation, value: selectedMode)
             .animation(inspectorAnimation, value: islandEnabled)
 
@@ -558,8 +541,7 @@ struct QuotaStyleSettingsView: View {
     private var appearanceInspector: some View {
         inspectorGroup(
             title: "外观",
-            detail: "调整浮动灵动岛的背景、尺寸和真实动画风格。",
-            disabledWhenIslandHidden: true
+            detail: "调整浮动灵动岛的背景、尺寸和动画风格。"
         ) {
             opacitySliderRow
             inspectorDivider
@@ -567,7 +549,7 @@ struct QuotaStyleSettingsView: View {
             inspectorDivider
             VStack(alignment: .leading, spacing: 10) {
                 Text("动画风格")
-                    .font(MonitorTypography.cardTitle)
+                    .font(MonitorDesktopTypography.rowTitle)
                 Picker("动画风格", selection: $visualStyleRawValue) {
                     ForEach(ActivityIslandVisualStyle.allCases) { style in
                         Text(style.title).tag(style.rawValue)
@@ -575,10 +557,17 @@ struct QuotaStyleSettingsView: View {
                 }
                 .labelsHidden()
                 .pickerStyle(.segmented)
+                .disabled(floatingControlsAreDisabled)
                 Text(animationStyleDetail)
-                    .font(MonitorTypography.body)
-                    .foregroundStyle(MonitorTheme.tertiaryText)
+                    .font(MonitorDesktopTypography.body)
+                    .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                     .fixedSize(horizontal: false, vertical: true)
+                if motionIsReduced {
+                    Label("减少动态效果已开启，当前以静态风格显示。", systemImage: "pause.circle")
+                        .font(MonitorDesktopTypography.metadata)
+                        .foregroundStyle(MonitorDesktopTheme.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .padding(.vertical, 12)
         }
@@ -587,37 +576,18 @@ struct QuotaStyleSettingsView: View {
     private var behaviorInspector: some View {
         inspectorGroup(
             title: "行为",
-            detail: "控制任务完成反馈，以及展开和隐藏的时间。",
-            disabledWhenIslandHidden: true
+            detail: "控制浮动灵动岛的任务完成反馈与自动隐藏。"
         ) {
             preferenceRow(
                 title: "显示任务完成反馈",
-                detail: "先显示完成状态，再收紧并隐藏。"
+                detail: "先显示完成状态，再收紧并隐藏。",
+                controlsDisabled: floatingControlsAreDisabled
             ) {
                 Toggle("显示任务完成反馈", isOn: $showCompletion)
                     .labelsHidden()
             }
             inspectorDivider
-            Button {
-                toggleTimeSettings()
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 10, weight: .semibold))
-                        .rotationEffect(.degrees(timeSettingsExpanded ? 90 : 0))
-                    Text("时间与自动隐藏")
-                        .font(MonitorTypography.cardTitle)
-                    Spacer()
-                }
-                .foregroundStyle(MonitorTheme.primaryText)
-                .frame(minHeight: 42)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("时间与自动隐藏")
-            .accessibilityValue(timeSettingsExpanded ? "已展开" : "已收起")
-
-            if timeSettingsExpanded {
+            DisclosureGroup(isExpanded: $timeSettingsExpanded) {
                 VStack(spacing: 0) {
                     sliderRow(
                         title: "任务完成后保持展开",
@@ -633,11 +603,14 @@ struct QuotaStyleSettingsView: View {
                         range: 5...120
                     )
                 }
-                .transition(disclosureTransition)
+            } label: {
+                Text("时间与自动隐藏")
+                    .font(MonitorDesktopTypography.rowTitle)
+                    .foregroundStyle(MonitorDesktopTheme.primaryText)
             }
+            .padding(.vertical, 14)
         }
         .animation(disclosureAnimation, value: timeSettingsExpanded)
-        .clipped()
     }
 
     private var accessibilityInspector: some View {
@@ -659,11 +632,11 @@ struct QuotaStyleSettingsView: View {
                     systemReduceMotion ? "macOS 已启用减少动态效果" : "macOS 系统动态效果正常",
                     systemImage: systemReduceMotion ? "checkmark.circle" : "circle"
                 )
-                .font(MonitorTypography.rowTitle)
-                .foregroundStyle(MonitorTheme.secondaryText)
+                .font(MonitorDesktopTypography.rowTitle)
+                .foregroundStyle(MonitorDesktopTheme.secondaryText)
                 Text("系统设置和应用内设置任一开启，灵动岛都会采用减少动态的呈现。")
-                    .font(MonitorTypography.body)
-                    .foregroundStyle(MonitorTheme.tertiaryText)
+                    .font(MonitorDesktopTypography.body)
+                    .foregroundStyle(MonitorDesktopTheme.tertiaryText)
             }
             .padding(.vertical, 12)
         }
@@ -672,54 +645,70 @@ struct QuotaStyleSettingsView: View {
     private func inspectorGroup<Content: View>(
         title: String,
         detail: String,
-        disabledWhenIslandHidden: Bool,
         @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             inspectorHeading(title, detail: detail)
-            content()
-            if disabledWhenIslandHidden, !islandEnabled {
-                disabledExplanation
+            if floatingControlsAreDisabled {
+                floatingScopeExplanation
+                    .padding(.bottom, 14)
                     .transition(.opacity)
             }
+            content()
         }
-        .disabled(disabledWhenIslandHidden && !islandEnabled)
-        .opacity(disabledWhenIslandHidden && !islandEnabled ? 0.48 : 1)
         .animation(inspectorAnimation, value: islandEnabled)
+        .animation(inspectorAnimation, value: selectedMode)
     }
 
     private func inspectorHeading(_ title: String, detail: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 6) {
             Text(title)
-                .font(MonitorTypography.pageSubtitle)
-                .foregroundStyle(MonitorTheme.primaryText)
+                .font(MonitorDesktopTypography.cardTitle)
+                .foregroundStyle(MonitorDesktopTheme.primaryText)
             Text(detail)
-                .font(MonitorTypography.body)
-                .foregroundStyle(MonitorTheme.tertiaryText)
+                .font(MonitorDesktopTypography.body)
+                .foregroundStyle(MonitorDesktopTheme.tertiaryText)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(.bottom, 12)
+        .padding(.bottom, 18)
     }
 
     private func preferenceRow<Trailing: View>(
         title: String,
         detail: String,
+        controlsDisabled: Bool = false,
         @ViewBuilder trailing: () -> Trailing
     ) -> some View {
-        HStack(spacing: 16) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(MonitorTypography.cardTitle)
-                    .foregroundStyle(MonitorTheme.primaryText)
-                Text(detail)
-                    .font(MonitorTypography.body)
-                    .foregroundStyle(MonitorTheme.tertiaryText)
-                    .fixedSize(horizontal: false, vertical: true)
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .center, spacing: 16) {
+                preferenceLabel(title: title, detail: detail)
+                    .frame(minWidth: 160, maxWidth: .infinity, alignment: .leading)
+                trailing()
+                    .disabled(controlsDisabled)
+                    .fixedSize(horizontal: true, vertical: false)
             }
-            Spacer(minLength: 16)
-            trailing()
+            VStack(alignment: .leading, spacing: 12) {
+                preferenceLabel(title: title, detail: detail)
+                trailing()
+                    .disabled(controlsDisabled)
+            }
         }
-        .frame(minHeight: MonitorGeometry.settingsRowHeight)
+        .font(MonitorDesktopTypography.controlLarge)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 14)
+        .accessibilityElement(children: .contain)
+    }
+
+    private func preferenceLabel(title: String, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title)
+                .font(MonitorDesktopTypography.rowTitle)
+                .foregroundStyle(MonitorDesktopTheme.primaryText)
+            Text(detail)
+                .font(MonitorDesktopTypography.body)
+                .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     private func sliderRow(
@@ -729,22 +718,28 @@ struct QuotaStyleSettingsView: View {
         range: ClosedRange<Double>
     ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
+            HStack(alignment: .firstTextBaseline, spacing: 14) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(title).font(MonitorTypography.cardTitle)
+                    Text(title).font(MonitorDesktopTypography.rowTitle)
                     Text(detail)
-                        .font(MonitorTypography.body)
-                        .foregroundStyle(MonitorTheme.tertiaryText)
+                        .font(MonitorDesktopTypography.body)
+                        .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
                 Text("\(Int(value.wrappedValue)) 秒")
-                    .font(MonitorTypography.rowTitle)
+                    .font(MonitorDesktopTypography.rowTitle)
                     .foregroundStyle(
                         highlightedSlider == title
-                            ? MonitorTheme.primaryText
-                            : MonitorTheme.secondaryText
+                            ? MonitorDesktopTheme.primaryText
+                            : MonitorDesktopTheme.secondaryText
                     )
                     .monospacedDigit()
+                    .fixedSize()
+                    .modifier(ActivitySettingsNumericTransition(
+                        value: value.wrappedValue,
+                        reduceMotion: motionIsReduced
+                    ))
                     .animation(controlResponseAnimation, value: highlightedSlider)
             }
             Slider(
@@ -755,7 +750,8 @@ struct QuotaStyleSettingsView: View {
                     setSliderEditing(editing, feedbackKey: title)
                 }
             )
-            .tint(MonitorTheme.selection)
+            .tint(MonitorDesktopTheme.selection)
+            .disabled(floatingControlsAreDisabled)
             .accessibilityLabel(title)
             .accessibilityValue("\(Int(value.wrappedValue)) 秒")
         }
@@ -764,8 +760,8 @@ struct QuotaStyleSettingsView: View {
 
     private var opacitySliderRow: some View {
         percentageSliderRow(
-            title: "透明度",
-            detail: "数值越低越透明；只调整黑色背景，不增加磨砂。",
+            title: "背景不透明度",
+            detail: "数值越高，背景越深；数值越低，背景越透明。",
             value: $surfaceOpacity,
             range: 0.10...0.90
         )
@@ -774,7 +770,7 @@ struct QuotaStyleSettingsView: View {
     private var scaleSliderRow: some View {
         percentageSliderRow(
             title: "整体缩放",
-            detail: "等比调整窗口、内容、光球、圆角和阴影。",
+            detail: "等比调整灵动岛与其中的内容。",
             value: $surfaceScale,
             range: 0.25...1.25
         )
@@ -787,22 +783,28 @@ struct QuotaStyleSettingsView: View {
         range: ClosedRange<Double>
     ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
+            HStack(alignment: .firstTextBaseline, spacing: 14) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(title).font(MonitorTypography.cardTitle)
+                    Text(title).font(MonitorDesktopTypography.rowTitle)
                     Text(detail)
-                        .font(MonitorTypography.body)
-                        .foregroundStyle(MonitorTheme.tertiaryText)
+                        .font(MonitorDesktopTypography.body)
+                        .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
                 Text("\(Int((value.wrappedValue * 100).rounded()))%")
-                    .font(MonitorTypography.rowTitle)
+                    .font(MonitorDesktopTypography.rowTitle)
                     .foregroundStyle(
                         highlightedSlider == title
-                            ? MonitorTheme.primaryText
-                            : MonitorTheme.secondaryText
+                            ? MonitorDesktopTheme.primaryText
+                            : MonitorDesktopTheme.secondaryText
                     )
                     .monospacedDigit()
+                    .fixedSize()
+                    .modifier(ActivitySettingsNumericTransition(
+                        value: (value.wrappedValue * 100).rounded(),
+                        reduceMotion: motionIsReduced
+                    ))
                     .animation(controlResponseAnimation, value: highlightedSlider)
             }
             Slider(
@@ -813,7 +815,8 @@ struct QuotaStyleSettingsView: View {
                     setSliderEditing(editing, feedbackKey: title)
                 }
             )
-            .tint(MonitorTheme.selection)
+            .tint(MonitorDesktopTheme.selection)
+            .disabled(floatingControlsAreDisabled)
             .accessibilityLabel(title)
             .accessibilityValue("\(Int((value.wrappedValue * 100).rounded()))%")
         }
@@ -821,18 +824,42 @@ struct QuotaStyleSettingsView: View {
     }
 
     private var inspectorDivider: some View {
-        Divider().overlay(MonitorTheme.separator)
+        Divider().overlay(MonitorDesktopTheme.separator)
     }
 
     private var disabledExplanation: some View {
         Label(
-            "显示灵动岛已关闭；当前值已保留，重新开启后可用。",
+            "灵动岛已关闭。设置已保留，重新开启后可继续调整。",
             systemImage: "info.circle"
         )
-        .font(MonitorTypography.body)
-        .foregroundStyle(MonitorTheme.tertiaryText)
+        .font(MonitorDesktopTypography.body)
+        .foregroundStyle(MonitorDesktopTheme.secondaryText)
+        .fixedSize(horizontal: false, vertical: true)
         .padding(.top, 12)
         .accessibilityHint("重新开启显示灵动岛后，这些设置会恢复可用")
+    }
+
+    private var floatingScopeExplanation: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: islandEnabled ? "menubar.rectangle" : "info.circle")
+                .accessibilityHidden(true)
+            Text(islandEnabled
+                ? "这些设置用于浮动灵动岛。当前为仅菜单栏模式，原有设置已保留。"
+                : "灵动岛已关闭。原有设置已保留，可在“显示”中重新开启。")
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .font(MonitorDesktopTypography.body)
+        .foregroundStyle(MonitorDesktopTheme.secondaryText)
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            MonitorDesktopTheme.controlFill,
+            in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+        )
+    }
+
+    private var floatingControlsAreDisabled: Bool {
+        !islandEnabled || selectedMode != .floating
     }
 
     private var selectedMode: ActivityIslandMode {
@@ -867,17 +894,12 @@ struct QuotaStyleSettingsView: View {
 
     private var inspectorTransition: AnyTransition {
         guard !motionIsReduced else { return .opacity }
-        return .opacity.combined(with: .offset(x: 0, y: 4))
+        return .opacity.combined(with: .offset(x: 0, y: 10))
     }
 
     private var conditionalTransition: AnyTransition {
         guard !motionIsReduced else { return .opacity }
         return .opacity.combined(with: .offset(x: 0, y: 4))
-    }
-
-    private var disclosureTransition: AnyTransition {
-        guard !motionIsReduced else { return .opacity }
-        return .opacity.combined(with: .offset(x: 0, y: -6))
     }
 
     private var animationStyleTransition: AnyTransition {
@@ -893,20 +915,20 @@ struct QuotaStyleSettingsView: View {
 
     private var inspectorAnimation: Animation? {
         motionIsReduced
-            ? .linear(duration: 0.08)
-            : .easeOut(duration: 0.17)
+            ? .easeOut(duration: 0.15)
+            : .spring(response: 0.34, dampingFraction: 1)
     }
 
     private var disclosureAnimation: Animation? {
         motionIsReduced
-            ? .linear(duration: 0.08)
-            : .timingCurve(0.20, 0.80, 0.20, 1, duration: 0.24)
+            ? nil
+            : .spring(response: 0.3, dampingFraction: 1)
     }
 
     private var positionAnimation: Animation? {
         motionIsReduced
             ? nil
-            : .spring(response: 0.24, dampingFraction: 0.88)
+            : .spring(response: 0.3, dampingFraction: 1)
     }
 
     private var controlResponseAnimation: Animation? {
@@ -972,7 +994,11 @@ struct QuotaStyleSettingsView: View {
             state = "浮动灵动岛，\(screen)，\(position)"
         }
         let task = liveSnapshot == nil ? "等待真实任务状态" : "使用当前真实任务状态"
-        return "\(state)；\(selectedVisualStyle.title)；缩放 \(Int((surfaceScale * 100).rounded()))%；透明度 \(Int((surfaceOpacity * 100).rounded()))%；\(motionIsReduced ? "已减少动态效果" : "动态效果开启")；\(task)。"
+        let motion = motionIsReduced ? "已减少动态效果" : "动态效果开启"
+        guard islandEnabled, selectedMode == .floating else {
+            return "\(state)；\(task)。"
+        }
+        return "\(state)；\(selectedVisualStyle.title)；缩放 \(Int((surfaceScale * 100).rounded()))%；背景不透明度 \(Int((surfaceOpacity * 100).rounded()))%；\(motion)；\(task)。"
     }
 
     private func restoreConditionalFocusIfNeeded() {
@@ -988,16 +1014,6 @@ struct QuotaStyleSettingsView: View {
 
     private func notifyPreferenceChange() {
         ActivityIslandPreferenceSignal.post()
-    }
-
-    private func toggleTimeSettings() {
-        if let disclosureAnimation {
-            withAnimation(disclosureAnimation) {
-                timeSettingsExpanded.toggle()
-            }
-        } else {
-            timeSettingsExpanded.toggle()
-        }
     }
 
     private func setSliderEditing(
