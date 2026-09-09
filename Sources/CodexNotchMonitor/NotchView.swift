@@ -237,7 +237,6 @@ struct NotchView: View {
     @State private var selectedContinuityThreadID: String?
     @State private var showsContinuityDetails = false
     @State private var showsContinuityOperations = false
-    @State private var didSeedContinuityExpansion = false
     @State private var continuityRecoveryFocusGeneration = 0
     @State private var pendingContinuityThreadDeletion: LocalThreadRecord?
     @State private var pendingContinuityProjectDeletion: ContinuityProjectGroup?
@@ -1484,7 +1483,6 @@ struct NotchView: View {
             }
         }
         .onAppear {
-            seedContinuityExpansion()
             if continuityHasActiveOperation || store.continuityError != nil { showsContinuityOperations = true }
         }
         .onChange(of: continuitySearchText) { _ in revealFilteredContinuityProjects() }
@@ -1494,17 +1492,21 @@ struct NotchView: View {
                 self.selectedContinuityThreadID = nil
                 showsContinuityDetails = false
             }
-            seedContinuityExpansion()
         }
         .onChange(of: store.continuitySnapshot.projectGroups.map(\.id)) { ids in
             expandedContinuityProjectIDs.formIntersection(ids)
-            seedContinuityExpansion()
         }
         .onChange(of: continuityOperationAttentionToken) { _ in
             if continuityHasOperationContent { showsContinuityOperations = true }
         }
         .onChange(of: selectedContinuityThreadID) { _ in
             if selectedContinuityThread == nil { showsContinuityDetails = false }
+            if let selectedContinuityThreadID,
+               let project = filteredContinuityProjects.first(where: {
+                   $0.threads.contains(where: { $0.id == selectedContinuityThreadID })
+               }) {
+                expandedContinuityProjectIDs.insert(project.id)
+            }
         }
 
         .alert("备份并恢复本地会话", isPresented: $confirmsContinuityRecovery) {
@@ -1909,19 +1911,15 @@ struct NotchView: View {
         store.continuitySnapshot.projectGroups.first { $0.threads.contains(where: \.canRecover) }?.id
     }
 
-    private func seedContinuityExpansion() {
-        guard !didSeedContinuityExpansion,
-              let first = firstRecoverableProjectID ?? filteredContinuityProjects.first?.id else { return }
-        expandedContinuityProjectIDs.insert(first)
-        didSeedContinuityExpansion = true
-    }
-
     private func revealFilteredContinuityProjects() {
         if !continuitySearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || continuityFilter != .all {
             if continuityUnfilteredExpansionIDs == nil {
                 continuityUnfilteredExpansionIDs = expandedContinuityProjectIDs
             }
-            expandedContinuityProjectIDs = Set(filteredContinuityProjects.map(\.id))
+            expandedContinuityProjectIDs = SessionLibraryPresentation.expansionIDs(
+                projects: filteredContinuityProjects,
+                selectedThreadID: selectedContinuityThreadID
+            )
         } else if let previousExpansion = continuityUnfilteredExpansionIDs {
             expandedContinuityProjectIDs = previousExpansion.intersection(store.continuitySnapshot.projectGroups.map(\.id))
             continuityUnfilteredExpansionIDs = nil
@@ -2670,14 +2668,16 @@ struct NotchView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    @ViewBuilder
     private func continuityProjectSection(
         _ project: ContinuityProjectGroup,
         completeProject: ContinuityProjectGroup?
     ) -> some View {
         let total = completeProject?.threads.count ?? project.threads.count
-        return DisclosureGroup(isExpanded: Binding(
-            get: { expandedContinuityProjectIDs.contains(project.id) },
-            set: { expanded in
+        let isExpanded = expandedContinuityProjectIDs.contains(project.id)
+        HStack(spacing: 4) {
+            Button {
+                let expanded = !isExpanded
                 animate(.spring(response: 0.30, dampingFraction: 1)) {
                     if expanded { expandedContinuityProjectIDs.insert(project.id) }
                     else {
@@ -2688,52 +2688,66 @@ struct NotchView: View {
                         }
                     }
                 }
-            }
-        )) {
-            ForEach(project.threads) { thread in
-                continuityThreadRow(thread)
-                    .tag(thread.id)
-                    .listRowInsets(EdgeInsets(top: 5, leading: 12, bottom: 5, trailing: 12))
-            }
-        } label: {
-            HStack(spacing: 9) {
-                Image(systemName: "folder")
-                    .foregroundStyle(MonitorDesktopTheme.tertiaryText)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(project.name)
-                        .font(MonitorDesktopTypography.rowTitle)
-                        .lineLimit(1)
-                    Text(project.id.isEmpty ? "项目路径未记录" : (project.id as NSString).abbreviatingWithTildeInPath)
+            } label: {
+                HStack(spacing: 9) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        .frame(width: 14, height: 26)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(project.name)
+                            .font(MonitorDesktopTypography.rowTitle)
+                            .lineLimit(1)
+                        Text(project.id.isEmpty ? "项目路径未记录" : (project.id as NSString).abbreviatingWithTildeInPath)
+                            .font(MonitorDesktopTypography.metadata)
+                            .foregroundStyle(MonitorDesktopTheme.tertiaryText)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    .help("\(project.id)\n\(projectConversationCountText(completeProject ?? project))")
+                    Spacer(minLength: 6)
+                    Text(total == project.threads.count ? "\(total) 条" : "\(project.threads.count)／\(total) 条")
                         .font(MonitorDesktopTypography.metadata)
                         .foregroundStyle(MonitorDesktopTheme.tertiaryText)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                        .monospacedDigit()
                 }
-                .help("\(project.id)\n\(projectConversationCountText(completeProject ?? project))")
-                Spacer(minLength: 6)
-                Text(total == project.threads.count ? "\(total) 条" : "\(project.threads.count)／\(total) 条")
-                    .font(MonitorDesktopTypography.metadata)
-                    .foregroundStyle(MonitorDesktopTheme.tertiaryText)
-                    .monospacedDigit()
-                Menu {
-                    if let completeProject { continuityProjectActions(completeProject) }
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .frame(width: 24, height: 26)
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .disabled(completeProject == nil || continuityActionsAreBusy)
-                .help("\(project.name)的全部 \(total) 条会话操作")
-                .accessibilityLabel("\(project.name)的项目操作")
+                .contentShape(Rectangle())
+                .padding(.vertical, 5)
             }
-            .padding(.vertical, 5)
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(project.name)，\(total) 条会话")
+            .accessibilityValue(isExpanded ? "已展开" : "已折叠")
+            .accessibilityHint(isExpanded ? "按下折叠项目" : "按下展开项目")
+
+            Menu {
+                if let completeProject { continuityProjectActions(completeProject) }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .frame(width: 24, height: 26)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .disabled(completeProject == nil || continuityActionsAreBusy)
+            .help("\(project.name)的全部 \(total) 条会话操作")
+            .accessibilityLabel("\(project.name)的项目操作")
         }
+        .listRowInsets(EdgeInsets(top: 3, leading: 12, bottom: 3, trailing: 12))
         .contextMenu {
             if let completeProject { continuityProjectActions(completeProject) }
         }
         .id(continuityProjectScrollID(project.id))
+
+        if isExpanded {
+            ForEach(project.threads) { thread in
+                continuityThreadRow(thread)
+                    .tag(thread.id)
+                    .listRowInsets(EdgeInsets(top: 5, leading: 38, bottom: 5, trailing: 12))
+            }
+            .transition(.opacity)
+        }
     }
 
     @ViewBuilder
@@ -3194,16 +3208,34 @@ struct NotchView: View {
                     .font(MonitorDesktopTypography.metadata)
                     .foregroundStyle(tiboForecastConfidenceColor)
             }
-            HStack(spacing: 28) {
-                tiboForecastMetric("未来 24 小时", store.tiboRadar?.forecast.probabilities.rounded24H)
-                tiboForecastMetric("未来 48 小时", store.tiboRadar?.forecast.probabilities.rounded48H)
-                Spacer(minLength: 0)
+            if tiboForecastIsStale, store.tiboRadar != nil {
+                HStack(spacing: 7) {
+                    Image(systemName: "clock.badge.exclamationmark")
+                    Text("预测数据已过期")
+                }
+                .font(MonitorDesktopTypography.rowTitle)
+                .foregroundStyle(.orange)
+                Text("以下为上次成功预测，只用于回看，不代表当前情况。")
+                    .font(MonitorDesktopTypography.metadata)
+                    .foregroundStyle(MonitorDesktopTheme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 28) {
+                    tiboForecastMetric("上次 24 小时", store.tiboRadar?.forecast.probabilities.rounded24H, isHistorical: true)
+                    tiboForecastMetric("上次 48 小时", store.tiboRadar?.forecast.probabilities.rounded48H, isHistorical: true)
+                    Spacer(minLength: 0)
+                }
+            } else {
+                HStack(spacing: 28) {
+                    tiboForecastMetric("未来 24 小时", store.tiboRadar?.forecast.probabilities.rounded24H)
+                    tiboForecastMetric("未来 48 小时", store.tiboRadar?.forecast.probabilities.rounded48H)
+                    Spacer(minLength: 0)
+                }
+                Text("实验性预测，不能保证你的账号会重置。")
+                    .font(MonitorDesktopTypography.metadata)
+                    .foregroundStyle(MonitorDesktopTheme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .help(store.tiboRadar?.forecast.confidenceNote ?? "社区模型的概率估算，不是官方重置承诺。")
             }
-            Text("实验性预测，不能保证你的账号会重置。")
-                .font(MonitorDesktopTypography.metadata)
-                .foregroundStyle(MonitorDesktopTheme.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
-                .help(store.tiboRadar?.forecast.confidenceNote ?? "社区模型的概率估算，不是官方重置承诺。")
             Spacer(minLength: 0)
             Text(tiboForecastUpdatedText)
                 .font(MonitorDesktopTypography.metadata)
@@ -3220,7 +3252,7 @@ struct NotchView: View {
 
     private var tiboForecastUpdatedText: String {
         guard let date = store.tiboRadar?.forecast.updatedDate else { return "等待预测数据" }
-        return "\(tiboForecastIsStale ? "预测已过期" : "预测更新") · \(tiboRelativeTime(date))"
+        return "\(tiboForecastIsStale ? "上次成功更新" : "预测更新") · \(tiboRelativeTime(date))"
     }
 
     private var tiboQuotaHistoryPanel: some View {
@@ -3419,21 +3451,25 @@ struct NotchView: View {
         .padding(.vertical, 7)
     }
 
-    private func tiboForecastMetric(_ label: String, _ value: Int?) -> some View {
+    private func tiboForecastMetric(
+        _ label: String,
+        _ value: Int?,
+        isHistorical: Bool = false
+    ) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(value.map { "\($0)%" } ?? "暂无")
-                .font(.system(size: value == nil ? 22 : 30, weight: .semibold))
+                .font(.system(size: value == nil || isHistorical ? 20 : 30, weight: .semibold))
                 .monospacedDigit()
                 .contentTransition(.numericText())
-                .animation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 1), value: value)
-                .foregroundStyle(value == nil ? MonitorDesktopTheme.tertiaryText : MonitorDesktopTheme.primaryText)
+                .animation(reduceMotion || isHistorical ? nil : .spring(response: 0.34, dampingFraction: 1), value: value)
+                .foregroundStyle(value == nil || isHistorical ? MonitorDesktopTheme.tertiaryText : MonitorDesktopTheme.primaryText)
             Text(label)
                 .font(MonitorDesktopTypography.metadata)
                 .foregroundStyle(MonitorDesktopTheme.tertiaryText)
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(label)
-        .accessibilityValue(value.map { "预测概率 \($0)%" } ?? "暂无预测")
+        .accessibilityValue(value.map { "\(isHistorical ? "上次" : "当前")预测概率 \($0)%" } ?? "暂无预测")
     }
 
     private var tiboOfficialStatusText: String {
@@ -3453,12 +3489,14 @@ struct NotchView: View {
     }
 
     private var tiboForecastConfidenceText: String {
+        let confidence: String
         switch store.tiboRadar?.forecast.confidence {
-        case "high": return "高置信度"
-        case "medium": return "中置信度"
-        case "low": return "低置信度"
-        default: return "暂无评估"
+        case "high": confidence = "高置信度"
+        case "medium": confidence = "中置信度"
+        case "low": confidence = "低置信度"
+        default: confidence = "暂无评估"
         }
+        return tiboForecastIsStale && store.tiboRadar != nil ? "缓存 · \(confidence)" : confidence
     }
 
     private var tiboForecastConfidenceColor: Color {
@@ -3466,13 +3504,23 @@ struct NotchView: View {
     }
 
     private var tiboSourceFreshnessText: String {
-        if store.tiboFeedError != nil {
-            return store.tiboRadar == nil ? "社区数据更新失败" : "更新失败，正在显示上次数据"
+        if let status = CodexResetRadarPresentation.sourceFreshnessText(
+            error: store.tiboFeedError,
+            hasCachedData: store.tiboRadar != nil,
+            rejectedTimelineEventCount: store.tiboRadar?.rejectedTimelineEventCount
+        ) {
+            return status
         }
         guard let date = store.tiboRadar?.fetchedDate ?? store.tiboFeedFetchedAt else {
             return "等待社区数据"
         }
         return "\(tiboSourceIsStale ? "数据可能延迟" : "动态更新") · \(tiboRelativeTime(date))"
+    }
+
+    private var tiboSourceHasWarning: Bool {
+        store.tiboFeedError != nil
+            || tiboSourceIsStale
+            || (store.tiboRadar?.rejectedTimelineEventCount ?? 0) > 0
     }
 
     private func tiboPinnedSignalRow(
@@ -3573,7 +3621,7 @@ struct NotchView: View {
                         .foregroundStyle(MonitorDesktopTheme.secondaryText)
                     Text("·")
                     Text(tiboSourceFreshnessText)
-                        .foregroundStyle(store.tiboFeedError != nil || tiboSourceIsStale ? .orange : MonitorDesktopTheme.tertiaryText)
+                        .foregroundStyle(tiboSourceHasWarning ? .orange : MonitorDesktopTheme.tertiaryText)
                         .lineLimit(1)
                         .help(store.tiboFeedError ?? tiboSourceFreshnessText)
                     Spacer(minLength: 4)

@@ -103,11 +103,10 @@ enum MenuBarTokenFormatter {
     }
 
     static func title(status: String, project: String?, usage: TurnTokenUsage?, quota: Int?, projectCount: Int = 1) -> String {
-        var parts = [status]
+        var parts = [quota.map { "\($0)%" } ?? "--", status]
         if let project { parts.append(project) }
         if projectCount > 1 { parts.append("＋\(projectCount - 1)个项目") }
         if let total = usage?.total { parts.append("本轮 \(shortCount(total)) Token") }
-        parts.append(quota.map { "余 \($0)%" } ?? "额度同步中")
         return parts.joined(separator: " · ")
     }
 }

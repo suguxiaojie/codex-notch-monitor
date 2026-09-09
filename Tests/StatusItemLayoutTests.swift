@@ -36,18 +36,18 @@ enum StatusItemLayoutTests {
         check(small.width < restored.width)
         check(restored == result)
         let priority = StatusItemLayout.taskTitles(status: "待确认", project: "项目A", projectCount: 3,
-                                                   token: "本轮 1.2M", quota: "余 17%")
-        check(priority[0].contains("余 17%"))
-        check(!priority[1].contains("余 17%") && priority[1].contains("本轮 1.2M"))
-        check(priority[2].contains("项目A") && !priority[2].contains("1.2M"))
-        check(priority[3] == "待确认 ＋2")
-        check(priority.allSatisfy { $0.contains("待确认") })
+                                                   token: "本轮 1.2M", quota: "17%")
+        check(priority[0] == "17% · 待确认 · 项目A ＋2 · 本轮 1.2M")
+        check(priority[1] == "17% · 待确认 · 项目A ＋2")
+        check(priority[2] == "17% · 待确认 · 本轮 1.2M")
+        check(priority[3] == "17% · 待确认 ＋2")
+        check(priority.allSatisfy { $0.hasPrefix("17% · 待确认") })
         let single = StatusItemLayout.taskTitles(status: "执行", project: "项目A", projectCount: 1,
-                                                 token: "本轮 1.2M", quota: "余 17%")
-        check(single[1] == "执行 · 本轮 1.2M")
-        check(single[2] == "执行")
+                                                 token: "本轮 1.2M", quota: "17%")
+        check(single[1] == "17% · 执行 · 本轮 1.2M")
+        check(single[2] == "17% · 执行 · 项目A")
         let unknown = StatusItemLayout.taskTitles(status: "待确认", project: "项目A", projectCount: 2,
-                                                  token: nil, quota: nil)
+                                                  token: nil, quota: "17%")
         check(unknown.allSatisfy { !$0.contains("0K") })
         for budget in [80.0, 120, 160, 193, 240] {
             let chosen = StatusItemLayout.resolve(candidates: priority, budget: budget, measure: measure)
@@ -100,15 +100,42 @@ enum StatusItemLayoutTests {
         }
         check(StatusItemLayout.projectTitle(status: "等待确认", project: projectName, budget: 32, measure: measure) == nil)
         var capacity = StatusItemCapacity()
+        let capacityStart = Date(timeIntervalSince1970: 1_800_000_000)
+        check(capacity.constrain(386, context: "automatic/screen") == 386)
+        check(capacity.observe(width: 289, onMenuBar: true, occluded: true, now: capacityStart))
+        check(capacity.constrain(386, context: "automatic/screen") == 216.75)
+        check(capacity.recoveryDelay(after: capacityStart) == StatusItemCapacity.recoveryInterval)
+        check(!capacity.observe(width: 216.75, onMenuBar: true, occluded: false,
+                                now: capacityStart.addingTimeInterval(7)))
+        check(capacity.observe(width: 216.75, onMenuBar: true, occluded: false,
+                               now: capacityStart.addingTimeInterval(8)))
+        let recovered = capacity.constrain(386, context: "automatic/screen")
+        check(recovered > 216.75 && recovered <= 386)
+        check(capacity.observe(width: recovered, onMenuBar: true, occluded: true,
+                               now: capacityStart.addingTimeInterval(8.5)))
+        check(capacity.constrain(386, context: "automatic/screen") == 216.75)
+        check(capacity.recoveryDelay(after: capacityStart.addingTimeInterval(8.5))
+              == StatusItemCapacity.failedRecoveryInterval)
+        capacity.reconsiderRecovery(now: capacityStart.addingTimeInterval(9))
+        check(capacity.recoveryDelay(after: capacityStart.addingTimeInterval(9)) == 0)
         check(capacity.constrain(386, context: "detailed/screen") == 386)
-        check(capacity.observe(width: 289, onMenuBar: true, occluded: true))
-        check(capacity.constrain(386, context: "detailed/screen") == 216.75)
-        check(capacity.constrain(293, context: "detailed/screen") == 216.75)
+        check(capacity.recoveryDelay(after: capacityStart) == nil)
         check(!capacity.observe(width: 123, onMenuBar: true, occluded: false))
-        check(capacity.constrain(386, context: "detailed/screen") == 216.75)
         check(!capacity.observe(width: 100, onMenuBar: false, occluded: true))
         check(!capacity.observe(width: 32, onMenuBar: true, occluded: true))
         check(capacity.constrain(193, context: "automatic/screen") == 193)
+        let visualQuota = StatusItemLayout.taskTitles(status: "思考", project: "项目A", projectCount: 1,
+                                                       token: "本轮 6.5M", quota: "14%")
+        check(visualQuota == [
+            "14% · 思考 · 项目A · 本轮 6.5M",
+            "14% · 思考 · 本轮 6.5M",
+            "14% · 思考 · 项目A",
+            "14% · 思考"
+        ])
+        check(visualQuota.allSatisfy { $0.hasPrefix("14% · 思考") })
+        check(visualQuota.allSatisfy { !$0.contains("余 14%") && !$0.contains("小时") })
+        let idlePages = StatusItemRotation.fittingPages([], budget: 193, measure: measure)
+        check(idlePages.isEmpty)
         print("StatusItemLayout: \(checks) checks passed")
     }
 }

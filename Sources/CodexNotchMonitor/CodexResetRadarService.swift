@@ -9,6 +9,23 @@ enum CodexResetContentTag: String, Equatable {
 }
 
 enum CodexResetRadarPresentation {
+    static func sourceFreshnessText(
+        error: String?,
+        hasCachedData: Bool,
+        rejectedTimelineEventCount: Int?
+    ) -> String? {
+        if let error {
+            if error.contains("JSON 格式错误") || error.contains("事件范围或来源校验失败") {
+                return hasCachedData ? "社区数据格式已变化 · 显示上次数据" : "社区数据格式已变化"
+            }
+            return hasCachedData ? "社区数据连接失败 · 显示上次数据" : "社区数据连接失败"
+        }
+        if let count = rejectedTimelineEventCount, count > 0 {
+            return "动态已更新 · 已隔离 \(count) 条未识别事件"
+        }
+        return nil
+    }
+
     static func shouldPinSignal(
         signal: CodexResetRadarSignal,
         resolution: CodexResetPinnedSignalResolution
@@ -180,6 +197,7 @@ struct CodexResetRadarSnapshot: Codable, Equatable {
     let timelineEvents: [CodexResetTimelineEvent]
     let forecast: CodexResetForecast
     let evidenceFeed: TiboFeed
+    let rejectedTimelineEventCount: Int?
 
     var fetchedDate: Date? { TiboFeedDate.parse(fetchedAt) }
 }
@@ -218,6 +236,7 @@ final class CodexResetRadarService {
     static let refreshInterval: TimeInterval = 3 * 60
     static let staleInterval: TimeInterval = 10 * 60
     static let maximumPayloadSize = 2 * 1_024 * 1_024
+    static let maximumRejectedTimelineEvents = 8
 
     private struct Cache: Codable {
         let snapshot: CodexResetRadarSnapshot
@@ -432,15 +451,22 @@ final class CodexResetRadarService {
             forecast.probabilities.rounded24H,
             forecast.probabilities.rounded48H,
         ].compactMap { $0 }.allSatisfy { 0...100 ~= $0 }
+        let verifiedTimelineEvents = timeline.events.filter(validTimelineEvent)
+        let rejectedTimelineEventCount = timeline.events.count - verifiedTimelineEvents.count
         guard feed.tweets.count <= 100,
               timeline.events.count <= 300,
               feed.tweets.allSatisfy(validTweet),
-              timeline.events.allSatisfy(validTimelineEvent),
               feed.signal.map(validSignal) ?? true,
-              probabilitiesValid
+              probabilitiesValid,
+              rejectedTimelineEventCount <= maximumRejectedTimelineEvents,
+              verifiedTimelineEvents.count * 2 >= timeline.events.count
         else { throw CodexResetRadarError.rejected("事件范围或来源校验失败") }
 
-        let evidence = makeEvidenceFeed(feed: feed, timeline: timeline)
+        let verifiedTimeline = TimelineResponse(
+            updatedAt: timeline.updatedAt,
+            events: verifiedTimelineEvents
+        )
+        let evidence = makeEvidenceFeed(feed: feed, timeline: verifiedTimeline)
         return CodexResetRadarSnapshot(
             fetchedAt: feed.fetchedAt,
             timelineUpdatedAt: timeline.updatedAt,
@@ -450,9 +476,10 @@ final class CodexResetRadarService {
             profile: feed.profile,
             signal: feed.signal,
             tweets: feed.tweets,
-            timelineEvents: timeline.events,
+            timelineEvents: verifiedTimelineEvents,
             forecast: forecast,
-            evidenceFeed: evidence
+            evidenceFeed: evidence,
+            rejectedTimelineEventCount: rejectedTimelineEventCount
         )
     }
 
@@ -539,7 +566,8 @@ final class CodexResetRadarService {
             if event.source == "archive", event.confidence == "high" {
                 return .resetCompleted
             }
-            if event.announcementState == "announced",
+            if event.source == "live",
+               event.announcementState == "announced",
                tweet?.explicitResetClaim == true {
                 return .resetCompleted
             }
@@ -560,7 +588,7 @@ final class CodexResetRadarService {
               event.announcedDate != nil,
               event.summary.count <= 20_000,
               ["high", "medium", "low"].contains(event.confidence),
-              ["live", "archive"].contains(event.source) else { return false }
+              ["live", "archive", "operator-observed"].contains(event.source) else { return false }
         return canonicalXURL(event.url, id: event.id)
     }
 

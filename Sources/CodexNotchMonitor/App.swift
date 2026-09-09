@@ -66,6 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusGeometryGeneration = 0
     private var lastStatusGeometry = ""
     private var statusCapacity = StatusItemCapacity()
+    private var statusCapacityRecoveryWork: DispatchWorkItem?
     private let statusLogger = Logger(subsystem: "com.coverai.codex-notch-monitor.status", category: "layout")
     private var lastMenuBarProject: ActiveProjectState?
     private var tokenReceipt = MenuBarTokenReceipt()
@@ -114,6 +115,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         statusCountdownTimer?.invalidate()
         statusRotationTimer?.invalidate()
+        statusCapacityRecoveryWork?.cancel()
     }
 
     private func installStatusItem() {
@@ -173,7 +175,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
         )
         .receive(on: RunLoop.main)
-        .sink { [weak self] _ in self?.updateStatusItem() }
+        .sink { [weak self] _ in
+            self?.statusCapacity.reconsiderRecovery()
+            self?.updateStatusItem()
+        }
         .store(in: &statusCancellables)
 
         statusCountdownTimer = Timer.scheduledTimer(
@@ -228,8 +233,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let measure: (String) -> Double = { text in
             Double((text as NSString).size(withAttributes: [.font: font]).width)
         }
-        var budget = StatusItemLayout.budget(menuRegionWidth: regions.min())
-        if preferences.menuBarDensity == .detailed, let window = button.window,
+        let usesAdaptiveBudget = preferences.menuBarDensity == .automatic
+            || preferences.menuBarDensity == .detailed
+        var budget = StatusItemLayout.budget(
+            menuRegionWidth: regions.min(),
+            detailed: usesAdaptiveBudget
+        )
+        if usesAdaptiveBudget, let window = button.window,
            let screen = window.screen {
             let region = screen.auxiliaryTopRightArea ?? NSRect(
                 x: screen.frame.midX, y: screen.visibleFrame.maxY,
@@ -244,20 +254,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let capacityContext = preferences.menuBarDensity.rawValue + NSScreen.screens.map { NSStringFromRect($0.frame) }.joined()
         budget = statusCapacity.constrain(budget, context: capacityContext)
         let remaining = bucket?.limitingWindow?.remainingPercent
-        let quotaText = MenuBarStatusFormatter.title(for: bucket?.limitingWindow, relativeTo: now)
+        let quotaText = remaining.map { "\($0)%" } ?? "--"
         var tooltip = MenuBarStatusFormatter.details(for: bucket, relativeTo: now)
-        var titles = [quotaText, remaining.map { "余 \($0)%" } ?? "额度同步中"]
+        var titles = [quotaText]
         var compactCandidates: [String]?
-        var rotationPages = [remaining.map { "余 \($0)%" } ?? "额度同步中"]
-        let resetText = MenuBarStatusFormatter.resetText(bucket?.limitingWindow?.resetsAt, relativeTo: now)
-        if !resetText.isEmpty { rotationPages.append("\(resetText)后重置") }
+        var rotationPages: [String] = []
         var rotationIdentity = "quota"
-        let lowQuota = remaining.map { $0 <= 10 } ?? false
-        var fixedMessage = lowQuota
-        var image = quotaStatusImage()
+        var fixedMessage = true
+        let image = quotaStatusImage()
 
         if let displayed {
             let task = displayed.sessions.first?.task
+            let displayName = displayed.displayName
             let usage = task.flatMap { task in
                 store.turnTokenUsages[task.id].flatMap { $0.turnID == task.turnID ? $0 : nil }
             }
@@ -265,41 +273,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let count = store.activeProjects.count
             let others = count > 1 ? " ＋\(count - 1)" : ""
             rotationIdentity = (task?.id ?? displayed.id) + "/" + (task?.turnID ?? "")
-            fixedMessage = completed || displayed.task.phase == .waitingApproval || displayed.task.phase == .failed || lowQuota
+            fixedMessage = completed || displayed.task.phase == .waitingApproval || displayed.task.phase == .failed
             rotationPages = [StatusItemLayout.projectTitle(
-                status: status, project: displayed.name, suffix: others,
+                status: quotaText + " · " + status, project: displayName, suffix: others,
                 budget: budget, measure: measure)].compactMap { $0 }
             if let total = usage?.total {
-                rotationPages.append(status + " · 本轮 " + MenuBarTokenFormatter.shortCount(total))
-            }
-            if let remaining {
-                let windowLabel = preferences.menuBarDensity == .detailed
-                    ? (bucket?.limitingWindow?.windowLabel ?? "额度") : ""
-                rotationPages.append(status + " · " + windowLabel + "余 \(remaining)%")
+                rotationPages.append(quotaText + " · " + status + " · 本轮 " + MenuBarTokenFormatter.shortCount(total))
             }
             titles = StatusItemLayout.taskTitles(
-                status: status, project: displayed.name, projectCount: count,
+                status: status, project: displayName, projectCount: count,
                 token: usage?.total.map { "本轮 " + MenuBarTokenFormatter.shortCount($0) },
-                quota: remaining.map { "余 \($0)%" })
+                quota: quotaText)
             compactCandidates = Array(titles.dropFirst())
             let tokenSuffix = usage?.total.map { " · 本轮 " + MenuBarTokenFormatter.shortCount($0) } ?? ""
-            if let fitted = StatusItemLayout.projectTitle(status: status, project: displayed.name,
+            if let fitted = StatusItemLayout.projectTitle(status: status, project: displayName,
                 suffix: others + tokenSuffix, budget: budget, measure: measure) {
                 titles.insert(fitted, at: 1)
             }
-            if let fitted = StatusItemLayout.projectTitle(status: status, project: displayed.name,
+            if let fitted = StatusItemLayout.projectTitle(status: status, project: displayName,
                 suffix: others, budget: budget, measure: measure) {
                 titles.insert(fitted, at: titles.count - 1)
                 if count > 1 { compactCandidates?.insert(fitted, at: 1) }
             }
-            if let remaining, lowQuota, !completed, displayed.task.phase != .waitingApproval, displayed.task.phase != .failed {
-                titles = [status + others + " · 额度仅余 \(remaining)%", status + " · 余 \(remaining)%"]
-                compactCandidates = nil
-            }
-            image = NSImage(systemSymbolName: completed ? "checkmark.circle" : statusSymbol(for: displayed),
-                            accessibilityDescription: status)
-            image?.isTemplate = true
-            tooltip = "\(status) · \(displayed.name)\n"
+            tooltip = "\(status) · \(displayName)\n"
                 + (usage?.label ?? "本轮 Token 等待统计") + "\n"
                 + displayed.detailedActionSummary + "\n" + tooltip
             if count > 1 || displayed.sessions.count > 1 {
@@ -310,9 +306,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             ? (usage?.label ?? "本轮 Token 等待统计") : "本轮 Token 等待统计"
                         return "  会话 \(index + 1) · \(session.task.phase.title) · \(label)"
                     }.joined(separator: "\n")
-                    return "\(project.name)（\(project.sessions.count) 会话）\n\(sessions)"
+                    return "\(project.displayName)（\(project.sessions.count) 会话）\n\(sessions)"
                 }.joined(separator: "\n\n")
-                tooltip += "\n\n运行中的项目（各会话独立统计）\n" + details
+                tooltip += "\n\n运行中的任务（各会话独立统计）\n" + details
             }
         }
 
@@ -322,14 +318,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             candidates = []
         case .compact:
             candidates = compactCandidates ?? Array(titles.dropFirst())
-        case .automatic where isQuotaViewRunning:
-            candidates = []
         case .automatic, .detailed:
             candidates = titles
         }
         var layout = StatusItemLayout.resolve(candidates: candidates, budget: budget, measure: measure)
         let fullFits = titles.first.map { measure($0) + 36 <= budget } ?? true
-        let canRotate = preferences.routesTaskStateToMenuBar && preferences.menuBarOverflow == .rotate
+        let canRotate = displayed != nil && preferences.routesTaskStateToMenuBar && preferences.menuBarOverflow == .rotate
             && !candidates.isEmpty && !fullFits && !fixedMessage && item.isVisible
         let pages = canRotate ? StatusItemRotation.fittingPages(rotationPages, budget: budget, measure: measure) : []
         if statusRotation.configure(identity: rotationIdentity, pages: pages) {
@@ -395,12 +389,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         && window.frame.maxX > screen.frame.minX
                         && window.frame.minX < screen.frame.maxX
                 }
-                if self.statusCapacity.observe(width: item.length, onMenuBar: onMenuBar,
-                    occluded: !window.occlusionState.contains(.visible)) {
+                let observationTime = Date()
+                if self.statusCapacity.observe(
+                    width: item.length,
+                    onMenuBar: onMenuBar,
+                    occluded: !window.occlusionState.contains(.visible),
+                    now: observationTime
+                ) {
+                    self.statusCapacityRecoveryWork?.cancel()
+                    self.statusCapacityRecoveryWork = nil
                     self.updateStatusItem()
+                } else if onMenuBar,
+                          let delay = self.statusCapacity.recoveryDelay(after: observationTime) {
+                    self.scheduleStatusCapacityRecovery(after: delay)
                 }
             }
         }
+    }
+
+    private func scheduleStatusCapacityRecovery(after delay: TimeInterval) {
+        statusCapacityRecoveryWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.statusCapacityRecoveryWork = nil
+            self?.updateStatusItem()
+        }
+        statusCapacityRecoveryWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0.5, delay), execute: work)
     }
 
     private func quotaStatusImage() -> NSImage? {
@@ -421,27 +435,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             image?.isTemplate = true
             return image
-        }
-    }
-
-    private var isQuotaViewRunning: Bool {
-        let identifiers = Set(
-            NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier)
-        )
-        return StatusItemCoexistencePolicy.usesIconOnlyMode(
-            runningBundleIdentifiers: identifiers
-        )
-    }
-
-
-    private func statusSymbol(for project: ActiveProjectState) -> String {
-        switch project.task.phase {
-        case .waitingApproval: return "hand.raised.fill"
-        case .failed: return "exclamationmark.triangle.fill"
-        case .completed: return "checkmark.circle.fill"
-        case .usingTool: return "terminal.fill"
-        case .ended: return "moon.fill"
-        case .starting, .working: return "waveform.path.ecg"
         }
     }
 

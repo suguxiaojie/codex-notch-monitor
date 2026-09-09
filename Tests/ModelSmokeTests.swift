@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import SQLite3
 
 @main
 enum ModelSmokeTests {
@@ -246,50 +247,6 @@ enum ModelSmokeTests {
             "quota ring pixels change with remaining quota"
         )
         check(
-            StatusItemCoexistencePolicy.usesIconOnlyMode(
-                runningBundleIdentifiers: ["com.quotaview.menubar"]
-            ),
-            "QuotaView activates icon-only status coexistence"
-        )
-        check(
-            !StatusItemCoexistencePolicy.usesIconOnlyMode(
-                runningBundleIdentifiers: ["com.example.other"]
-            ),
-            "unrelated menu apps keep the normal status title"
-        )
-        check(
-            StatusItemCoexistencePolicy.effectiveDensity(
-                preference: .automatic,
-                quotaViewIsRunning: true,
-                availableWidth: 300
-            ) == .iconOnly,
-            "automatic density yields to QuotaView"
-        )
-        check(
-            StatusItemCoexistencePolicy.effectiveDensity(
-                preference: .automatic,
-                quotaViewIsRunning: false,
-                availableWidth: 220
-            ) == .detailed,
-            "automatic density keeps details when space is available"
-        )
-        check(
-            StatusItemCoexistencePolicy.effectiveDensity(
-                preference: .automatic,
-                quotaViewIsRunning: false,
-                availableWidth: 120
-            ) == .compact,
-            "automatic density compacts in a crowded menu bar"
-        )
-        check(
-            StatusItemCoexistencePolicy.effectiveDensity(
-                preference: .automatic,
-                quotaViewIsRunning: false,
-                availableWidth: 60
-            ) == .iconOnly,
-            "automatic density falls back to an icon in severe crowding"
-        )
-        check(
             MenuBarActivityFormatter.title(
                 phase: .usingTool,
                 projectName: "监控",
@@ -379,6 +336,85 @@ enum ModelSmokeTests {
         """
         try? fixture.data(using: .utf8)?.write(to: fixtureURL)
         let activityService = SessionActivityService()
+        let compactedRolloutURL = URL(fileURLWithPath:
+            "rollout-2026-09-06T22-23-32-01a076aa-0d25-78a1-ba93-20844f46d4a3_"
+                + "01a0771a-6281-7d41-9d1e-7ac88d112acc.jsonl")
+        check(
+            SessionActivityService.sessionIDFromFilename(compactedRolloutURL)
+                == "01a076aa-0d25-78a1-ba93-20844f46d4a3",
+            "compacted rollout filename keeps the canonical parent session id"
+        )
+        let freshnessNow = Date(timeIntervalSince1970: 1_800_000_000)
+        check(
+            SessionActivityFreshnessPolicy.isActive(
+                lifecycleState: true,
+                hasRunningTool: false,
+                updatedAt: freshnessNow.addingTimeInterval(-9 * 60),
+                fileModifiedAt: freshnessNow,
+                now: freshnessNow
+            ),
+            "quiet active turn remains visible inside grace"
+        )
+        check(
+            !SessionActivityFreshnessPolicy.isActive(
+                lifecycleState: true,
+                hasRunningTool: false,
+                updatedAt: freshnessNow.addingTimeInterval(-11 * 60),
+                fileModifiedAt: freshnessNow,
+                now: freshnessNow
+            ),
+            "quiet turn without completion expires after ten minutes"
+        )
+        check(
+            SessionActivityFreshnessPolicy.isActive(
+                lifecycleState: true,
+                hasRunningTool: true,
+                updatedAt: freshnessNow.addingTimeInterval(-119 * 60),
+                fileModifiedAt: freshnessNow,
+                now: freshnessNow
+            ),
+            "unreturned tool keeps a longer active grace"
+        )
+        check(
+            !SessionActivityFreshnessPolicy.isActive(
+                lifecycleState: true,
+                hasRunningTool: true,
+                updatedAt: freshnessNow.addingTimeInterval(-121 * 60),
+                fileModifiedAt: freshnessNow,
+                now: freshnessNow
+            ),
+            "unreturned tool cannot remain active beyond two hours"
+        )
+        check(
+            !SessionActivityFreshnessPolicy.isActive(
+                lifecycleState: false,
+                hasRunningTool: true,
+                updatedAt: freshnessNow,
+                fileModifiedAt: freshnessNow,
+                now: freshnessNow
+            ),
+            "explicit completion always wins"
+        )
+        check(
+            SessionActivityFreshnessPolicy.isActive(
+                lifecycleState: nil,
+                hasRunningTool: false,
+                updatedAt: .distantPast,
+                fileModifiedAt: freshnessNow.addingTimeInterval(-14),
+                now: freshnessNow
+            ),
+            "fresh file remains a startup discovery fallback"
+        )
+        check(
+            !SessionActivityFreshnessPolicy.isActive(
+                lifecycleState: nil,
+                hasRunningTool: false,
+                updatedAt: .distantPast,
+                fileModifiedAt: freshnessNow.addingTimeInterval(-16),
+                now: freshnessNow
+            ),
+            "startup discovery fallback expires after fifteen seconds"
+        )
         let activeSnapshot = activityService.readSnapshot(from: fixtureURL)
         check(activeSnapshot?.isActive == true, "active task boundary")
         check(activeSnapshot?.turnTokenUsage?.total == 1234, "rollout token projection reaches snapshot")
@@ -407,6 +443,17 @@ enum ModelSmokeTests {
                 == ISO8601DateFormatter().date(from: "2026-08-12T06:00:02Z"),
             "tool completion carries its event timestamp"
         )
+        let tailOnlyCompletionURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rollout-test-00000000-0000-0000-0000-000000000002.jsonl")
+        let tailOnlyCompletion = """
+        {"timestamp":"2026-08-12T06:01:00.000Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-outside-tail"}}
+        """
+        try? tailOnlyCompletion.data(using: .utf8)?.write(to: tailOnlyCompletionURL)
+        check(
+            activityService.readSnapshot(from: tailOnlyCompletionURL)?.isActive == false,
+            "completion closes a bounded tail even when its turn context is outside the window"
+        )
+        try? FileManager.default.removeItem(at: tailOnlyCompletionURL)
 
         let baseDate = Date(timeIntervalSince1970: 1_786_000_000)
         let projectA = LocalSessionSnapshot(
@@ -483,6 +530,25 @@ enum ModelSmokeTests {
             catalogState.assignmentsByThread["session-a"]?.path == "/tmp/NewProject",
             "read moved thread project path"
         )
+        let threadNameDatabase = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-thread-names-\(UUID().uuidString).sqlite")
+        var threadNameHandle: OpaquePointer?
+        check(sqlite3_open(threadNameDatabase.path, &threadNameHandle) == SQLITE_OK,
+              "create thread name fixture")
+        check(sqlite3_exec(
+            threadNameHandle,
+            "CREATE TABLE threads (id TEXT PRIMARY KEY, name TEXT);"
+                + "INSERT INTO threads VALUES ('session-a', '0906 | 设计 | 新标题');"
+                + "INSERT INTO threads VALUES ('session-b', '   ');",
+            nil, nil, nil
+        ) == SQLITE_OK, "write thread name fixture")
+        sqlite3_close(threadNameHandle)
+        let customThreadNames = CodexThreadNameCatalog.loadNames(from: threadNameDatabase)
+        check(customThreadNames["session-a"] == "0906 | 设计 | 新标题",
+              "read user-assigned Codex task name")
+        check(customThreadNames["session-b"] == nil,
+              "ignore blank task name instead of exposing a fallback prompt")
+        try? FileManager.default.removeItem(at: threadNameDatabase)
 
         let oldActivity = SessionActivityItem(
             id: "old", kind: .command, title: "运行旧命令",
@@ -526,10 +592,13 @@ enum ModelSmokeTests {
         check(renamedProjects.first?.task.phase == .usingTool, "rename keeps higher-priority live tool phase")
         let reassignedProjects = ProjectActivityAggregator.projects(
             snapshots: [projectA], hookTasks: [renamedHook],
-            now: baseDate.addingTimeInterval(20), catalog: catalogState
+            now: baseDate.addingTimeInterval(20), catalog: catalogState,
+            threadNames: customThreadNames
         )
         check(reassignedProjects.first?.name == "新项目", "thread assignment updates live card name")
         check(reassignedProjects.first?.path == "/tmp/NewProject", "thread assignment beats historical and hook cwd")
+        check(reassignedProjects.first?.displayName == "0906 | 设计 | 新标题",
+              "renamed task title takes display priority without changing project grouping")
 
         let staleCompletionHook = MonitoredTask(
             id: "session-b", turnID: "turn-b", projectName: "ProjectB",
@@ -620,7 +689,7 @@ enum ModelSmokeTests {
         )
         try? FileManager.default.removeItem(at: fixtureURL)
 
-        print("Model smoke tests passed (104 checks).")
+        print("Model smoke tests passed (112 checks).")
     }
 
     private static func check(_ condition: @autoclosure () -> Bool, _ label: String) {

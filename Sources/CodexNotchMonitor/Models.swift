@@ -158,29 +158,6 @@ enum MenuBarQuotaIconModel {
     }
 }
 
-enum StatusItemCoexistencePolicy {
-    static let quotaViewBundleIdentifier = "com.quotaview.menubar"
-
-    static func usesIconOnlyMode(
-        runningBundleIdentifiers: Set<String>
-    ) -> Bool {
-        runningBundleIdentifiers.contains(quotaViewBundleIdentifier)
-    }
-
-    static func effectiveDensity(
-        preference: MenuBarInformationDensity,
-        quotaViewIsRunning: Bool,
-        availableWidth: CGFloat?
-    ) -> MenuBarInformationDensity {
-        guard preference == .automatic else { return preference }
-        if quotaViewIsRunning { return .iconOnly }
-        guard let availableWidth else { return .compact }
-        if availableWidth >= 190 { return .detailed }
-        if availableWidth >= 92 { return .compact }
-        return .iconOnly
-    }
-}
-
 enum OpenAIPlanDisplayName {
     static func resolve(_ rawValue: String?) -> String? {
         guard let rawValue else { return nil }
@@ -477,6 +454,7 @@ struct HookEvent: Codable {
 struct MonitoredTask: Identifiable, Equatable {
     let id: String
     var turnID: String?
+    var threadName: String? = nil
     var projectName: String
     var projectPath: String
     var model: String?
@@ -528,6 +506,14 @@ struct ActiveProjectState: Identifiable, Equatable {
     let activities: [SessionActivityItem]
 
     var sessionCount: Int { sessions.count }
+
+    var displayName: String {
+        if let threadName = task.threadName?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !threadName.isEmpty {
+            return threadName
+        }
+        return name
+    }
 
     /// A project can merge several sessions whose activity arrays are not in
     /// display order. Always select by the event timestamp so an old command

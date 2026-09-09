@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 
 struct LocalSessionSnapshot: Equatable {
     let sessionID: String
@@ -9,6 +10,30 @@ struct LocalSessionSnapshot: Equatable {
     let updatedAt: Date
     let activities: [SessionActivityItem]
     var turnTokenUsage: TurnTokenUsage? = nil
+}
+
+enum SessionActivityFreshnessPolicy {
+    static let quietTurnGrace: TimeInterval = 10 * 60
+    static let runningToolGrace: TimeInterval = 2 * 60 * 60
+    static let discoveryGrace: TimeInterval = 15
+
+    static func isActive(
+        lifecycleState: Bool?,
+        hasRunningTool: Bool,
+        updatedAt: Date,
+        fileModifiedAt: Date,
+        now: Date = Date()
+    ) -> Bool {
+        switch lifecycleState {
+        case false:
+            return false
+        case true:
+            let grace = hasRunningTool ? runningToolGrace : quietTurnGrace
+            return now.timeIntervalSince(updatedAt) < grace
+        case nil:
+            return now.timeIntervalSince(fileModifiedAt) < discoveryGrace
+        }
+    }
 }
 
 /// Reads only structural fields from Codex's local JSONL transcript. Prompt,
@@ -34,16 +59,17 @@ final class SessionActivityService {
         let snapshot: LocalSessionSnapshot?
     }
 
-    func fetch(completion: @escaping ([LocalSessionSnapshot]) -> Void) {
+    func fetch(completion: @escaping ([LocalSessionSnapshot], [String: String]) -> Void) {
         queue.async { [self] in
             let urls = recentSessionFiles()
             let now = Date()
             let snapshots = urls.compactMap(cachedSnapshot).filter {
                 now.timeIntervalSince($0.updatedAt) < activeRecencyInterval
             }
+            let threadNames = CodexThreadNameCatalog.loadNames()
             let retained = Set(urls)
             cache = cache.filter { retained.contains($0.key) }
-            DispatchQueue.main.async { completion(snapshots) }
+            DispatchQueue.main.async { completion(snapshots, threadNames) }
         }
     }
 
@@ -111,7 +137,7 @@ final class SessionActivityService {
             data.removeSubrange(data.startIndex...newline)
         }
 
-        var sessionID = sessionIDFromFilename(url)
+        var sessionID = Self.sessionIDFromFilename(url)
         var turnID: String?
         var cwd = ""
         var model: String?
@@ -151,7 +177,9 @@ final class SessionActivityService {
                     if let value = payload["turn_id"] as? String { turnID = value }
                 case "task_complete", "turn_aborted":
                     let completedTurn = payload["turn_id"] as? String
-                    if completedTurn == nil || completedTurn == turnID { isActive = false }
+                    if turnID == nil || completedTurn == nil || completedTurn == turnID {
+                        isActive = false
+                    }
                 case "agent_message":
                     guard payload["phase"] as? String == "commentary",
                           let message = payload["message"] as? String,
@@ -204,7 +232,14 @@ final class SessionActivityService {
         // If a very large transcript tail no longer contains task_started, recent
         // writes are still a useful startup fallback. An explicit completion marker
         // always wins and prevents a recently completed turn appearing active.
-        let active = isActive ?? (Date().timeIntervalSince(modificationDate(of: url)) < 15)
+        let fileModifiedAt = modificationDate(of: url)
+        let hasRunningTool = activities.contains { $0.kind != .progress && $0.isRunning }
+        let active = SessionActivityFreshnessPolicy.isActive(
+            lifecycleState: isActive,
+            hasRunningTool: hasRunningTool,
+            updatedAt: latestTimestamp,
+            fileModifiedAt: fileModifiedAt
+        )
         guard !sessionID.isEmpty else { return nil }
         return LocalSessionSnapshot(
             sessionID: sessionID,
@@ -224,8 +259,17 @@ final class SessionActivityService {
         )
     }
 
-    private func sessionIDFromFilename(_ url: URL) -> String {
+    static func sessionIDFromFilename(_ url: URL) -> String {
         let stem = url.deletingPathExtension().lastPathComponent
+        let pattern = #"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"#
+        if let expression = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
+           let match = expression.firstMatch(
+                in: stem,
+                range: NSRange(stem.startIndex..., in: stem)
+           ),
+           let range = Range(match.range, in: stem) {
+            return String(stem[range])
+        }
         return stem.split(separator: "-").suffix(5).joined(separator: "-")
     }
 
@@ -391,12 +435,57 @@ final class SessionActivityService {
     }
 }
 
+/// Reads user-assigned Codex task names from the local state database. The
+/// query is read-only and intentionally ignores prompt-derived fallback titles.
+enum CodexThreadNameCatalog {
+    private static var defaultDatabaseURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".codex/state_5.sqlite")
+    }
+
+    static func loadNames(from databaseURL: URL? = nil) -> [String: String] {
+        let url = databaseURL ?? defaultDatabaseURL
+        var database: OpaquePointer?
+        guard sqlite3_open_v2(
+            url.path,
+            &database,
+            SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX,
+            nil
+        ) == SQLITE_OK, let database else {
+            if database != nil { sqlite3_close(database) }
+            return [:]
+        }
+        defer { sqlite3_close(database) }
+        sqlite3_busy_timeout(database, 100)
+
+        var statement: OpaquePointer?
+        let sql = "SELECT id, name FROM threads WHERE name IS NOT NULL AND trim(name) <> ''"
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK,
+              let statement
+        else { return [:] }
+        defer { sqlite3_finalize(statement) }
+
+        var names: [String: String] = [:]
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let idText = sqlite3_column_text(statement, 0),
+                  let nameText = sqlite3_column_text(statement, 1)
+            else { continue }
+            let id = String(cString: idText)
+            let name = String(cString: nameText)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !id.isEmpty, !name.isEmpty { names[id] = name }
+        }
+        return names
+    }
+}
+
 enum ProjectActivityAggregator {
     static func projects(
         snapshots: [LocalSessionSnapshot],
         hookTasks: [MonitoredTask],
         now: Date = Date(),
-        catalog: CodexProjectCatalog.State? = nil
+        catalog: CodexProjectCatalog.State? = nil,
+        threadNames: [String: String] = [:]
     ) -> [ActiveProjectState] {
         let catalog = catalog ?? CodexProjectCatalog.loadState()
         let projectNames = catalog.namesByPath
@@ -421,6 +510,7 @@ enum ProjectActivityAggregator {
             let task = MonitoredTask(
                 id: snapshot.sessionID,
                 turnID: snapshot.turnID,
+                threadName: threadNames[snapshot.sessionID],
                 projectName: name,
                 projectPath: path,
                 model: snapshot.model,
@@ -457,6 +547,7 @@ enum ProjectActivityAggregator {
                 sessions[hook.id] = ActiveSessionState(task: task, activities: existing.activities)
             } else {
                 var assignedTask = hook
+                assignedTask.threadName = threadNames[hook.id]
                 if let assigned = catalog.assignmentsByThread[hook.id] {
                     assignedTask.projectPath = normalizedPath(assigned.path, sessionID: hook.id)
                     assignedTask.projectName = assigned.projectName
@@ -486,6 +577,7 @@ enum ProjectActivityAggregator {
             let projectTask = MonitoredTask(
                 id: path,
                 turnID: representative.turnID,
+                threadName: representative.threadName,
                 projectName: representative.projectName,
                 projectPath: path,
                 model: representative.model,

@@ -78,7 +78,7 @@ enum TurnTokenStateTests {
         precondition(TurnTokenUsage(sessionID: "s", turnID: "t", total: 257800).label == "本轮 257.8K Token")
         let measured = TurnTokenUsage(sessionID: "s", turnID: "t", total: 257800, isCompleted: true)
         let title = MenuBarTokenFormatter.title(status: "执行中", project: "项目A", usage: measured, quota: 18, projectCount: 3)
-        precondition(title == "执行中 · 项目A · ＋2个项目 · 本轮 257.8K Token · 余 18%")
+        precondition(title == "18% · 执行中 · 项目A · ＋2个项目 · 本轮 257.8K Token")
         let unknown = TurnTokenUsage(sessionID: "s", turnID: "t", total: nil)
         precondition(!MenuBarTokenFormatter.title(status: "执行中", project: nil, usage: unknown, quota: nil).contains("0 Token"))
         var receipt = MenuBarTokenReceipt()

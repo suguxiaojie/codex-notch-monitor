@@ -132,9 +132,8 @@ final class ActivityIslandWindowController: NSObject {
                     requiresAttention: snapshot.phase == .waitingApproval || snapshot.phase == .failed
                 ),
                 expandedHold: snapshot.phase == .waitingApproval || snapshot.phase == .failed
-                    ? nil : updated.expandedHold,
-                compactHide: snapshot.phase == .waitingApproval || snapshot.phase == .failed
-                    ? nil : updated.compactHide
+                    ? nil : ActivityIslandTiming.liveExpandedHold,
+                compactHide: nil
             )
         }
     }
@@ -169,8 +168,8 @@ final class ActivityIslandWindowController: NSObject {
             show(
                 completion,
                 event: .activityEnded,
-                expandedHold: ActivityIslandTiming.completionExpandedHold,
-                compactHide: min(preferences.compactHide, ActivityIslandTiming.completionCompactHide)
+                expandedHold: preferences.expandedHold,
+                compactHide: preferences.compactHide
             )
             return
         }
@@ -183,8 +182,8 @@ final class ActivityIslandWindowController: NSObject {
         show(
             snapshot,
             event: .activityChanged(requiresAttention: requiresAttention),
-            expandedHold: requiresAttention ? nil : preferences.expandedHold,
-            compactHide: requiresAttention ? nil : preferences.compactHide
+            expandedHold: requiresAttention ? nil : ActivityIslandTiming.liveExpandedHold,
+            compactHide: nil
         )
     }
 
@@ -293,7 +292,7 @@ final class ActivityIslandWindowController: NSObject {
     ) -> ActivityIslandSnapshot {
         ActivityIslandSnapshot(
             projectID: project.id,
-            projectName: project.name,
+            projectName: project.displayName,
             phase: project.task.phase,
             actionText: project.detailedActionSummary,
             sessionCount: project.sessionCount,

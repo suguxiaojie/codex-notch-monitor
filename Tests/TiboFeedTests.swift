@@ -119,6 +119,7 @@ enum TiboFeedTests {
         check(timelineFeed.officialEvidenceEvents(now: displayAt).first?.kind == .resetCompleted, "manual completion becomes reset evidence")
 
         radarSnapshotDecodesAndMapsEvidence()
+        radarSnapshotAcceptsObservedSourceAndQuarantinesUnknownEvents()
         radarSnapshotRejectsUntrustedSource()
         radarSnapshotRejectsInvalidForecast()
         pinnedSignalResolutionTracksPreviewFulfillment()
@@ -313,6 +314,83 @@ enum TiboFeedTests {
         } catch {
             check(true, "reject untrusted radar URL")
         }
+    }
+
+    private static func radarSnapshotAcceptsObservedSourceAndQuarantinesUnknownEvents() {
+        let fixture = radarFixture()
+        var timeline = try! JSONSerialization.jsonObject(with: fixture.timeline) as! [String: Any]
+        var events = timeline["events"] as! [[String: Any]]
+        events[0]["source"] = "operator-observed"
+        events[0]["source_label"] = "Operator observation"
+        var unsupported = events[0]
+        unsupported["id"] = "2099999999999999901"
+        unsupported["url"] = "https://x.com/thsottiaux/status/2099999999999999901"
+        unsupported["source"] = "future-source"
+        events.append(unsupported)
+        timeline["events"] = events
+        let data = try! JSONSerialization.data(withJSONObject: timeline)
+
+        do {
+            let snapshot = try CodexResetRadarService.makeSnapshot(
+                feedData: fixture.feed,
+                timelineData: data,
+                forecastData: fixture.forecast
+            )
+            check(snapshot.timelineEvents.contains(where: { $0.source == "operator-observed" }), "accept operator-observed as low-trust timeline evidence")
+            check(!snapshot.timelineEvents.contains(where: { $0.source == "future-source" }), "quarantine unsupported timeline sources")
+            check(snapshot.rejectedTimelineEventCount == 1, "report quarantined timeline event count")
+            let kind = snapshot.evidenceFeed.events.first(where: { $0.source.postId == events[0]["id"] as? String })?.kind
+            check(kind == .uncertain, "operator observation cannot independently confirm a reset")
+        } catch {
+            fail("accept observed source while quarantining one unsupported event: \(error.localizedDescription)")
+        }
+
+        var excessiveEvents = events.dropLast()
+        for index in 0...CodexResetRadarService.maximumRejectedTimelineEvents {
+            var event = events[0]
+            let id = "20999999999999999\(String(format: "%02d", index))"
+            event["id"] = id
+            event["url"] = "https://x.com/thsottiaux/status/\(id)"
+            event["source"] = "future-source"
+            excessiveEvents.append(event)
+        }
+        timeline["events"] = Array(excessiveEvents)
+        let excessiveData = try! JSONSerialization.data(withJSONObject: timeline)
+        do {
+            _ = try CodexResetRadarService.makeSnapshot(
+                feedData: fixture.feed,
+                timelineData: excessiveData,
+                forecastData: fixture.forecast
+            )
+            fail("reject excessive unsupported timeline events")
+        } catch {
+            check(true, "reject excessive unsupported timeline events")
+        }
+
+        check(
+            CodexResetRadarPresentation.sourceFreshnessText(
+                error: "雷达数据不可用：事件范围或来源校验失败",
+                hasCachedData: true,
+                rejectedTimelineEventCount: nil
+            ) == "社区数据格式已变化 · 显示上次数据",
+            "format failures distinguish cached schema changes"
+        )
+        check(
+            CodexResetRadarPresentation.sourceFreshnessText(
+                error: "请求超时",
+                hasCachedData: true,
+                rejectedTimelineEventCount: nil
+            ) == "社区数据连接失败 · 显示上次数据",
+            "network failures distinguish cached connectivity errors"
+        )
+        check(
+            CodexResetRadarPresentation.sourceFreshnessText(
+                error: nil,
+                hasCachedData: true,
+                rejectedTimelineEventCount: 2
+            ) == "动态已更新 · 已隔离 2 条未识别事件",
+            "successful partial data reports quarantined events"
+        )
     }
 
     private static func radarSnapshotRejectsInvalidForecast() {

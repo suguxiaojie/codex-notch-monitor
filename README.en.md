@@ -15,7 +15,7 @@
 </div>
 
 > [!IMPORTANT]
-> The latest version is [`v1.6.6 (Build 20)`](https://github.com/suguxiaojie/codex-notch-monitor/releases/tag/v1.6.6). The Release provides separate DMGs for Apple Silicon `arm64` and Intel `x86_64`; choose the package that matches your Mac.
+> The latest version is [`v1.6.7 (Build 21)`](https://github.com/suguxiaojie/codex-notch-monitor/releases/tag/v1.6.7). The Release provides separate DMGs for Apple Silicon `arm64` and Intel `x86_64`; choose the package that matches your Mac.
 
 > [!TIP]
 > **Sponsor: CoverAI top-up service** — [Visit CoverAI](https://www.coverai.store/)
@@ -100,7 +100,7 @@ Panel Settings controls which quota, Credits, reset, token, and cost modules app
   <img src="docs/images/menu-bar-quota-rings.png" alt="Codex Monitor menu bar quota ring states" width="58%">
 </p>
 
-While a task is running, the menu bar can show its phase, project, current-turn tokens, and quota, with K/M/B token abbreviations. When space is limited, it can progressively compact by priority or rotate project, token, and quota pages inside a fixed width. Approval waits, failures, completion receipts, and low-quota warnings remain fixed. Project names truncate by measured width, and multi-project token counts remain isolated by session. The quota ring shows the quota window that needs the most attention for the current account.
+The quota ring and percentage form a stable menu-bar baseline. While a task is running, its phase, project, and current-turn tokens follow that baseline, with K/M/B token abbreviations. When space is limited, task content can progressively compact by priority or rotate project and current-turn token pages inside a fixed width. Reset countdowns remain in the tooltip and Glance. Project names truncate by measured width, and multi-project token counts remain isolated by session.
 
 ## Feature details
 
@@ -203,8 +203,8 @@ The app combines local structured session activity with optional lifecycle Hooks
 - Aggregates multiple sessions under the same project path and shows the number of running sessions.
 - Distinguishes reading, searching, editing, validation, image inspection, and ordinary commands.
 - Truncates command summaries and masks common token, key, and password arguments.
-- Offers Automatic, Detailed, Compact, or Icon-only menu bar density.
-- When space is limited, rotates project, current-turn token, and quota pages or progressively compacts them by status priority; hover retains complete per-project and per-session context.
+- Offers Automatic, Detailed, Compact, or Icon-only menu bar density. Automatic uses the widest safe layout that currently fits, progressively compacts only after crowding, and expands again in small steps when space returns.
+- When space is limited, rotates project and current-turn token pages or progressively compacts them by status priority. The quota ring and percentage remain stable; hover retains reset timing and complete per-project and per-session context.
 - Projects current-turn tokens from local structured session events and isolates them by session and turn. An incomplete local boundary stays explicitly incomplete instead of presenting session totals as turn usage.
 - The floating Activity Island supports show/hide, scale, opacity, position, content density, and animation settings.
 - Approval waits use a high-priority state; normal work and idle states use different colors and breathing rhythms.

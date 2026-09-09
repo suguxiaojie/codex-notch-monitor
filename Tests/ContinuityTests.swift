@@ -12,6 +12,7 @@ enum ContinuityTests {
         sessionLibrarySearchMatchesTitlesProjectsAndPaths()
         sessionLibraryFiltersExcludeInternalThreads()
         sessionLibraryFilteringPreservesOrderAndSnapshot()
+        sessionLibraryExpansionOnlyRevealsFocusedResults()
         try accountObservationDoesNotGuessHistory()
         try accountTransitionTracksOnlyNewSessions()
         try usageAccountContextExposesOnlyObservedOwnership()
@@ -42,7 +43,7 @@ enum ContinuityTests {
         try projectTransferP1PreservesGitAndAttachments()
         try projectTransferLargeGitOutputDoesNotDeadlock()
         projectImportDirectoryDefaultsToCodexProjectsContainer()
-        print("Continuity tests: 35/35 passed")
+        print("Continuity tests: 36/36 passed")
     }
 
     private static func runLocalInventoryBenchmark() {
@@ -402,6 +403,30 @@ enum ContinuityTests {
         for _ in 0..<3 {
             expect(SessionLibraryPresentation.groups(snapshot: snapshot, query: "Backup", filter: .all) == groups, "相同输入的展示顺序必须稳定")
         }
+    }
+
+    private static func sessionLibraryExpansionOnlyRevealsFocusedResults() {
+        let projects = sessionLibraryFixture().projectGroups
+        expect(
+            SessionLibraryPresentation.expansionIDs(projects: projects, selectedThreadID: nil).isEmpty,
+            "多个项目的普通列表默认应全部折叠"
+        )
+        let only = Array(projects.prefix(1))
+        expect(
+            SessionLibraryPresentation.expansionIDs(projects: only, selectedThreadID: nil) == Set([only[0].id]),
+            "搜索或筛选仅剩一个项目时应自动展开"
+        )
+        expect(
+            SessionLibraryPresentation.expansionIDs(
+                projects: projects,
+                selectedThreadID: "beta-recoverable"
+            ) == Set(["/tmp/Nested/Beta"]),
+            "明确选择会话时只展开其所属项目"
+        )
+        expect(
+            SessionLibraryPresentation.expansionIDs(projects: projects, selectedThreadID: "missing").isEmpty,
+            "不可见选择不能展开无关项目"
+        )
     }
 
     private static func sessionLibraryFixture() -> SessionContinuitySnapshot {

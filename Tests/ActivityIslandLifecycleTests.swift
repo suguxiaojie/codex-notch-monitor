@@ -10,6 +10,7 @@ struct ActivityIslandLifecycleTests {
         testAttentionDoesNotCollapse()
         testCompletionLifecycle()
         testNewActivityReopensCompactIsland()
+        testNewActivityCancelsCompletionHide()
 
         if failed > 0 {
             fputs("Activity Island tests failed: \(failed), passed: \(passed)\n", stderr)
@@ -22,7 +23,8 @@ struct ActivityIslandLifecycleTests {
         var lifecycle = ActivityIslandLifecycle()
         expect(lifecycle.handle(.activityChanged(requiresAttention: false)) == .expanded, "live activity expands")
         expect(lifecycle.handle(.expandedHoldElapsed) == .compact, "stable activity compacts")
-        expect(lifecycle.handle(.compactHideElapsed) == .hidden, "stale compact activity hides")
+        expect(lifecycle.handle(.compactHideElapsed) == .compact, "live compact activity remains visible")
+        expect(!lifecycle.hidesAfterCompact, "live activity does not arm auto-hide")
     }
 
     private static func testAttentionDoesNotCollapse() {
@@ -36,6 +38,7 @@ struct ActivityIslandLifecycleTests {
         var lifecycle = ActivityIslandLifecycle()
         _ = lifecycle.handle(.activityChanged(requiresAttention: false))
         expect(lifecycle.handle(.activityEnded) == .expanded, "completion feedback expands")
+        expect(lifecycle.hidesAfterCompact, "completion arms compact auto-hide")
         expect(lifecycle.handle(.expandedHoldElapsed) == .compact, "completion feedback compacts")
         expect(lifecycle.handle(.compactHideElapsed) == .hidden, "completion feedback hides")
     }
@@ -45,6 +48,16 @@ struct ActivityIslandLifecycleTests {
         _ = lifecycle.handle(.activityChanged(requiresAttention: false))
         _ = lifecycle.handle(.expandedHoldElapsed)
         expect(lifecycle.handle(.activityChanged(requiresAttention: false)) == .expanded, "new action reopens compact island")
+    }
+
+    private static func testNewActivityCancelsCompletionHide() {
+        var lifecycle = ActivityIslandLifecycle()
+        _ = lifecycle.handle(.activityEnded)
+        _ = lifecycle.handle(.expandedHoldElapsed)
+        expect(lifecycle.presentation == .compact, "completion reaches compact state")
+        expect(lifecycle.handle(.activityChanged(requiresAttention: false)) == .expanded, "new work interrupts completion")
+        expect(!lifecycle.hidesAfterCompact, "new work disarms completion auto-hide")
+        expect(lifecycle.handle(.compactHideElapsed) == .expanded, "stale completion timer cannot hide new work")
     }
 
     private static func expect(_ condition: @autoclosure () -> Bool, _ name: String) {

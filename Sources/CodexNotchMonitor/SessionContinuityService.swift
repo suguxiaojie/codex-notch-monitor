@@ -177,6 +177,20 @@ enum SessionLibraryCheckStatus: Equatable {
 }
 
 enum SessionLibraryPresentation {
+    static func expansionIDs(
+        projects: [ContinuityProjectGroup],
+        selectedThreadID: String?
+    ) -> Set<String> {
+        if let selectedThreadID,
+           let selectedProject = projects.first(where: {
+               $0.threads.contains(where: { $0.id == selectedThreadID })
+           }) {
+            return [selectedProject.id]
+        }
+        guard projects.count == 1, let only = projects.first else { return [] }
+        return [only.id]
+    }
+
     static func groups(
         snapshot: SessionContinuitySnapshot,
         query: String,

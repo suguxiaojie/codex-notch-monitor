@@ -287,8 +287,11 @@ struct QuotaStyleSettingsView: View {
                 .foregroundStyle(MonitorDesktopTheme.tertiaryText)
             Spacer(minLength: 8)
             if islandEnabled, selectedMode == .menuBar {
-                Image(systemName: liveSnapshot == nil ? "circle.dotted" : "waveform.path.ecg")
-                    .font(.system(size: 9, weight: .medium))
+                Image(nsImage: MenuBarQuotaRingRenderer.image(
+                    remainingPercent: store.quotaState.primaryBucket?.limitingWindow?.remainingPercent ?? 0
+                ))
+                    .resizable()
+                    .frame(width: 12, height: 12)
                 Text(menuBarPreviewTitle)
                     .font(MonitorDesktopTypography.metadata)
                     .lineLimit(1)
@@ -512,7 +515,7 @@ struct QuotaStyleSettingsView: View {
                         inspectorDivider
                         preferenceRow(
                             title: "信息密度",
-                            detail: "详细优先保留项目与用量，使用更宽的有限空间；自动与精简更紧凑。",
+                            detail: "自动会在安全空间内尽可能完整显示；空间不足时才精简或轮换。",
                             controlsDisabled: !islandEnabled
                         ) {
                             Picker("信息密度", selection: $menuBarDensityRawValue) {
@@ -593,7 +596,7 @@ struct QuotaStyleSettingsView: View {
     private var behaviorInspector: some View {
         inspectorGroup(
             title: "行为",
-            detail: "控制浮动灵动岛的任务完成反馈与自动隐藏。"
+            detail: "运行中缩小后持续显示；任务完成后按这里的时间退出。"
         ) {
             preferenceRow(
                 title: "显示任务完成反馈",
@@ -615,7 +618,7 @@ struct QuotaStyleSettingsView: View {
                     inspectorDivider
                     sliderRow(
                         title: "缩小后隐藏",
-                        detail: "进入紧凑态后继续显示的时间。",
+                        detail: "任务完成进入紧凑态后继续显示的时间。",
                         value: $compactHide,
                         range: 5...120
                     )
@@ -964,7 +967,7 @@ struct QuotaStyleSettingsView: View {
         guard let project = store.focusedProject else { return nil }
         return ActivityIslandSnapshot(
             projectID: project.id,
-            projectName: project.name,
+            projectName: project.displayName,
             phase: project.task.phase,
             actionText: project.detailedActionSummary,
             sessionCount: project.sessionCount,
@@ -999,7 +1002,9 @@ struct QuotaStyleSettingsView: View {
     }
 
     private var menuBarPreviewTitle: String {
-        guard let snapshot = liveSnapshot else { return "等待真实任务状态" }
+        guard let snapshot = liveSnapshot else {
+            return store.quotaState.primaryBucket?.limitingWindow.map { "\($0.remainingPercent)%" } ?? "--"
+        }
         return MenuBarTokenFormatter.title(
             status: snapshot.phase.menuBarTitle, project: snapshot.projectName,
             usage: snapshot.turnTokenUsage,

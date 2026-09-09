@@ -19,15 +19,18 @@ enum ActivityIslandLifecycleEvent: Equatable {
 struct ActivityIslandLifecycle: Equatable {
     private(set) var presentation: ActivityIslandPresentation = .hidden
     private(set) var requiresAttention = false
+    private(set) var hidesAfterCompact = false
 
     mutating func handle(_ event: ActivityIslandLifecycleEvent) -> ActivityIslandPresentation {
         switch event {
         case let .activityChanged(attention):
             requiresAttention = attention
+            hidesAfterCompact = false
             presentation = .expanded
 
         case .activityEnded:
             requiresAttention = false
+            hidesAfterCompact = true
             presentation = .expanded
 
         case .expandedHoldElapsed:
@@ -36,7 +39,7 @@ struct ActivityIslandLifecycle: Equatable {
             }
 
         case .compactHideElapsed:
-            if !requiresAttention, presentation == .compact {
+            if !requiresAttention, hidesAfterCompact, presentation == .compact {
                 presentation = .hidden
             }
         }
@@ -45,6 +48,5 @@ struct ActivityIslandLifecycle: Equatable {
 }
 
 enum ActivityIslandTiming {
-    static let completionExpandedHold: TimeInterval = 4
-    static let completionCompactHide: TimeInterval = 12
+    static let liveExpandedHold: TimeInterval = 5
 }

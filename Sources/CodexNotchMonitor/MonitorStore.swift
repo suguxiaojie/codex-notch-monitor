@@ -2385,7 +2385,7 @@ final class MonitorStore: ObservableObject {
             return
         }
         isReadingSession = true
-        sessionActivityService.fetch { [weak self] snapshots in
+        sessionActivityService.fetch { [weak self] snapshots, threadNames in
             guard let self else {
                 completion?()
                 return
@@ -2401,7 +2401,8 @@ final class MonitorStore: ObservableObject {
             let discovered = ProjectActivityAggregator.projects(
                 snapshots: snapshots,
                 hookTasks: self.tasks,
-                catalog: catalog
+                catalog: catalog,
+                threadNames: threadNames
             )
             self.projectDisplayOrder = CompactProjectLayout.reconcileOrder(
                 existing: self.projectDisplayOrder,
