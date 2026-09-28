@@ -7,6 +7,7 @@ enum CodexSetupServiceTests {
         verifiesHookEvidenceTitles()
         verifiesConfigurationAssessmentBoundaries()
         verifiesHooksStepActions()
+        verifiesLiveCodexExecutableCandidates()
         try installsHooksWithoutOverwritingThirdPartyHandlers()
         try refusesInvalidHooksFile()
         try tracksReviewAndFirstRealEvent()
@@ -16,7 +17,7 @@ enum CodexSetupServiceTests {
         try preservesNativeStartupReviewInteraction()
         try matchesThinAndUniversalHelpersByCurrentArchitectureIdentity()
         try uninstallsOnlyMonitorHooks()
-        print("Codex setup tests: 13/13 passed")
+        print("Codex setup tests: 14/14 passed")
     }
 
     static func verifiesOptionalHookPresentation() {
@@ -103,6 +104,20 @@ enum CodexSetupServiceTests {
         expect(CodexSetupHookState.waitingForFirstEvent.onboardingStepMode == .advance, "reviewed state should advance")
         expect(CodexSetupHookState.connected.onboardingStepMode == .advance, "connected state should advance")
         expect(CodexSetupHookState.invalidHooksFile.onboardingStepMode == .deferOnly, "invalid config must fail closed")
+    }
+
+    static func verifiesLiveCodexExecutableCandidates() {
+        let paths = CodexSetupPaths.live().codexExecutableCandidates.map(\.path)
+        expect(
+            paths.first == "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+            "current ChatGPT bundles must be checked before legacy layouts"
+        )
+        expect(
+            paths.contains("/Applications/ChatGPT.app/Contents/Resources/codex")
+                && paths.contains("/Applications/Codex.app/Contents/Resources/codex"),
+            "legacy ChatGPT and Codex bundle layouts must remain supported"
+        )
+        expect(Set(paths).count == paths.count, "Codex executable candidates must be deduplicated")
     }
 
     private struct Fixture {

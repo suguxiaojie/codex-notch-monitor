@@ -5,6 +5,31 @@ import SQLite3
 @main
 enum ModelSmokeTests {
     static func main() {
+        let resolvedCodex = CodexAppServerClient.resolveCodexExecutable()
+        check(
+            resolvedCodex?.path == "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+            "current ChatGPT Codex CLI bundle layout"
+        )
+        var missingExecutableCallback: (isMainThread: Bool, message: String)?
+        CodexAppServerClient.Session(executableResolver: { nil }).start { result in
+            let message: String
+            switch result {
+            case .success:
+                message = "unexpected success"
+            case let .failure(error):
+                message = error.localizedDescription
+            }
+            missingExecutableCallback = (Thread.isMainThread, message)
+        }
+        let callbackDeadline = Date().addingTimeInterval(2)
+        while missingExecutableCallback == nil && Date() < callbackDeadline {
+            _ = RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+        check(
+            missingExecutableCallback?.isMainThread == true
+                && missingExecutableCallback?.message == "未找到 Codex CLI",
+            "App Server startup failures return to the main thread"
+        )
         check(MonitorRefreshCadence.quota == 60, "quota refreshes every minute")
         check(MonitorRefreshCadence.cost == 300, "cost scan remains five minutes")
         check(
@@ -689,7 +714,7 @@ enum ModelSmokeTests {
         )
         try? FileManager.default.removeItem(at: fixtureURL)
 
-        print("Model smoke tests passed (112 checks).")
+        print("Model smoke tests passed (114 checks).")
     }
 
     private static func check(_ condition: @autoclosure () -> Bool, _ label: String) {

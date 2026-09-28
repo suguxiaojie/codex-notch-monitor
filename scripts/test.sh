@@ -21,6 +21,7 @@ swiftc \
   -parse-as-library \
   Sources/CodexNotchMonitor/CoverAILinks.swift \
   Sources/CodexNotchMonitor/CodexProjectCatalog.swift \
+  Sources/CodexNotchMonitor/CodexExecutableLocator.swift \
   Sources/CodexNotchMonitor/CodexAppServerClient.swift \
   Sources/CodexNotchMonitor/Models.swift \
   Sources/CodexNotchMonitor/MenuBarQuotaRing.swift \
@@ -77,6 +78,7 @@ swiftc \
   -swift-version 5 \
   -parse-as-library \
   Sources/CodexNotchMonitor/AppPaths.swift \
+  Sources/CodexNotchMonitor/CodexExecutableLocator.swift \
   Sources/CodexNotchMonitor/CodexSetupService.swift \
   Tests/CodexSetupServiceTests.swift \
   -o "$setup_test_binary"
@@ -140,6 +142,7 @@ swiftc \
   -swift-version 5 \
   -parse-as-library \
   Sources/CodexNotchMonitor/AppPaths.swift \
+  Sources/CodexNotchMonitor/CodexExecutableLocator.swift \
   Sources/CodexNotchMonitor/CodexAppServerClient.swift \
   Sources/CodexNotchMonitor/CodexProjectCatalog.swift \
   Sources/CodexNotchMonitor/CodexAccountStateWatcher.swift \

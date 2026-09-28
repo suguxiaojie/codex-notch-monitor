@@ -21,15 +21,26 @@ final class CodexAppServerClient {
         private var timeoutItems: [Int: DispatchWorkItem] = [:]
         private var readyCompletion: ((Result<Void, Error>) -> Void)?
         private var stopped = false
+        private let executableResolver: () -> URL?
+
+        init(
+            executableResolver: @escaping () -> URL? = CodexAppServerClient.resolveCodexExecutable
+        ) {
+            self.executableResolver = executableResolver
+        }
 
         func start(completion: @escaping (Result<Void, Error>) -> Void) {
             queue.async {
                 guard !self.stopped, self.process == nil else {
-                    completion(.failure(ProtocolError(message: "Codex App Server 会话不可用")))
+                    DispatchQueue.main.async {
+                        completion(.failure(ProtocolError(message: "Codex App Server 会话不可用")))
+                    }
                     return
                 }
-                guard let executable = CodexAppServerClient.resolveCodexExecutable() else {
-                    completion(.failure(ProtocolError(message: "未找到 Codex CLI")))
+                guard let executable = self.executableResolver() else {
+                    DispatchQueue.main.async {
+                        completion(.failure(ProtocolError(message: "未找到 Codex CLI")))
+                    }
                     return
                 }
 
@@ -217,22 +228,6 @@ final class CodexAppServerClient {
     }
 
     static func resolveCodexExecutable() -> URL? {
-        let candidates = [
-            "/Applications/ChatGPT.app/Contents/Resources/codex",
-            "/Applications/Codex.app/Contents/Resources/codex",
-            "/opt/homebrew/bin/codex",
-            "/usr/local/bin/codex",
-        ]
-        if let path = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) {
-            return URL(fileURLWithPath: path)
-        }
-        let pathEntries = ProcessInfo.processInfo.environment["PATH"]?.split(separator: ":") ?? []
-        for entry in pathEntries {
-            let path = String(entry) + "/codex"
-            if FileManager.default.isExecutableFile(atPath: path) {
-                return URL(fileURLWithPath: path)
-            }
-        }
-        return nil
+        CodexExecutableLocator.resolve()
     }
 }

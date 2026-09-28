@@ -166,10 +166,7 @@ struct CodexSetupPaths {
             supportDirectory: AppPaths.supportDirectory,
             sourceHelperURL: bundleURL
                 .appendingPathComponent("Contents/Helpers/CodexMonitorHook"),
-            codexExecutableCandidates: [
-                URL(fileURLWithPath: "/Applications/ChatGPT.app/Contents/Resources/codex"),
-                URL(fileURLWithPath: "/Applications/Codex.app/Contents/Resources/codex"),
-            ]
+            codexExecutableCandidates: CodexExecutableLocator.candidateURLs()
         )
     }
 
