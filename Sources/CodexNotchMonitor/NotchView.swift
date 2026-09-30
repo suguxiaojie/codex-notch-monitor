@@ -4515,7 +4515,7 @@ struct NotchView: View {
                 }
             }
             Label(
-                "Astra／GPT-5.6 使用 OpenAI 官方标准费率 · 核验于 \(ModelPricing.officialRateVerifiedAt)",
+                "GPT-6／GPT-5.6 使用 OpenAI 官方标准费率 · 核验于 \(ModelPricing.officialRateVerifiedAt)",
                 systemImage: "checkmark.shield"
             )
             .font(MonitorDesktopTypography.metadata)

@@ -15,7 +15,7 @@
 </div>
 
 > [!IMPORTANT]
-> The latest version is [`v1.6.8 (Build 22)`](https://github.com/suguxiaojie/codex-notch-monitor/releases/tag/v1.6.8). The Release provides separate DMGs for Apple Silicon `arm64` and Intel `x86_64`; choose the package that matches your Mac.
+> The latest version is [`v1.6.9 (Build 23)`](https://github.com/suguxiaojie/codex-notch-monitor/releases/tag/v1.6.9). The Release provides separate DMGs for Apple Silicon `arm64` and Intel `x86_64`; choose the package that matches your Mac.
 
 > [!TIP]
 > **Sponsor: CoverAI top-up service** — [Visit CoverAI](https://www.coverai.store/)
@@ -149,7 +149,7 @@ Cost reuses the same local structured-log scan as Usage and keeps the same perio
 - Displays token throughput, hourly or daily cost trends, and local log sources.
 - Verified official OpenAI rates take precedence. The public [CodexIsland Model Catalog](https://ericjypark.github.io/codex-island-model-catalog/v1/models.json) refreshes daily to fill in other models, with a bundled fallback table.
 - Validates the remote catalog's schema, size, numeric ranges, and cache. If refresh fails, the app continues with the latest verified cache or embedded fallback.
-- GPT-6 Astra and the GPT-5.6 family use official OpenAI standard rates, including the documented long-context multipliers above 272K input tokens.
+- GPT-6 Astra, GPT-6.1 Sol, GPT-6 Sol, GPT-6 Luna, and the GPT-5.6 family use official OpenAI standard rates, including the documented long-context multipliers above 272K input tokens.
 - Unknown models are never assigned a guessed price. They are listed in the UI and counted as `$0` in the estimate.
 - Internal Codex auto-routing models are mapped to the primary model only when the local timeline provides evidence for the model used at that time; the UI discloses the mapping.
 
@@ -566,7 +566,7 @@ Dynamic Center depends on the third-party `codex-reset.com` service. If the netw
 
 The model may not yet exist in the public price catalog, or it may be an internal route without a verifiable public price. The app does not invent a price for unknown models, so they contribute `$0` and remain listed in the source card.
 
-GPT-6 Astra and the GPT-5.6 family prefer verified official OpenAI rates embedded in the app; the third-party catalog cannot override them. Above 272K input tokens, input and cache rates use a 2x multiplier and output uses 1.5x. Tool fees, Fast mode, and Batch/Flex discounts are outside this standard estimate.
+GPT-6 Astra, GPT-6.1 Sol, GPT-6 Sol, GPT-6 Luna, and the GPT-5.6 family prefer verified official OpenAI rates embedded in the app; the third-party catalog cannot override them. Above 272K input tokens, input and cache rates use a 2x multiplier and output uses 1.5x. Tool fees, Fast mode, and Batch/Flex discounts are outside this standard estimate.
 
 ### Are Hooks required?
 

@@ -10,12 +10,15 @@ enum ModelPricing {
         static let standard = Multipliers(inputAndCache: 1, output: 1)
     }
 
-    /// OpenAI Docs prices verified on 2026-09-06. These entries take
+    /// OpenAI Docs prices verified on 2026-09-30. These entries take
     /// precedence over the community catalog so an older third-party value
     /// cannot override a current first-party rate. The catalog still fills in
     /// models that are not represented in this official snapshot.
     private static let official: [String: Rates] = [
         "gpt-6-astra": rates(10, 50, 12.5, 1),
+        "gpt-6.1-sol": rates(2, 10, 2.5, 0.1),
+        "gpt-6-sol": rates(2, 10, 2.5, 0.2),
+        "gpt-6-luna": rates(0.1, 0.5, 0.125, 0.01),
         "gpt-5.6": rates(4, 20, 5, 0.4),
         "gpt-5.6-sol": rates(4, 20, 5, 0.4),
         "gpt-5.6-terra": rates(2, 12, 2.5, 0.2),
@@ -24,6 +27,9 @@ enum ModelPricing {
 
     private static let longContextModels: Set<String> = [
         "gpt-6-astra",
+        "gpt-6.1-sol",
+        "gpt-6-sol",
+        "gpt-6-luna",
         "gpt-5.6",
         "gpt-5.6-sol",
         "gpt-5.6-terra",
@@ -31,7 +37,7 @@ enum ModelPricing {
     ]
 
     static let longContextThreshold = 272_000
-    static let officialRateVerifiedAt = "2026-09-06"
+    static let officialRateVerifiedAt = "2026-09-30"
 
     /// Codex-only build-time fallback. The daily catalog takes precedence and
     /// can add or update models without requiring an app release.

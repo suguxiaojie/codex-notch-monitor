@@ -16,6 +16,9 @@ enum PricingCatalogTests {
             models: [
                 "test-model": rates,
                 "gpt-6-astra": rates,
+                "gpt-6.1-sol": rates,
+                "gpt-6-sol": rates,
+                "gpt-6-luna": rates,
                 "gpt-5.6-sol": rates,
             ]
         )
@@ -26,6 +29,7 @@ enum PricingCatalogTests {
         check(PricingCatalog.interpret(status: 500, data: data) == .rejected("HTTP 500"), "reject HTTP error")
         check(PricingCatalog.interpret(status: 200, data: Data("{}".utf8)) == .rejected("malformed JSON"), "reject malformed schema")
         check(ModelPricing.canonicalModelName("GPT-5.3-Codex-20260812") == "gpt-5.3-codex", "strip date suffix")
+        check(ModelPricing.canonicalModelName("GPT-6.1-Sol-20260930") == "gpt-6.1-sol", "strip GPT-6.1 snapshot suffix")
         check(
             ModelPricing.resolvedRates(for: "gpt-6-astra")
                 == CatalogRates(
@@ -36,6 +40,39 @@ enum PricingCatalogTests {
                     cacheReadPerMillion: 1
                 ),
             "Astra uses verified official rates"
+        )
+        check(
+            ModelPricing.resolvedRates(for: "gpt-6.1-sol")
+                == CatalogRates(
+                    displayName: nil,
+                    inputPerMillion: 2,
+                    outputPerMillion: 10,
+                    cacheCreationPerMillion: 2.5,
+                    cacheReadPerMillion: 0.1
+                ),
+            "GPT-6.1 Sol uses verified official rates"
+        )
+        check(
+            ModelPricing.resolvedRates(for: "gpt-6-sol")
+                == CatalogRates(
+                    displayName: nil,
+                    inputPerMillion: 2,
+                    outputPerMillion: 10,
+                    cacheCreationPerMillion: 2.5,
+                    cacheReadPerMillion: 0.2
+                ),
+            "GPT-6 Sol uses verified official rates"
+        )
+        check(
+            ModelPricing.resolvedRates(for: "gpt-6-luna")
+                == CatalogRates(
+                    displayName: nil,
+                    inputPerMillion: 0.1,
+                    outputPerMillion: 0.5,
+                    cacheCreationPerMillion: 0.125,
+                    cacheReadPerMillion: 0.01
+                ),
+            "GPT-6 Luna uses verified official rates"
         )
         check(
             ModelPricing.resolvedRates(for: "gpt-5.6-sol")?.inputPerMillion == 4
@@ -91,6 +128,15 @@ enum PricingCatalogTests {
             "community catalog cannot override official Sol rates"
         )
         check(
+            ModelPricing.resolvedRates(for: "gpt-6.1-sol")?.cacheReadPerMillion == 0.1,
+            "community catalog cannot override official GPT-6.1 Sol rates"
+        )
+        check(
+            ModelPricing.resolvedRates(for: "gpt-6-sol")?.cacheReadPerMillion == 0.2
+                && ModelPricing.resolvedRates(for: "gpt-6-luna")?.outputPerMillion == 0.5,
+            "community catalog cannot override official GPT-6 Sol or Luna rates"
+        )
+        check(
             ModelPricing.multipliers(
                 for: "gpt-6-astra",
                 totalInputTokens: ModelPricing.longContextThreshold
@@ -105,11 +151,18 @@ enum PricingCatalogTests {
             "Astra applies official long-context multipliers"
         )
         check(
+            ModelPricing.multipliers(
+                for: "gpt-6.1-sol",
+                totalInputTokens: ModelPricing.longContextThreshold + 1
+            ) == ModelPricing.Multipliers(inputAndCache: 2, output: 1.5),
+            "GPT-6.1 Sol applies official long-context multipliers"
+        )
+        check(
             ModelPricing.multipliers(for: "test-model", totalInputTokens: 1_000_000) == .standard,
             "catalog models do not inherit an undocumented surcharge"
         )
 
-        print("Pricing catalog tests passed (20 checks).")
+        print("Pricing catalog tests passed (27 checks).")
     }
 
     private static func check(_ condition: @autoclosure () -> Bool, _ label: String) {

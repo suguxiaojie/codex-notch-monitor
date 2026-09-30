@@ -15,7 +15,7 @@
 </div>
 
 > [!IMPORTANT]
-> 最新版本为 [`v1.6.8 (Build 22)`](https://github.com/suguxiaojie/codex-notch-monitor/releases/tag/v1.6.8)。Release 分别提供 Apple Silicon `arm64` 与 Intel `x86_64` 安装包，请按 Mac 处理器选择对应 DMG。
+> 最新版本为 [`v1.6.9 (Build 23)`](https://github.com/suguxiaojie/codex-notch-monitor/releases/tag/v1.6.9)。Release 分别提供 Apple Silicon `arm64` 与 Intel `x86_64` 安装包，请按 Mac 处理器选择对应 DMG。
 
 > [!TIP]
 > **赞助支持：CoverAI 自家代充服务** — [前往 CoverAI](https://www.coverai.store/)
@@ -149,7 +149,7 @@ Cost 与 Usage 复用同一次本地结构化日志扫描，并保持相同的�
 - 显示 Token 吞吐量、每小时或每日成本趋势及本地日志来源。
 - 已核验的 OpenAI 官方模型单价优先；公开的 [CodexIsland Model Catalog](https://ericjypark.github.io/codex-island-model-catalog/v1/models.json) 每天刷新并补充其他模型，App 同时保留后备价格表。
 - 远程价格目录有 schema、大小、数值范围和缓存校验；刷新失败时继续使用上一次有效缓存或内置后备表。
-- GPT-6 Astra 与 GPT-5.6 家族按 OpenAI 官方标准费率估算；单次输入超过 272K Token 时应用官方长上下文倍率。
+- GPT-6 Astra、GPT-6.1 Sol、GPT-6 Sol、GPT-6 Luna 与 GPT-5.6 家族按 OpenAI 官方标准费率估算；单次输入超过 272K Token 时应用官方长上下文倍率。
 - 未知模型不会猜价格：界面会列出该模型，并按 `$0` 计入估算。
 - Codex 内部自动路由模型只在有本地时间线证据时映射到当时的主模型，映射关系会在界面说明。
 
@@ -566,7 +566,7 @@ docs/images/                          README 当前真实界面截图
 
 模型名称可能尚未进入公开价格目录，也可能是没有可验证公开价格的内部路由。应用不会给未知模型编造单价，因此按 `$0` 计入，并在来源卡中列出。
 
-GPT-6 Astra 与 GPT-5.6 家族优先使用 App 内已经核验的 OpenAI 官方费率，第三方目录不能覆盖这些价格。单次输入超过 272K Token 时，输入与缓存按 2 倍、输出按 1.5 倍估算；其他工具费用、Fast mode 和 Batch／Flex 折扣未纳入标准估值。
+GPT-6 Astra、GPT-6.1 Sol、GPT-6 Sol、GPT-6 Luna 与 GPT-5.6 家族优先使用 App 内已经核验的 OpenAI 官方费率，第三方目录不能覆盖这些价格。单次输入超过 272K Token 时，输入与缓存按 2 倍、输出按 1.5 倍估算；其他工具费用、Fast mode 和 Batch／Flex 折扣未纳入标准估值。
 
 ### Hook 是必需的吗
 
