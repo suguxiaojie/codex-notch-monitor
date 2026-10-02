@@ -15,7 +15,7 @@
 </div>
 
 > [!IMPORTANT]
-> The latest version is [`v1.6.9 (Build 23)`](https://github.com/suguxiaojie/codex-notch-monitor/releases/tag/v1.6.9). The Release provides separate DMGs for Apple Silicon `arm64` and Intel `x86_64`; choose the package that matches your Mac.
+> The latest version is [`v1.6.10 (Build 24)`](https://github.com/suguxiaojie/codex-notch-monitor/releases/tag/v1.6.10). The Release provides separate DMGs for Apple Silicon `arm64` and Intel `x86_64`; choose the package that matches your Mac.
 
 > [!TIP]
 > **Sponsor: CoverAI top-up service** — [Visit CoverAI](https://www.coverai.store/)

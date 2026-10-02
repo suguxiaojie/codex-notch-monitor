@@ -145,7 +145,7 @@ struct CodexResetTimelineEvent: Codable, Identifiable, Equatable {
     let type: String
     let group: String
     let summary: String
-    let url: String
+    let url: String?
     let announcedAt: String
     let effectiveAt: String?
     let officialWindow: CodexResetOfficialWindow?
@@ -511,7 +511,8 @@ final class CodexResetRadarService {
     ) -> TiboFeed {
         let tweets = Dictionary(uniqueKeysWithValues: feed.tweets.map { ($0.id, $0) })
         let events = timeline.events.compactMap { event -> TiboEvent? in
-            guard let announced = event.announcedDate else { return nil }
+            guard let announced = event.announcedDate,
+                  let url = event.url else { return nil }
             let tweet = tweets[event.id]
             let kind = evidenceKind(event: event, tweet: tweet)
             let confidence: Double
@@ -532,7 +533,7 @@ final class CodexResetRadarService {
                 source: TiboEventSource(
                     handle: "thsottiaux",
                     postId: event.id,
-                    url: event.url
+                    url: url
                 ),
                 confidence: confidence,
                 rationale: [event.sourceLabel, event.resetVerificationStatus]
@@ -588,8 +589,9 @@ final class CodexResetRadarService {
               event.announcedDate != nil,
               event.summary.count <= 20_000,
               ["high", "medium", "low"].contains(event.confidence),
-              ["live", "archive", "operator-observed"].contains(event.source) else { return false }
-        return canonicalXURL(event.url, id: event.id)
+              ["live", "archive", "operator-observed", "observed"].contains(event.source) else { return false }
+        if let url = event.url { return canonicalXURL(url, id: event.id) }
+        return event.source == "observed"
     }
 
     private static func validSignal(_ signal: CodexResetRadarSignal) -> Bool {

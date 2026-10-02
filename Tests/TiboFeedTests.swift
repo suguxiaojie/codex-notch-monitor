@@ -193,12 +193,13 @@ enum TiboFeedTests {
             feedData: fixture.feed,
             timelineData: fixture.timeline,
             forecastData: fixture.forecast
-        ), let credits = snapshot.timelineEvents.first(where: { $0.type == "credits" }) else {
+        ), let credits = snapshot.timelineEvents.first(where: { $0.type == "credits" }),
+           let creditsURL = credits.url else {
             fail("decode banked quota filter fixture")
         }
         let ordinary = CodexResetRadarTweet(
             id: credits.id,
-            url: credits.url,
+            url: creditsURL,
             text: credits.summary,
             at: credits.announcedAt,
             isReply: nil,
@@ -322,6 +323,13 @@ enum TiboFeedTests {
         var events = timeline["events"] as! [[String: Any]]
         events[0]["source"] = "operator-observed"
         events[0]["source_label"] = "Operator observation"
+        var observed = events[1]
+        observed["id"] = "2099999999999999900"
+        observed["url"] = NSNull()
+        observed["source"] = "observed"
+        observed["source_label"] = "Observed on our monitoring accounts"
+        observed["banked_state"] = "available"
+        events.append(observed)
         var unsupported = events[0]
         unsupported["id"] = "2099999999999999901"
         unsupported["url"] = "https://x.com/thsottiaux/status/2099999999999999901"
@@ -337,10 +345,12 @@ enum TiboFeedTests {
                 forecastData: fixture.forecast
             )
             check(snapshot.timelineEvents.contains(where: { $0.source == "operator-observed" }), "accept operator-observed as low-trust timeline evidence")
+            check(snapshot.timelineEvents.contains(where: { $0.source == "observed" && $0.url == nil }), "accept current observed timeline events without a public X URL")
             check(!snapshot.timelineEvents.contains(where: { $0.source == "future-source" }), "quarantine unsupported timeline sources")
             check(snapshot.rejectedTimelineEventCount == 1, "report quarantined timeline event count")
             let kind = snapshot.evidenceFeed.events.first(where: { $0.source.postId == events[0]["id"] as? String })?.kind
             check(kind == .uncertain, "operator observation cannot independently confirm a reset")
+            check(!snapshot.evidenceFeed.events.contains(where: { $0.source.postId == observed["id"] as? String }), "URL-less observed events stay out of Tibo/X evidence attribution")
         } catch {
             fail("accept observed source while quarantining one unsupported event: \(error.localizedDescription)")
         }

@@ -3912,7 +3912,9 @@ struct NotchView: View {
                 }
                 .font(MonitorDesktopTypography.metadata)
                 .foregroundStyle(MonitorDesktopTheme.tertiaryText)
-                tiboSourceLink(event.url, title: "在 X 查看完整对话")
+                if let url = event.url {
+                    tiboSourceLink(url, title: "在 X 查看完整对话")
+                }
             }
         }
         .padding(18)
@@ -3995,7 +3997,11 @@ struct NotchView: View {
     }
 
     private func tiboTimelineSourceLabel(_ event: CodexResetTimelineEvent) -> String {
-        event.source == "archive" ? "社区归档" : "社区实时信号"
+        switch event.source {
+        case "archive": return "社区归档"
+        case "observed", "operator-observed": return "社区监测"
+        default: return "社区实时信号"
+        }
     }
 
     private func tiboVerificationLabel(_ value: String) -> String {
